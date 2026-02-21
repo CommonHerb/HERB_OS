@@ -84,28 +84,16 @@
 #define COL_TENS_SEL    0x00FFFFFF   /* selected tension highlight */
 
 /* ============================================================
- * 16-BIT AND 32-BIT PORT I/O
+ * PORT I/O — implemented in herb_hw.asm (Phase 2, Session 59)
  * ============================================================ */
 
-static inline void outw(uint16_t port, uint16_t val) {
-    __asm__ volatile ("outw %0, %1" : : "a"(val), "Nd"(port));
-}
+extern void outw(uint16_t port, uint16_t val);
+extern uint16_t inw(uint16_t port);
+extern void outl(uint16_t port, uint32_t val);
+extern uint32_t inl(uint16_t port);
 
-static inline uint16_t inw(uint16_t port) {
-    uint16_t val;
-    __asm__ volatile ("inw %1, %0" : "=a"(val) : "Nd"(port));
-    return val;
-}
-
-static inline void outl(uint16_t port, uint32_t val) {
-    __asm__ volatile ("outl %0, %1" : : "a"(val), "Nd"(port));
-}
-
-static inline uint32_t inl(uint16_t port) {
-    uint32_t val;
-    __asm__ volatile ("inl %1, %0" : "=a"(val) : "Nd"(port));
-    return val;
-}
+/* Privileged CPU ops — implemented in herb_hw.asm (Phase 2, Session 59) */
+extern void hw_flush_tlb(void);
 
 /* ============================================================
  * PCI CONFIGURATION SPACE
@@ -217,11 +205,7 @@ static int map_framebuffer(uint64_t fb_phys, uint64_t fb_size) {
     }
 
     /* Flush TLB by reloading CR3 */
-    __asm__ volatile (
-        "mov %%cr3, %%rax\n\t"
-        "mov %%rax, %%cr3"
-        ::: "rax", "memory"
-    );
+    hw_flush_tlb();
 
     return 0;
 }

@@ -243,7 +243,7 @@ If any answer is unfavorable — stop, rethink, and find something better.
 
 ## STATUS
 
-**Last updated:** February 20, 2026 (Session 58 -- Phase 2 Begin: Assembly Foundation)
+**Last updated:** February 20, 2026 (Session 59 -- Tier 1+2 Assembly Migration)
 
 ### What Works
 - MOVE primitive with containers, MoveTypes, slot constraints, provenance (`src/herb_move.py`)
@@ -295,6 +295,7 @@ If any answer is unfavorable — stop, rethink, and find something better.
 - **Sweep the Small Items + Legend Text (Session 56)** -- Four migrations in one session. (1) Fixed 8 API test failures: container names corrected from interactive_kernel (READY, KILL_SIG) to multiprocess (READY_QUEUE) + preemption via time_slice=0. (2) Three trivial config values migrated: `timer_interval=300` and `buffer_capacity=20` as properties on DisplayCtl entity (C reads at boot, replaces hardcoded `% 300` and `#define BUFFER_CAPACITY 20`); `shell_protected=1` as property on ShellCtl entity (C reads and sets shell entity's `protected` property, replacing hardcoded assignment). (3) Legend/help text migrated: 14 Legend entities in new LEGEND container (display module) with `key_text`, `label_text`, `order` string/int properties. New `herb_entity_prop_str()` API for string property access. Both VGA text mode and graphics mode renderers iterate LEGEND entities sorted by order — no hardcoded strings in KERNEL_MODE C code. Non-kernel-mode legend retained as-is. (4) Shell action analysis: `handle_shell_action()` is mostly mechanism — loads/swaps/lists are hardware operations triggered by HERB-set action codes. Only help text (action=30) is migrateable policy; list container set (action=20) is lower priority. Analysis documented in migration inventory for Session 57. New runtime API: `herb_entity_prop_str()`. Kernel binary: 10,622 bytes (was 9,868, +754 for legend entities + config properties). 116KB graphics image (118,272 bytes). Phase 1 Migration Inventory: 1 item remaining (shell action interpretation: help text sub-item). All 748 tests pass (591 Python + 127 bare metal + 17 API + 13 cross-format). (`src/herb_runtime_freestanding.c` herb_entity_prop_str, `programs/interactive_kernel.herb.json` Legend entities + DisplayCtl/ShellCtl properties, `boot/kernel_main.c` draw_legend + gfx legend + timer_interval + buffer_capacity + shell_protected, `src/test_api.c` container name fixes)
 - **Phase 1 Complete: Help Text as HERB Entities (Session 57)** -- Final C→HERB behavioral migration. Help text (action==30 in handle_shell_action) migrated from hardcoded C strings to 7 HelpCmd entities in a HELP_TEXT container (display module) with `cmd_text` (string) and `order` (int) properties. C iterates entities sorted by order, printing comma-separated command names to serial. Same sort-and-iterate pattern as Legend (Session 56). With this migration, `handle_shell_action()` is entirely mechanism: every branch either delegates to HERB spawn policy, performs hardware I/O (binary loading), iterates HERB entities for output, or logs debug messages. **Phase 1 Migration Inventory: 14/14 COMPLETE.** Sessions 51-57 migrated every behavioral decision from C to HERB tensions/entities. Kernel binary: 10,988 bytes. 119KB graphics image (119,296 bytes). 110 entities, 37 containers. 41 system tensions + 9 shell tensions + dynamic per-process tensions. 748 tests (127 bare metal + 591 Python + 17 API + 13 cross-format). (`programs/interactive_kernel.herb.json` HelpCmd entities + HELP_TEXT container, `boot/kernel_main.c` CN_HELP_TEXT + entity iteration for action==30)
 - **Phase 2 Begin: Assembly Foundation (Session 58)** -- First C mechanism → assembly migration. `inb` and `outb` (port I/O primitives) moved from inline asm in kernel_main.c to `boot/herb_hw.asm` — a new NASM file that will accumulate all hardware-touching assembly as Phase 2 progresses. Microsoft x64 ABI calling convention (rcx, rdx parameters). `io_wait()` stays as C calling the extern `outb`. Build pipeline: `nasm -f win64 herb_hw.asm -o herb_hw.o`, linked alongside kernel_entry.o and other objects. **Unexpected win:** removing inline asm constraints let GCC optimize more aggressively — graphics image dropped from 119KB to 108KB (11KB / ~9% reduction) with zero behavioral change. 127/127 bare metal tests pass. Full Phase 2 hardware audit completed: ~600 bytes of hardware-mandatory assembly total, organized into 6 tiers by complexity. Session-by-session migration plan documented through Session 63+. (`boot/herb_hw.asm` NEW, `boot/Makefile` herb_hw.o integration, `boot/kernel_main.c` extern declarations replace inline asm)
+- **Tier 1+2 Assembly Migration (Session 59)** -- Completed all Tier 1 and Tier 2 hardware function migrations. 9 new assembly functions in `boot/herb_hw.asm`: port I/O (`outw`, `inw`, `outl`, `inl`, `io_wait`) and privileged CPU operations (`hw_lidt`, `hw_sti`, `hw_hlt`, `hw_flush_tlb`). Naming convention: bare names for port I/O (consistent with `outb`/`inb`), `hw_` prefix for privileged CPU ops. Replaced all `static inline` functions with `__asm__ volatile` in `framebuffer.h` (4 port I/O functions + CR3 TLB flush) and all inline asm in `kernel_main.c` (`io_wait`, LIDT in `idt_install()`, STI, HLT×2). **Zero inline asm remains in kernel_main.c or framebuffer.h** — all hardware assembly is now consolidated in `herb_hw.asm` (11 functions total). Image stable at 108KB (108,032 bytes). 748 tests pass (127 bare metal + 591 Python + 17 API + 13 cross-format). (`boot/herb_hw.asm` 9 new functions, `boot/framebuffer.h` extern declarations + hw_flush_tlb, `boot/kernel_main.c` extern declarations + hw_lidt/hw_sti/hw_hlt calls)
 - **Cross-runtime equivalence** -- same program loaded in Python and C produces identical final states under identical signal sequences; proven for FIFO scheduler, priority scheduler, DOM layout pipeline, **multi-process OS (scoped containers), economy (conservation pools), IPC (channels + duplication), and four-module kernel (all features combined)**; **freestanding runtime proven equivalent (10/10 match)**; **cross-format equivalence: .herb binary and .herb.json produce identical state for all 10 programs (13/13 test scenarios)**
 - Autonomous process schedulers: FIFO (`src/herb_scheduler.py`) AND priority-based (`src/herb_scheduler_priority.py`)
 - Browser DOM layout pipeline as pure HERB data (`src/herb_dom.py`)
@@ -1340,26 +1341,26 @@ Phase 1 moved all behavioral decisions from C to HERB. Phase 2 replaces the C me
 
 #### Complete Hardware Function Inventory
 
-**Tier 1: Port I/O Primitives (~30 bytes asm)**
+**Tier 1: Port I/O Primitives (~60 bytes asm) — COMPLETE**
 
 | Function | File | Instruction | Status |
 |----------|------|-------------|--------|
 | `outb(port, val)` | ~~kernel_main.c~~ herb_hw.asm | `out dx, al` | **DONE (S58)** |
 | `inb(port)` | ~~kernel_main.c~~ herb_hw.asm | `in al, dx` | **DONE (S58)** |
-| `io_wait()` | kernel_main.c | calls outb(0x80, 0) | C wrapper, calls asm |
-| `outw(port, val)` | framebuffer.h | `out dx, ax` | Session 59 |
-| `inw(port)` | framebuffer.h | `in ax, dx` | Session 59 |
-| `outl(port, val)` | framebuffer.h | `out dx, eax` | Session 59 |
-| `inl(port)` | framebuffer.h | `in eax, dx` | Session 59 |
+| `io_wait()` | ~~kernel_main.c~~ herb_hw.asm | `out dx, al` (port 0x80) | **DONE (S59)** |
+| `outw(port, val)` | ~~framebuffer.h~~ herb_hw.asm | `out dx, ax` | **DONE (S59)** |
+| `inw(port)` | ~~framebuffer.h~~ herb_hw.asm | `in ax, dx` | **DONE (S59)** |
+| `outl(port, val)` | ~~framebuffer.h~~ herb_hw.asm | `out dx, eax` | **DONE (S59)** |
+| `inl(port)` | ~~framebuffer.h~~ herb_hw.asm | `in eax, dx` | **DONE (S59)** |
 
-**Tier 2: Privileged CPU Operations (~40 bytes asm)**
+**Tier 2: Privileged CPU Operations (~40 bytes asm) — COMPLETE**
 
-| Function/Site | File | Instruction | Target |
+| Function/Site | File | Instruction | Status |
 |---------------|------|-------------|--------|
-| `idt_install()` | kernel_main.c | `lidt` | Session 59 |
-| Main loop HLT | kernel_main.c | `hlt` | Session 59 |
-| Main loop STI | kernel_main.c | `sti` | Session 59 |
-| `map_framebuffer()` CR3 | framebuffer.h | `mov cr3` (TLB flush) | Session 59 |
+| `hw_lidt(ptr)` | ~~kernel_main.c~~ herb_hw.asm | `lidt [rcx]` | **DONE (S59)** |
+| `hw_hlt()` | ~~kernel_main.c~~ herb_hw.asm | `hlt` | **DONE (S59)** |
+| `hw_sti()` | ~~kernel_main.c~~ herb_hw.asm | `sti` | **DONE (S59)** |
+| `hw_flush_tlb()` | ~~framebuffer.h~~ herb_hw.asm | `mov cr3` (TLB flush) | **DONE (S59)** |
 
 **Tier 3: Hardware Initialization — boot-time only (~350 bytes asm)**
 
@@ -1463,6 +1464,7 @@ These are memory stores, not port I/O. C handles them fine. Assembly migration h
 - **Session 55:** "Colors are C lookup tables, display limits are hardcoded constants" -- **SOLVED: border_color/fill_color properties on region entities and process Surface entities; sync tensions emit actual pixel colors alongside state values; DisplayCtl entity with max_terminated and max_procs_per_region properties; surf_state_border[]/surf_state_fill[] arrays removed; C reads colors directly from HERB — no lookup table; 718 tests (127 bare metal + 591 Python), 115KB graphics image, kernel binary 9,868 bytes**
 - **Session 57:** "Shell help text is hardcoded C strings — the last behavioral decision in C" -- **SOLVED: 7 HelpCmd entities in display.HELP_TEXT container with cmd_text string properties; C iterates sorted by order; handle_shell_action() now entirely mechanism; Phase 1 Migration complete: 14/14 behavioral decisions migrated from C to HERB across Sessions 51-57; 748 tests, 119KB graphics image**
 - **Session 58:** "Port I/O primitives are inline asm in C — Phase 2 begins" -- **SOLVED: `inb`/`outb` migrated to `boot/herb_hw.asm` (NASM, MS x64 ABI); extern declarations in kernel_main.c; 127/127 tests pass; image 108KB (was 119KB — 11KB/9% reduction from removing inline asm constraints); full Phase 2 audit + migration plan documented**
+- **Session 59:** "Remaining Tier 1 + Tier 2 inline asm still in C" -- **SOLVED: 9 new assembly functions in herb_hw.asm: `outw`/`inw`/`outl`/`inl`/`io_wait` (Tier 1) + `hw_lidt`/`hw_sti`/`hw_hlt`/`hw_flush_tlb` (Tier 2); zero inline asm remains in kernel_main.c or framebuffer.h; 11 total assembly functions in herb_hw.asm; image stable at 108KB; 748 tests pass**
 
 ### Remaining Open Problems
 1. ~~**Native runtime**~~ **COMPLETE (Session 35).** ~~**Bare metal**~~ **COMPLETE (Session 36).** ~~**Assembly bootstrap**~~ **COMPLETE (Session 37).** ~~**Interactive**~~ **COMPLETE (Session 38).** ~~**Binary format**~~ **COMPLETE (Session 39).** ~~**Automated testing + kernel on hardware**~~ **COMPLETE (Session 40).** ~~**Framebuffer graphics**~~ **COMPLETE (Session 41).** ~~**Display as HERB state**~~ **COMPLETE (Session 42).** ~~**Mouse input**~~ **COMPLETE (Session 43).** ~~**Visible tensions**~~ **COMPLETE (Session 44).** ~~**Loadable behavioral programs**~~ **COMPLETE (Session 45).** ~~**Interacting processes**~~ **COMPLETE (Session 46).** ~~**Programs as data**~~ **COMPLETE (Session 47).** ~~**Hot-swappable system policy**~~ **COMPLETE (Session 48).** ~~**Text input as HERB state**~~ **COMPLETE (Session 49).** ~~**Shell as HERB process**~~ **COMPLETE (Session 50).** ~~**Unified command dispatch**~~ **COMPLETE (Session 51).** ~~**Process creation as HERB policy**~~ **COMPLETE (Session 52).** ~~**Input-to-command mapping as HERB policy**~~ **COMPLETE (Session 53).** ~~**Input routing as HERB policy**~~ **COMPLETE (Session 54).** ~~**Display policy as HERB state**~~ **COMPLETE (Session 55).** **PHASE 1 COMPLETE (Session 57).** All 14 behavioral decisions migrated from C to HERB across Sessions 51-57. See Phase 1 Milestone below. Remaining scaffolding: dimensions in C (not yet needed), remove JSON parser from freestanding build, write-combining for framebuffer performance.
@@ -1492,7 +1494,7 @@ These are memory stores, not port I/O. C handles them fine. Assembly migration h
    - ~~**Buffer capacity:** `#define BUFFER_CAPACITY 20` (~L1695). Could be a HERB property on the buffer entity read at creation.~~ **SOLVED (Session 56):** `buffer_capacity=20` property on DisplayCtl entity. C reads at boot, `#define BUFFER_CAPACITY` removed.
    - ~~**Shell protection value:** C sets `protected=1` on shell entity at boot (~L2900). The HERB `where` guard already reads it structurally, but C decides the initial value.~~ **SOLVED (Session 56):** `shell_protected=1` property on ShellCtl entity. C reads after ShellCtl discovery, sets shell entity's `protected` property from HERB value.
 
-3. **Phase 2: C Mechanism → Assembly** -- `boot/herb_hw.asm` created (Session 58) with `inb`/`outb`. ~600 bytes of hardware-mandatory assembly remaining across 5 sessions (59-63). See Phase 2 Migration Plan section for full inventory and schedule.
+3. **Phase 2: C Mechanism → Assembly** -- `boot/herb_hw.asm` now has 11 functions: all Tier 1 port I/O (`outb`, `inb`, `outw`, `inw`, `outl`, `inl`, `io_wait`) and all Tier 2 privileged CPU ops (`hw_lidt`, `hw_sti`, `hw_hlt`, `hw_flush_tlb`). Tiers 1-2 COMPLETE (Sessions 58-59). Zero inline asm in kernel_main.c or framebuffer.h. Tiers 3-5 remain across sessions 60-63+. See Phase 2 Migration Plan section.
 4. **Compositor / window manager** -- Container regions have fixed positions. Next step: layout tensions that compute positions dynamically based on window count, size, and z-order. Moving toward a full compositor where HERB manages the window tree. Mouse interaction now available for drag-and-drop, resize, and window manipulation.
 5. **First real target** -- Pick the first real deliverable built entirely in HERB.
 6. **Vector scoped queries** -- Currently scoped match clauses require a scalar scope binding. Supporting vector scope bindings (nested loops) would enable "for each process, count its FDs" patterns.

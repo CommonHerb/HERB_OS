@@ -211,10 +211,12 @@ extern volatile uint8_t volatile_mouse_ready;
 /* Port I/O — implemented in herb_hw.asm (Phase 2) */
 extern void outb(uint16_t port, uint8_t val);
 extern uint8_t inb(uint16_t port);
+extern void io_wait(void);
 
-static inline void io_wait(void) {
-    outb(0x80, 0);
-}
+/* Privileged CPU ops — implemented in herb_hw.asm (Phase 2, Session 59) */
+extern void hw_lidt(void* idt_descriptor);
+extern void hw_sti(void);
+extern void hw_hlt(void);
 
 /* ============================================================
  * SERIAL PORT (COM1: 0x3F8)
@@ -407,7 +409,7 @@ static void idt_set_gate(int n, uint64_t handler) {
 static void idt_install(void) {
     idt_ptr.limit = sizeof(idt) - 1;
     idt_ptr.base  = (uint64_t)&idt;
-    __asm__ volatile ("lidt %0" : : "m"(idt_ptr));
+    hw_lidt(&idt_ptr);
 }
 
 /* ============================================================
@@ -2964,7 +2966,7 @@ void kernel_main(void) {
         vga_set_color(VGA_RED, VGA_BLACK);
         vga_print("\n  FATAL: Program load failed!\n");
         serial_print("  FATAL: Program load failed!\n");
-        for (;;) __asm__ volatile ("hlt");
+        for (;;) hw_hlt();
     }
     vga_print("  Program loaded\n");
     serial_print("  Program loaded\n");
@@ -3158,7 +3160,7 @@ void kernel_main(void) {
     mouse_init();
     serial_print("  Mouse initialized (IRQ12)\n");
 
-    __asm__ volatile ("sti");
+    hw_sti();
 
     /* ---- Initial display ---- */
     vga_set_color(VGA_LGRAY, VGA_BLACK);
@@ -3167,7 +3169,7 @@ void kernel_main(void) {
 
     /* ---- Main loop ---- */
     for (;;) {
-        __asm__ volatile ("hlt");
+        hw_hlt();
 
         /* ---- Timer interrupt ---- */
         if (volatile_timer_fired) {
