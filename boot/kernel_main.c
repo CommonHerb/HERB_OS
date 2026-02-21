@@ -227,6 +227,10 @@ extern void serial_init(void);
 extern void serial_putchar(char c);
 extern void serial_print(const char* s);
 
+/* PIC/PIT — implemented in herb_hw.asm (Phase 2, Session 61) */
+extern void pic_remap(void);
+extern void pit_init(int hz);
+
 static void serial_print_int(int val) {
     char buf[16];
     herb_snprintf(buf, sizeof(buf), "%d", val);
@@ -391,44 +395,6 @@ static void idt_install(void) {
     idt_ptr.limit = sizeof(idt) - 1;
     idt_ptr.base  = (uint64_t)&idt;
     hw_lidt(&idt_ptr);
-}
-
-/* ============================================================
- * PIC — 8259 Programmable Interrupt Controller
- * ============================================================ */
-
-#define PIC1_CMD   0x20
-#define PIC1_DATA  0x21
-#define PIC2_CMD   0xA0
-#define PIC2_DATA  0xA1
-
-static void pic_remap(void) {
-    (void)inb(PIC1_DATA);
-    (void)inb(PIC2_DATA);
-    outb(PIC1_CMD, 0x11); io_wait();
-    outb(PIC2_CMD, 0x11); io_wait();
-    outb(PIC1_DATA, 0x20); io_wait();
-    outb(PIC2_DATA, 0x28); io_wait();
-    outb(PIC1_DATA, 0x04); io_wait();
-    outb(PIC2_DATA, 0x02); io_wait();
-    outb(PIC1_DATA, 0x01); io_wait();
-    outb(PIC2_DATA, 0x01); io_wait();
-    outb(PIC1_DATA, 0xF8);  /* unmask IRQ0(timer), IRQ1(keyboard), IRQ2(cascade) */
-    outb(PIC2_DATA, 0xEF);  /* unmask IRQ12(mouse) = bit 4 on slave */
-}
-
-/* ============================================================
- * PIT — Programmable Interval Timer
- * ============================================================ */
-
-#define PIT_CHANNEL0 0x40
-#define PIT_CMD      0x43
-
-static void pit_init(int hz) {
-    int divisor = 1193182 / hz;
-    outb(PIT_CMD, 0x36);
-    outb(PIT_CHANNEL0, (uint8_t)(divisor & 0xFF));
-    outb(PIT_CHANNEL0, (uint8_t)((divisor >> 8) & 0xFF));
 }
 
 /* ============================================================

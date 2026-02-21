@@ -243,7 +243,7 @@ If any answer is unfavorable — stop, rethink, and find something better.
 
 ## STATUS
 
-**Last updated:** February 20, 2026 (Session 60 -- Serial Port to Assembly)
+**Last updated:** February 20, 2026 (Session 61 -- PIC/PIT Initialization to Assembly)
 
 ### What Works
 - MOVE primitive with containers, MoveTypes, slot constraints, provenance (`src/herb_move.py`)
@@ -297,6 +297,7 @@ If any answer is unfavorable — stop, rethink, and find something better.
 - **Phase 2 Begin: Assembly Foundation (Session 58)** -- First C mechanism → assembly migration. `inb` and `outb` (port I/O primitives) moved from inline asm in kernel_main.c to `boot/herb_hw.asm` — a new NASM file that will accumulate all hardware-touching assembly as Phase 2 progresses. Microsoft x64 ABI calling convention (rcx, rdx parameters). `io_wait()` stays as C calling the extern `outb`. Build pipeline: `nasm -f win64 herb_hw.asm -o herb_hw.o`, linked alongside kernel_entry.o and other objects. **Unexpected win:** removing inline asm constraints let GCC optimize more aggressively — graphics image dropped from 119KB to 108KB (11KB / ~9% reduction) with zero behavioral change. 127/127 bare metal tests pass. Full Phase 2 hardware audit completed: ~600 bytes of hardware-mandatory assembly total, organized into 6 tiers by complexity. Session-by-session migration plan documented through Session 63+. (`boot/herb_hw.asm` NEW, `boot/Makefile` herb_hw.o integration, `boot/kernel_main.c` extern declarations replace inline asm)
 - **Tier 1+2 Assembly Migration (Session 59)** -- Completed all Tier 1 and Tier 2 hardware function migrations. 9 new assembly functions in `boot/herb_hw.asm`: port I/O (`outw`, `inw`, `outl`, `inl`, `io_wait`) and privileged CPU operations (`hw_lidt`, `hw_sti`, `hw_hlt`, `hw_flush_tlb`). Naming convention: bare names for port I/O (consistent with `outb`/`inb`), `hw_` prefix for privileged CPU ops. Replaced all `static inline` functions with `__asm__ volatile` in `framebuffer.h` (4 port I/O functions + CR3 TLB flush) and all inline asm in `kernel_main.c` (`io_wait`, LIDT in `idt_install()`, STI, HLT×2). **Zero inline asm remains in kernel_main.c or framebuffer.h** — all hardware assembly is now consolidated in `herb_hw.asm` (11 functions total). Image stable at 108KB (108,032 bytes). 748 tests pass (127 bare metal + 591 Python + 17 API + 13 cross-format). (`boot/herb_hw.asm` 9 new functions, `boot/framebuffer.h` extern declarations + hw_flush_tlb, `boot/kernel_main.c` extern declarations + hw_lidt/hw_sti/hw_hlt calls)
 - **Serial Port to Assembly (Session 60)** -- Tier 3 Part 1: serial port functions migrated from C to assembly. 3 new functions in `boot/herb_hw.asm`: `serial_init` (7 direct port writes configuring COM1 UART at 115200 baud 8N1), `serial_putchar` (poll LSR bit 5 + transmit, inline port ops), `serial_print` (string loop with `\n`→`\r\n` translation, calls `serial_putchar`). All use inline `out dx, al` / `in al, dx` directly — no function call overhead for port ops within the same function. `serial_print_int` stays in C as thin wrapper (formats via `herb_snprintf` then calls extern `serial_print`). `COM1` define removed from C (no longer referenced). **herb_hw.asm now has 14 functions** (was 11). `fb_init_display()` stays in C — it's algorithmic (PCI scanning, page tables, conditionals), not a hardware recipe; its port I/O already routes through assembly `outw`/`inw`. Image stable at 108KB (108,032 bytes). 748 tests pass. **Discovery 39: Init sequences are hardware scripts, not algorithms.** (`boot/herb_hw.asm` 3 new functions, `boot/kernel_main.c` extern declarations replace static definitions)
+- **PIC/PIT Initialization to Assembly (Session 61)** -- Tier 3 Part 2: interrupt infrastructure migrated from C to assembly. 2 new functions in `boot/herb_hw.asm`: `pic_remap` (remap 8259 PICs with inline port ops — ICW1-4 sequence + IMR masks, no function calls) and `pit_init` (integer division for divisor + 3 port writes to PIT channel 0). Both are pure hardware scripts — fixed sequences of port writes with no conditional logic. `pic_remap` uses inline `in al, imm8` / `out imm8, al` and `out 0x80, al` for io_wait — zero function call overhead, the entire PIC init is a straight-line port script. `pit_init` uses `div ecx` for the 1193182/hz divisor calculation. 6 `#define` constants removed from C (PIC1_CMD, PIC1_DATA, PIC2_CMD, PIC2_DATA, PIT_CHANNEL0, PIT_CMD). **herb_hw.asm now has 16 functions** (was 14). Image stable at 108KB (108,032 bytes). 748 tests pass. (`boot/herb_hw.asm` 2 new functions, `boot/kernel_main.c` extern declarations replace static definitions + removed #defines)
 - **Cross-runtime equivalence** -- same program loaded in Python and C produces identical final states under identical signal sequences; proven for FIFO scheduler, priority scheduler, DOM layout pipeline, **multi-process OS (scoped containers), economy (conservation pools), IPC (channels + duplication), and four-module kernel (all features combined)**; **freestanding runtime proven equivalent (10/10 match)**; **cross-format equivalence: .herb binary and .herb.json produce identical state for all 10 programs (13/13 test scenarios)**
 - Autonomous process schedulers: FIFO (`src/herb_scheduler.py`) AND priority-based (`src/herb_scheduler_priority.py`)
 - Browser DOM layout pipeline as pure HERB data (`src/herb_dom.py`)
@@ -1368,8 +1369,8 @@ Phase 1 moved all behavioral decisions from C to HERB. Phase 2 replaces the C me
 | Function | File | Port I/O Count | Target |
 |----------|------|----------------|--------|
 | `serial_init()` | ~~kernel_main.c~~ herb_hw.asm | 7 outb | **Session 60 DONE** |
-| `pit_init(hz)` | kernel_main.c | 3 outb | Session 61 |
-| `pic_remap()` | kernel_main.c | 11 outb+inb+io_wait | Session 61 |
+| `pit_init(hz)` | ~~kernel_main.c~~ herb_hw.asm | div + 3 outb | **Session 61 DONE** |
+| `pic_remap()` | ~~kernel_main.c~~ herb_hw.asm | 2 inb + 8 out+io_wait + 2 out | **Session 61 DONE** |
 | `mouse_init()` | kernel_main.c | ~8 commands + waits | Session 62 |
 | `fb_init_display()` | framebuffer.h | BGA register writes | Stays in C (algorithmic) |
 
@@ -1409,7 +1410,7 @@ These are memory stores, not port I/O. C handles them fine. Assembly migration h
 |----------|-------|--------|
 | Port I/O primitives (Tier 1) | ~30 | **7/7 DONE** |
 | Privileged ops (Tier 2) | ~40 | **4/4 DONE** |
-| Init sequences (Tier 3) | ~350 | **1/5 DONE** (serial_init) |
+| Init sequences (Tier 3) | ~350 | **3/5 DONE** (serial_init, pic_remap, pit_init) |
 | Device protocols (Tier 4) | ~180 | **2/7 DONE** (serial_putchar, serial_print) |
 | **Total hardware-mandatory** | **~600** | |
 | MMIO rendering (Tier 5, optional) | ~200-400 | |
@@ -1495,7 +1496,7 @@ These are memory stores, not port I/O. C handles them fine. Assembly migration h
    - ~~**Buffer capacity:** `#define BUFFER_CAPACITY 20` (~L1695). Could be a HERB property on the buffer entity read at creation.~~ **SOLVED (Session 56):** `buffer_capacity=20` property on DisplayCtl entity. C reads at boot, `#define BUFFER_CAPACITY` removed.
    - ~~**Shell protection value:** C sets `protected=1` on shell entity at boot (~L2900). The HERB `where` guard already reads it structurally, but C decides the initial value.~~ **SOLVED (Session 56):** `shell_protected=1` property on ShellCtl entity. C reads after ShellCtl discovery, sets shell entity's `protected` property from HERB value.
 
-3. **Phase 2: C Mechanism → Assembly** -- `boot/herb_hw.asm` now has 11 functions: all Tier 1 port I/O (`outb`, `inb`, `outw`, `inw`, `outl`, `inl`, `io_wait`) and all Tier 2 privileged CPU ops (`hw_lidt`, `hw_sti`, `hw_hlt`, `hw_flush_tlb`). Tiers 1-2 COMPLETE (Sessions 58-59). Zero inline asm in kernel_main.c or framebuffer.h. Tiers 3-5 remain across sessions 60-63+. See Phase 2 Migration Plan section.
+3. **Phase 2: C Mechanism → Assembly** -- `boot/herb_hw.asm` now has 16 functions: all Tier 1 port I/O (`outb`, `inb`, `outw`, `inw`, `outl`, `inl`, `io_wait`), all Tier 2 privileged CPU ops (`hw_lidt`, `hw_sti`, `hw_hlt`, `hw_flush_tlb`), serial port (`serial_init`, `serial_putchar`, `serial_print`), and interrupt infrastructure (`pic_remap`, `pit_init`). Tiers 1-2 COMPLETE (Sessions 58-59). Tier 3: serial + PIC + PIT COMPLETE (Sessions 60-61). Zero inline asm in kernel_main.c or framebuffer.h. Tier 3 remainder (mouse) + Tiers 4-5 remain across sessions 62-63+. See Phase 2 Migration Plan section.
 4. **Compositor / window manager** -- Container regions have fixed positions. Next step: layout tensions that compute positions dynamically based on window count, size, and z-order. Moving toward a full compositor where HERB manages the window tree. Mouse interaction now available for drag-and-drop, resize, and window manipulation.
 5. **First real target** -- Pick the first real deliverable built entirely in HERB.
 6. **Vector scoped queries** -- Currently scoped match clauses require a scalar scope binding. Supporting vector scope bindings (nested loops) would enable "for each process, count its FDs" patterns.

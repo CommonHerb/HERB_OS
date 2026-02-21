@@ -7,6 +7,7 @@
 ; Session 59: outw, inw, outl, inl, io_wait (port I/O words/dwords)
 ;             hw_lidt, hw_sti, hw_hlt, hw_flush_tlb (privileged CPU ops)
 ; Session 60: serial_init, serial_putchar, serial_print (serial port)
+; Session 61: pic_remap, pit_init (interrupt infrastructure)
 ;
 ; Assembled with: nasm -f win64 herb_hw.asm -o herb_hw.o
 
@@ -32,6 +33,10 @@ global hw_flush_tlb
 global serial_init
 global serial_putchar
 global serial_print
+
+; Interrupt infrastructure (PIC + PIT)
+global pic_remap
+global pit_init
 
 section .text
 
@@ -205,4 +210,73 @@ serial_print:
 .done:
     add rsp, 32             ; restore shadow space
     pop rsi
+    ret
+
+; ============================================================
+; INTERRUPT INFRASTRUCTURE (PIC + PIT) — Tier 3
+; ============================================================
+
+; void pic_remap(void)
+; Remap 8259 PICs: master IRQ0-7 → vectors 0x20-0x27
+;                  slave  IRQ8-15 → vectors 0x28-0x2F
+; Unmask: IRQ0(timer), IRQ1(keyboard), IRQ2(cascade), IRQ12(mouse)
+pic_remap:
+    ; Drain pending data
+    in al, 0x21          ; read master data (discard)
+    in al, 0xA1          ; read slave data (discard)
+
+    ; ICW1: init + ICW4 needed
+    mov al, 0x11
+    out 0x20, al         ; master CMD
+    out 0x80, al         ; io_wait
+    out 0xA0, al         ; slave CMD
+    out 0x80, al         ; io_wait
+
+    ; ICW2: vector base addresses
+    mov al, 0x20
+    out 0x21, al         ; master: IRQ0 → vector 32
+    out 0x80, al         ; io_wait
+    mov al, 0x28
+    out 0xA1, al         ; slave: IRQ8 → vector 40
+    out 0x80, al         ; io_wait
+
+    ; ICW3: cascade wiring
+    mov al, 0x04
+    out 0x21, al         ; master: slave on IR2
+    out 0x80, al         ; io_wait
+    mov al, 0x02
+    out 0xA1, al         ; slave: cascade identity 2
+    out 0x80, al         ; io_wait
+
+    ; ICW4: 8086 mode
+    mov al, 0x01
+    out 0x21, al         ; master
+    out 0x80, al         ; io_wait
+    out 0xA1, al         ; slave (same value)
+    out 0x80, al         ; io_wait
+
+    ; IMR: interrupt masks
+    mov al, 0xF8         ; 11111000 → unmask IRQ0,1,2
+    out 0x21, al
+    mov al, 0xEF         ; 11101111 → unmask IRQ12 (bit 4 on slave)
+    out 0xA1, al
+    ret
+
+; void pit_init(int hz)
+; MS x64: ecx = frequency in Hz
+; Programs PIT channel 0: mode 3 (square wave), 16-bit divisor
+pit_init:
+    mov eax, 1193182     ; PIT base frequency
+    xor edx, edx         ; zero-extend for div
+    div ecx              ; eax = 1193182 / hz
+    mov ecx, eax         ; save divisor
+
+    mov al, 0x36         ; channel 0, lobyte/hibyte, mode 3, binary
+    out 0x43, al         ; PIT command port
+
+    mov al, cl           ; divisor low byte
+    out 0x40, al         ; PIT channel 0 data
+
+    mov al, ch           ; divisor high byte
+    out 0x40, al
     ret
