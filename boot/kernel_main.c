@@ -222,29 +222,10 @@ extern void hw_hlt(void);
  * SERIAL PORT (COM1: 0x3F8)
  * ============================================================ */
 
-#define COM1 0x3F8
-
-static void serial_init(void) {
-    outb(COM1 + 1, 0x00);
-    outb(COM1 + 3, 0x80);
-    outb(COM1 + 0, 0x01);
-    outb(COM1 + 1, 0x00);
-    outb(COM1 + 3, 0x03);
-    outb(COM1 + 2, 0xC7);
-    outb(COM1 + 4, 0x0B);
-}
-
-static void serial_putchar(char c) {
-    while (!(inb(COM1 + 5) & 0x20));
-    outb(COM1, (uint8_t)c);
-}
-
-static void serial_print(const char* s) {
-    while (*s) {
-        if (*s == '\n') serial_putchar('\r');
-        serial_putchar(*s++);
-    }
-}
+/* Serial port — implemented in herb_hw.asm (Phase 2, Session 60) */
+extern void serial_init(void);
+extern void serial_putchar(char c);
+extern void serial_print(const char* s);
 
 static void serial_print_int(int val) {
     char buf[16];

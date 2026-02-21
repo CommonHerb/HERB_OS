@@ -243,7 +243,7 @@ If any answer is unfavorable — stop, rethink, and find something better.
 
 ## STATUS
 
-**Last updated:** February 20, 2026 (Session 59 -- Tier 1+2 Assembly Migration)
+**Last updated:** February 20, 2026 (Session 60 -- Serial Port to Assembly)
 
 ### What Works
 - MOVE primitive with containers, MoveTypes, slot constraints, provenance (`src/herb_move.py`)
@@ -296,6 +296,7 @@ If any answer is unfavorable — stop, rethink, and find something better.
 - **Phase 1 Complete: Help Text as HERB Entities (Session 57)** -- Final C→HERB behavioral migration. Help text (action==30 in handle_shell_action) migrated from hardcoded C strings to 7 HelpCmd entities in a HELP_TEXT container (display module) with `cmd_text` (string) and `order` (int) properties. C iterates entities sorted by order, printing comma-separated command names to serial. Same sort-and-iterate pattern as Legend (Session 56). With this migration, `handle_shell_action()` is entirely mechanism: every branch either delegates to HERB spawn policy, performs hardware I/O (binary loading), iterates HERB entities for output, or logs debug messages. **Phase 1 Migration Inventory: 14/14 COMPLETE.** Sessions 51-57 migrated every behavioral decision from C to HERB tensions/entities. Kernel binary: 10,988 bytes. 119KB graphics image (119,296 bytes). 110 entities, 37 containers. 41 system tensions + 9 shell tensions + dynamic per-process tensions. 748 tests (127 bare metal + 591 Python + 17 API + 13 cross-format). (`programs/interactive_kernel.herb.json` HelpCmd entities + HELP_TEXT container, `boot/kernel_main.c` CN_HELP_TEXT + entity iteration for action==30)
 - **Phase 2 Begin: Assembly Foundation (Session 58)** -- First C mechanism → assembly migration. `inb` and `outb` (port I/O primitives) moved from inline asm in kernel_main.c to `boot/herb_hw.asm` — a new NASM file that will accumulate all hardware-touching assembly as Phase 2 progresses. Microsoft x64 ABI calling convention (rcx, rdx parameters). `io_wait()` stays as C calling the extern `outb`. Build pipeline: `nasm -f win64 herb_hw.asm -o herb_hw.o`, linked alongside kernel_entry.o and other objects. **Unexpected win:** removing inline asm constraints let GCC optimize more aggressively — graphics image dropped from 119KB to 108KB (11KB / ~9% reduction) with zero behavioral change. 127/127 bare metal tests pass. Full Phase 2 hardware audit completed: ~600 bytes of hardware-mandatory assembly total, organized into 6 tiers by complexity. Session-by-session migration plan documented through Session 63+. (`boot/herb_hw.asm` NEW, `boot/Makefile` herb_hw.o integration, `boot/kernel_main.c` extern declarations replace inline asm)
 - **Tier 1+2 Assembly Migration (Session 59)** -- Completed all Tier 1 and Tier 2 hardware function migrations. 9 new assembly functions in `boot/herb_hw.asm`: port I/O (`outw`, `inw`, `outl`, `inl`, `io_wait`) and privileged CPU operations (`hw_lidt`, `hw_sti`, `hw_hlt`, `hw_flush_tlb`). Naming convention: bare names for port I/O (consistent with `outb`/`inb`), `hw_` prefix for privileged CPU ops. Replaced all `static inline` functions with `__asm__ volatile` in `framebuffer.h` (4 port I/O functions + CR3 TLB flush) and all inline asm in `kernel_main.c` (`io_wait`, LIDT in `idt_install()`, STI, HLT×2). **Zero inline asm remains in kernel_main.c or framebuffer.h** — all hardware assembly is now consolidated in `herb_hw.asm` (11 functions total). Image stable at 108KB (108,032 bytes). 748 tests pass (127 bare metal + 591 Python + 17 API + 13 cross-format). (`boot/herb_hw.asm` 9 new functions, `boot/framebuffer.h` extern declarations + hw_flush_tlb, `boot/kernel_main.c` extern declarations + hw_lidt/hw_sti/hw_hlt calls)
+- **Serial Port to Assembly (Session 60)** -- Tier 3 Part 1: serial port functions migrated from C to assembly. 3 new functions in `boot/herb_hw.asm`: `serial_init` (7 direct port writes configuring COM1 UART at 115200 baud 8N1), `serial_putchar` (poll LSR bit 5 + transmit, inline port ops), `serial_print` (string loop with `\n`→`\r\n` translation, calls `serial_putchar`). All use inline `out dx, al` / `in al, dx` directly — no function call overhead for port ops within the same function. `serial_print_int` stays in C as thin wrapper (formats via `herb_snprintf` then calls extern `serial_print`). `COM1` define removed from C (no longer referenced). **herb_hw.asm now has 14 functions** (was 11). `fb_init_display()` stays in C — it's algorithmic (PCI scanning, page tables, conditionals), not a hardware recipe; its port I/O already routes through assembly `outw`/`inw`. Image stable at 108KB (108,032 bytes). 748 tests pass. **Discovery 39: Init sequences are hardware scripts, not algorithms.** (`boot/herb_hw.asm` 3 new functions, `boot/kernel_main.c` extern declarations replace static definitions)
 - **Cross-runtime equivalence** -- same program loaded in Python and C produces identical final states under identical signal sequences; proven for FIFO scheduler, priority scheduler, DOM layout pipeline, **multi-process OS (scoped containers), economy (conservation pools), IPC (channels + duplication), and four-module kernel (all features combined)**; **freestanding runtime proven equivalent (10/10 match)**; **cross-format equivalence: .herb binary and .herb.json produce identical state for all 10 programs (13/13 test scenarios)**
 - Autonomous process schedulers: FIFO (`src/herb_scheduler.py`) AND priority-based (`src/herb_scheduler_priority.py`)
 - Browser DOM layout pipeline as pure HERB data (`src/herb_dom.py`)
@@ -1366,19 +1367,19 @@ Phase 1 moved all behavioral decisions from C to HERB. Phase 2 replaces the C me
 
 | Function | File | Port I/O Count | Target |
 |----------|------|----------------|--------|
-| `serial_init()` | kernel_main.c | 7 outb | Session 60 |
+| `serial_init()` | ~~kernel_main.c~~ herb_hw.asm | 7 outb | **Session 60 DONE** |
 | `pit_init(hz)` | kernel_main.c | 3 outb | Session 61 |
 | `pic_remap()` | kernel_main.c | 11 outb+inb+io_wait | Session 61 |
 | `mouse_init()` | kernel_main.c | ~8 commands + waits | Session 62 |
-| `fb_init_display()` | framebuffer.h | BGA register writes | Session 60 |
+| `fb_init_display()` | framebuffer.h | BGA register writes | Stays in C (algorithmic) |
 
 **Tier 4: Device Driver Protocols — runtime (~180 bytes asm)**
 
 | Function | File | Operation | Target |
 |----------|------|-----------|--------|
-| `serial_putchar(c)` | kernel_main.c | poll + outb | Session 60 |
-| `serial_print(s)` | kernel_main.c | loop over putchar | Session 60 |
-| `serial_print_int(n)` | kernel_main.c | format + print | Session 60 |
+| `serial_putchar(c)` | ~~kernel_main.c~~ herb_hw.asm | poll + outb | **Session 60 DONE** |
+| `serial_print(s)` | ~~kernel_main.c~~ herb_hw.asm | loop over putchar | **Session 60 DONE** |
+| `serial_print_int(n)` | kernel_main.c | format + print (C wrapper) | Stays in C |
 | `ps2_wait_input()` | kernel_main.c | poll port 0x64 | Session 62 |
 | `ps2_wait_output()` | kernel_main.c | poll port 0x64 | Session 62 |
 | `mouse_write(data)` | kernel_main.c | PS/2 command protocol | Session 62 |
@@ -1406,10 +1407,10 @@ These are memory stores, not port I/O. C handles them fine. Assembly migration h
 
 | Category | Bytes | Status |
 |----------|-------|--------|
-| Port I/O primitives (Tier 1) | ~30 | **2/7 DONE** |
-| Privileged ops (Tier 2) | ~40 | Pending |
-| Init sequences (Tier 3) | ~350 | Pending |
-| Device protocols (Tier 4) | ~180 | Pending |
+| Port I/O primitives (Tier 1) | ~30 | **7/7 DONE** |
+| Privileged ops (Tier 2) | ~40 | **4/4 DONE** |
+| Init sequences (Tier 3) | ~350 | **1/5 DONE** (serial_init) |
+| Device protocols (Tier 4) | ~180 | **2/7 DONE** (serial_putchar, serial_print) |
 | **Total hardware-mandatory** | **~600** | |
 | MMIO rendering (Tier 5, optional) | ~200-400 | |
 | **Total with MMIO** | **~800-1000** | |
@@ -1418,9 +1419,9 @@ These are memory stores, not port I/O. C handles them fine. Assembly migration h
 
 | Session | Scope | Bytes |
 |---------|-------|-------|
-| **58 (THIS)** | `inb`, `outb` → herb_hw.asm. Audit + plan. | ~30 |
-| **59** | `outw`, `inw`, `outl`, `inl`, `io_wait`, `idt_install` LIDT, STI/HLT, CR3 flush | ~70 |
-| **60** | Serial port: `serial_init`, `serial_putchar`, `serial_print`, `serial_print_int`. BGA init. | ~150 |
+| **58** | `inb`, `outb` → herb_hw.asm. Audit + plan. | ~30 | **DONE** |
+| **59** | `outw`, `inw`, `outl`, `inl`, `io_wait`, LIDT, STI/HLT, CR3 flush | ~70 | **DONE** |
+| **60** | Serial port: `serial_init`, `serial_putchar`, `serial_print`. BGA stays in C. | ~150 | **DONE** |
 | **61** | Timer + PIC: `pit_init`, `pic_remap`, `idt_set_gate` | ~150 |
 | **62** | PS/2 mouse: `ps2_wait_*`, `mouse_write`, `mouse_read`, `mouse_init` | ~200 |
 | **63+** | Optional MMIO: VGA text, `fb_flip` SIMD, framebuffer primitives | ~200-400 |
