@@ -315,13 +315,13 @@
     },
     {
       "module": "display",
-      "exports": ["Surface", "DisplayCtl", "Legend", "VISIBLE", "HIDDEN", "SURFACE", "DISPLAY_STATE", "LEGEND", "show_surface", "hide_surface"],
+      "exports": ["Surface", "DisplayCtl", "Legend", "HelpCmd", "VISIBLE", "HIDDEN", "SURFACE", "DISPLAY_STATE", "LEGEND", "HELP_TEXT", "show_surface", "hide_surface"],
       "imports": [
         "proc.Process", "proc.CPU0", "proc.READY", "proc.BLOCKED", "proc.TERMINATED",
         "proc.CLICK_SIG", "proc.SIG_DONE", "proc.consume_signal",
         "input.InputCtl", "input.INPUT_STATE"
       ],
-      "entity_types": [{"name": "Surface"}, {"name": "DisplayCtl"}, {"name": "Legend"}],
+      "entity_types": [{"name": "Surface"}, {"name": "DisplayCtl"}, {"name": "Legend"}, {"name": "HelpCmd"}],
       "entity_type_extensions": [
         {
           "extend": "Process",
@@ -334,7 +334,8 @@
         {"name": "VISIBLE",       "kind": "simple", "entity_type": "Surface"},
         {"name": "HIDDEN",        "kind": "simple", "entity_type": "Surface"},
         {"name": "DISPLAY_STATE", "kind": "slot",   "entity_type": "DisplayCtl"},
-        {"name": "LEGEND",        "kind": "simple", "entity_type": "Legend"}
+        {"name": "LEGEND",        "kind": "simple", "entity_type": "Legend"},
+        {"name": "HELP_TEXT",    "kind": "simple", "entity_type": "HelpCmd"}
       ],
       "moves": [
         {"name": "show_surface", "from": ["HIDDEN"], "to": ["VISIBLE"], "entity_type": "Surface"},
@@ -882,6 +883,14 @@
     {"name": "leg_dis",   "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 12, "key_text": "D",  "label_text": "is"}},
     {"name": "leg_swap",  "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 13, "key_text": "S",  "label_text": "wap"}},
     {"name": "leg_cmd",   "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 14, "key_text": "/",  "label_text": "Cmd"}},
+
+    {"name": "help_kill",    "type": "display.HelpCmd", "in": "display.HELP_TEXT", "properties": {"order": 1, "cmd_text": "kill"}},
+    {"name": "help_load",    "type": "display.HelpCmd", "in": "display.HELP_TEXT", "properties": {"order": 2, "cmd_text": "load <producer|consumer|worker|beacon>"}},
+    {"name": "help_swap",    "type": "display.HelpCmd", "in": "display.HELP_TEXT", "properties": {"order": 3, "cmd_text": "swap"}},
+    {"name": "help_list",    "type": "display.HelpCmd", "in": "display.HELP_TEXT", "properties": {"order": 4, "cmd_text": "list"}},
+    {"name": "help_help",    "type": "display.HelpCmd", "in": "display.HELP_TEXT", "properties": {"order": 5, "cmd_text": "help"}},
+    {"name": "help_block",   "type": "display.HelpCmd", "in": "display.HELP_TEXT", "properties": {"order": 6, "cmd_text": "block"}},
+    {"name": "help_unblock", "type": "display.HelpCmd", "in": "display.HELP_TEXT", "properties": {"order": 7, "cmd_text": "unblock"}},
 
     {"name": "input_ctl", "type": "input.InputCtl", "in": "input.INPUT_STATE",
      "properties": {"mode": 0, "submitted": 0, "pending_cmd": 0, "pending_arg": 0, "mech_action": 0, "panel_click": 0}},

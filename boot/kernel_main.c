@@ -73,6 +73,7 @@
   #define CN_SPAWN_STATE "spawn.SPAWN_STATE"
   #define CN_DISPLAY_STATE "display.DISPLAY_STATE"
   #define CN_LEGEND      "display.LEGEND"
+  #define CN_HELP_TEXT   "display.HELP_TEXT"
   #define ET_SHELLCTL    "input.ShellCtl"
   #define ET_SPAWNCTL    "spawn.SpawnCtl"
   #define ET_PROCESS     "proc.Process"
@@ -2699,11 +2700,41 @@ static void handle_shell_action(void) {
         serial_print("\n");
         herb_snprintf(last_action, sizeof(last_action), "Shell: list (see serial)");
     } else if (action == 30) {
-        /* Help */
+        /* Help — iterate HERB HelpCmd entities (Session 57) */
         serial_print("[SHELL] help\n");
-        serial_print("[HELP] Commands: kill, load <producer|consumer|worker|beacon>, swap, list, help, block, unblock\n");
-        herb_snprintf(last_action, sizeof(last_action),
-            "Shell: kill load swap list help block unblock");
+        serial_print("[HELP] Commands: ");
+#ifdef KERNEL_MODE
+        {
+            int hn = herb_container_count(CN_HELP_TEXT);
+            if (hn > 0) {
+                int hids[16], hords[16], hcount = 0;
+                for (int i = 0; i < hn && hcount < 16; i++) {
+                    int eid = herb_container_entity(CN_HELP_TEXT, i);
+                    if (eid >= 0) {
+                        hids[hcount] = eid;
+                        hords[hcount] = (int)herb_entity_prop_int(eid, "order", 99);
+                        hcount++;
+                    }
+                }
+                /* Insertion sort by order */
+                for (int i = 1; i < hcount; i++) {
+                    int ko = hords[i], ki = hids[i], j = i - 1;
+                    while (j >= 0 && hords[j] > ko) {
+                        hords[j+1] = hords[j]; hids[j+1] = hids[j]; j--;
+                    }
+                    hords[j+1] = ko; hids[j+1] = ki;
+                }
+                for (int i = 0; i < hcount; i++) {
+                    if (i > 0) serial_print(", ");
+                    serial_print(herb_entity_prop_str(hids[i], "cmd_text", "?"));
+                }
+            }
+        }
+#else
+        serial_print("kill, load <producer|consumer|worker|beacon>, swap, list, help, block, unblock");
+#endif
+        serial_print("\n");
+        herb_snprintf(last_action, sizeof(last_action), "Shell: help");
     } else if (action == 40) {
         /* Spawn (auto-select): 'n' key → do_spawn → action=40 */
         serial_print("[SHELL] spawn auto\n");
