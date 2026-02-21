@@ -2813,6 +2813,19 @@ int64_t herb_entity_prop_int(int entity_id, const char* property, int64_t defaul
     return default_val;
 }
 
+/* Get a string property value from an entity. Returns default if missing or wrong type. */
+const char* herb_entity_prop_str(int entity_id, const char* property, const char* default_val) {
+    if (entity_id < 0 || entity_id >= g_graph.entity_count) return default_val;
+    Entity* e = &g_graph.entities[entity_id];
+    int key = intern(property);
+    for (int i = 0; i < e->prop_count; i++) {
+        if (e->prop_keys[i] == key && e->prop_vals[i].type == PV_STRING) {
+            return str_of(e->prop_vals[i].s);
+        }
+    }
+    return default_val;
+}
+
 /* Get the container name where an entity is located. */
 const char* herb_entity_location(int entity_id) {
     if (entity_id < 0 || entity_id >= g_graph.entity_count) return "?";

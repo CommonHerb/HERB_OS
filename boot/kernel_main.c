@@ -72,6 +72,7 @@
   #define CN_SHELL_STATE "input.SHELL_STATE"
   #define CN_SPAWN_STATE "spawn.SPAWN_STATE"
   #define CN_DISPLAY_STATE "display.DISPLAY_STATE"
+  #define CN_LEGEND      "display.LEGEND"
   #define ET_SHELLCTL    "input.ShellCtl"
   #define ET_SPAWNCTL    "spawn.SpawnCtl"
   #define ET_PROCESS     "proc.Process"
@@ -116,6 +117,7 @@ extern int herb_container_count(const char* container);
 extern int herb_container_entity(const char* container, int idx);
 extern const char* herb_entity_name(int entity_id);
 extern int64_t herb_entity_prop_int(int entity_id, const char* property, int64_t default_val);
+extern const char* herb_entity_prop_str(int entity_id, const char* property, const char* default_val);
 extern const char* herb_entity_location(int entity_id);
 extern int herb_entity_total(void);
 extern herb_size_t herb_arena_usage(void);
@@ -661,7 +663,9 @@ static int spawn_ctl_eid = -1;  /* SpawnCtl entity ID (tracks spawn decisions) *
 
 /* Display control state (Session 55) */
 #ifdef KERNEL_MODE
-static int display_ctl_eid = -1;  /* DisplayCtl entity ID (max_terminated, max_procs_per_region) */
+static int display_ctl_eid = -1;  /* DisplayCtl entity ID (max_terminated, max_procs_per_region, timer_interval, buffer_capacity) */
+static int timer_interval = 300;  /* Auto-timer interval in ticks (read from DisplayCtl at boot) */
+static int buffer_capacity = 20;  /* Shared buffer max capacity (read from DisplayCtl at boot) */
 #endif
 
 /* ============================================================
@@ -733,8 +737,49 @@ static void draw_stats(void) {
  * DRAW: Command legend
  * ============================================================ */
 static void draw_legend(void) {
-    vga_set_color(VGA_YELLOW, VGA_BLACK);
     vga_clear_row(ROW_LEGEND);
+#ifdef KERNEL_MODE
+    /* Legend derived from HERB LEGEND entities (Session 56) */
+    int n = herb_container_count(CN_LEGEND);
+    if (n <= 0) return;
+    /* Sort by order: collect entity IDs and sort by order property */
+    int ids[32];
+    int orders[32];
+    int count = 0;
+    for (int i = 0; i < n && count < 32; i++) {
+        int eid = herb_container_entity(CN_LEGEND, i);
+        if (eid >= 0) {
+            ids[count] = eid;
+            orders[count] = (int)herb_entity_prop_int(eid, "order", 99);
+            count++;
+        }
+    }
+    /* Simple insertion sort by order */
+    for (int i = 1; i < count; i++) {
+        int key_o = orders[i], key_id = ids[i];
+        int j = i - 1;
+        while (j >= 0 && orders[j] > key_o) {
+            orders[j+1] = orders[j];
+            ids[j+1] = ids[j];
+            j--;
+        }
+        orders[j+1] = key_o;
+        ids[j+1] = key_id;
+    }
+    /* Render: yellow key + gray label + space */
+    int first = 1;
+    for (int i = 0; i < count; i++) {
+        const char* key = herb_entity_prop_str(ids[i], "key_text", "?");
+        const char* label = herb_entity_prop_str(ids[i], "label_text", "");
+        vga_set_color(VGA_YELLOW, VGA_BLACK);
+        if (first) { vga_print_at(ROW_LEGEND, 1, key); first = 0; }
+        else vga_print(key);
+        vga_set_color(VGA_LGRAY, VGA_BLACK);
+        vga_print(label);
+        vga_print(" ");
+    }
+#else
+    vga_set_color(VGA_YELLOW, VGA_BLACK);
     vga_print_at(ROW_LEGEND, 1, "N");
     vga_set_color(VGA_LGRAY, VGA_BLACK);
     vga_print("ew ");
@@ -754,44 +799,6 @@ static void draw_legend(void) {
     vga_print("T");
     vga_set_color(VGA_LGRAY, VGA_BLACK);
     vga_print("mr ");
-#ifdef KERNEL_MODE
-    vga_set_color(VGA_YELLOW, VGA_BLACK);
-    vga_print("A");
-    vga_set_color(VGA_LGRAY, VGA_BLACK);
-    vga_print("loc ");
-    vga_set_color(VGA_YELLOW, VGA_BLACK);
-    vga_print("O");
-    vga_set_color(VGA_LGRAY, VGA_BLACK);
-    vga_print("pen ");
-    vga_set_color(VGA_YELLOW, VGA_BLACK);
-    vga_print("F");
-    vga_set_color(VGA_LGRAY, VGA_BLACK);
-    vga_print("ree ");
-    vga_set_color(VGA_YELLOW, VGA_BLACK);
-    vga_print("C");
-    vga_set_color(VGA_LGRAY, VGA_BLACK);
-    vga_print("lose ");
-    vga_set_color(VGA_YELLOW, VGA_BLACK);
-    vga_print("M");
-    vga_set_color(VGA_LGRAY, VGA_BLACK);
-    vga_print("sg ");
-    vga_set_color(VGA_YELLOW, VGA_BLACK);
-    vga_print("[]");
-    vga_set_color(VGA_LGRAY, VGA_BLACK);
-    vga_print("sel ");
-    vga_set_color(VGA_YELLOW, VGA_BLACK);
-    vga_print("D");
-    vga_set_color(VGA_LGRAY, VGA_BLACK);
-    vga_print("is ");
-    vga_set_color(VGA_YELLOW, VGA_BLACK);
-    vga_print("S");
-    vga_set_color(VGA_LGRAY, VGA_BLACK);
-    vga_print("wap ");
-    vga_set_color(VGA_YELLOW, VGA_BLACK);
-    vga_print("/");
-    vga_set_color(VGA_LGRAY, VGA_BLACK);
-    vga_print("Cmd");
-#else
     vga_set_color(VGA_YELLOW, VGA_BLACK);
     vga_print("+");
     vga_set_color(VGA_LGRAY, VGA_BLACK);
@@ -1399,10 +1406,44 @@ static void gfx_draw_full(void) {
         }
     }
 
-    /* ---- Key legend ---- */
+    /* ---- Key legend (derived from HERB LEGEND entities, Session 56) ---- */
     fb_fill_rect(0, GFX_LEGEND_Y, FB_WIDTH, GFX_LEGEND_H, COL_LEGEND_BG);
     {
         int x = 12;
+#ifdef KERNEL_MODE
+        int n = herb_container_count(CN_LEGEND);
+        if (n > 0) {
+            int ids[32];
+            int orders[32];
+            int count = 0;
+            for (int i = 0; i < n && count < 32; i++) {
+                int eid = herb_container_entity(CN_LEGEND, i);
+                if (eid >= 0) {
+                    ids[count] = eid;
+                    orders[count] = (int)herb_entity_prop_int(eid, "order", 99);
+                    count++;
+                }
+            }
+            for (int i = 1; i < count; i++) {
+                int key_o = orders[i], key_id = ids[i];
+                int j = i - 1;
+                while (j >= 0 && orders[j] > key_o) {
+                    orders[j+1] = orders[j];
+                    ids[j+1] = ids[j];
+                    j--;
+                }
+                orders[j+1] = key_o;
+                ids[j+1] = key_id;
+            }
+            for (int i = 0; i < count; i++) {
+                const char* key = herb_entity_prop_str(ids[i], "key_text", "?");
+                const char* label = herb_entity_prop_str(ids[i], "label_text", "");
+                x = fb_draw_string(x, GFX_LEGEND_Y + 3, key, COL_TEXT_KEY, COL_LEGEND_BG);
+                x = fb_draw_string(x, GFX_LEGEND_Y + 3, label, COL_TEXT_DIM, COL_LEGEND_BG);
+                x = fb_draw_string(x, GFX_LEGEND_Y + 3, " ", COL_TEXT_DIM, COL_LEGEND_BG);
+            }
+        }
+#else
         x = fb_draw_string(x, GFX_LEGEND_Y + 3, "N", COL_TEXT_KEY, COL_LEGEND_BG);
         x = fb_draw_string(x, GFX_LEGEND_Y + 3, "ew ", COL_TEXT_DIM, COL_LEGEND_BG);
         x = fb_draw_string(x, GFX_LEGEND_Y + 3, "K", COL_TEXT_KEY, COL_LEGEND_BG);
@@ -1413,26 +1454,6 @@ static void gfx_draw_full(void) {
         x = fb_draw_string(x, GFX_LEGEND_Y + 3, "nblk ", COL_TEXT_DIM, COL_LEGEND_BG);
         x = fb_draw_string(x, GFX_LEGEND_Y + 3, "T", COL_TEXT_KEY, COL_LEGEND_BG);
         x = fb_draw_string(x, GFX_LEGEND_Y + 3, "mr ", COL_TEXT_DIM, COL_LEGEND_BG);
-#ifdef KERNEL_MODE
-        x = fb_draw_string(x, GFX_LEGEND_Y + 3, "A", COL_TEXT_KEY, COL_LEGEND_BG);
-        x = fb_draw_string(x, GFX_LEGEND_Y + 3, "loc ", COL_TEXT_DIM, COL_LEGEND_BG);
-        x = fb_draw_string(x, GFX_LEGEND_Y + 3, "O", COL_TEXT_KEY, COL_LEGEND_BG);
-        x = fb_draw_string(x, GFX_LEGEND_Y + 3, "pen ", COL_TEXT_DIM, COL_LEGEND_BG);
-        x = fb_draw_string(x, GFX_LEGEND_Y + 3, "F", COL_TEXT_KEY, COL_LEGEND_BG);
-        x = fb_draw_string(x, GFX_LEGEND_Y + 3, "ree ", COL_TEXT_DIM, COL_LEGEND_BG);
-        x = fb_draw_string(x, GFX_LEGEND_Y + 3, "C", COL_TEXT_KEY, COL_LEGEND_BG);
-        x = fb_draw_string(x, GFX_LEGEND_Y + 3, "lose ", COL_TEXT_DIM, COL_LEGEND_BG);
-        x = fb_draw_string(x, GFX_LEGEND_Y + 3, "M", COL_TEXT_KEY, COL_LEGEND_BG);
-        x = fb_draw_string(x, GFX_LEGEND_Y + 3, "sg ", COL_TEXT_DIM, COL_LEGEND_BG);
-        x = fb_draw_string(x, GFX_LEGEND_Y + 3, "[]", COL_TEXT_KEY, COL_LEGEND_BG);
-        x = fb_draw_string(x, GFX_LEGEND_Y + 3, "sel ", COL_TEXT_DIM, COL_LEGEND_BG);
-        x = fb_draw_string(x, GFX_LEGEND_Y + 3, "D", COL_TEXT_KEY, COL_LEGEND_BG);
-        x = fb_draw_string(x, GFX_LEGEND_Y + 3, "is ", COL_TEXT_DIM, COL_LEGEND_BG);
-        x = fb_draw_string(x, GFX_LEGEND_Y + 3, "S", COL_TEXT_KEY, COL_LEGEND_BG);
-        x = fb_draw_string(x, GFX_LEGEND_Y + 3, "wap ", COL_TEXT_DIM, COL_LEGEND_BG);
-        x = fb_draw_string(x, GFX_LEGEND_Y + 3, "/", COL_TEXT_KEY, COL_LEGEND_BG);
-        fb_draw_string(x, GFX_LEGEND_Y + 3, "Cmd", COL_TEXT_DIM, COL_LEGEND_BG);
-#else
         x = fb_draw_string(x, GFX_LEGEND_Y + 3, "+", COL_TEXT_KEY, COL_LEGEND_BG);
         x = fb_draw_string(x, GFX_LEGEND_Y + 3, "Boost ", COL_TEXT_DIM, COL_LEGEND_BG);
         x = fb_draw_string(x, GFX_LEGEND_Y + 3, "Space", COL_TEXT_KEY, COL_LEGEND_BG);
@@ -1725,9 +1746,7 @@ static void make_sig_name(char* buf, int bufsz, const char* prefix) {
  * Additional: worker, beacon (available as .herb files).
  * ============================================================ */
 
-#ifdef KERNEL_MODE
-#define BUFFER_CAPACITY 20
-#endif /* KERNEL_MODE */
+/* buffer_capacity removed Session 56 — now read from DisplayCtl.buffer_capacity */
 
 /* Report buffer state to serial (called after any herb_run) */
 static void report_buffer_state(void) {
@@ -2973,9 +2992,9 @@ void kernel_main(void) {
         buffer_eid = herb_create("shared_buffer", ET_BUFFER, CN_BUFFER);
         if (buffer_eid >= 0) {
             herb_set_prop_int(buffer_eid, "count", 0);
-            herb_set_prop_int(buffer_eid, "capacity", BUFFER_CAPACITY);
+            herb_set_prop_int(buffer_eid, "capacity", buffer_capacity);
             serial_print("  Buffer created (capacity=");
-            serial_print_int(BUFFER_CAPACITY);
+            serial_print_int(buffer_capacity);
             serial_print(")\n");
         }
     }
@@ -2992,7 +3011,7 @@ void kernel_main(void) {
             herb_set_prop_int(shell_eid, "time_slice", 3);
             herb_set_prop_int(shell_eid, "msgs_received", 0);
             herb_set_prop_int(shell_eid, "selected", 0);
-            herb_set_prop_int(shell_eid, "protected", 1);
+            /* protected value set after shell_ctl discovery (Session 56) */
 
             /* Create scoped resources (minimal — shell doesn't need them) */
             char cname[64], rname[64];
@@ -3043,6 +3062,11 @@ void kernel_main(void) {
                 serial_print("  Shell control entity found (id=");
                 serial_print_int(sid);
                 serial_print(")\n");
+                /* Set shell protection from HERB state (Session 56) */
+                if (shell_eid >= 0) {
+                    int prot = (int)herb_entity_prop_int(sid, "shell_protected", 1);
+                    herb_set_prop_int(shell_eid, "protected", prot);
+                }
                 break;
             }
         }
@@ -3073,6 +3097,14 @@ void kernel_main(void) {
                 serial_print("  Display control entity found (id=");
                 serial_print_int(sid);
                 serial_print(")\n");
+                /* Cache system parameters from HERB (Session 56) */
+                timer_interval = (int)herb_entity_prop_int(sid, "timer_interval", 300);
+                buffer_capacity = (int)herb_entity_prop_int(sid, "buffer_capacity", 20);
+                serial_print("  timer_interval=");
+                serial_print_int(timer_interval);
+                serial_print(" buffer_capacity=");
+                serial_print_int(buffer_capacity);
+                serial_print("\n");
                 break;
             }
         }
@@ -3117,8 +3149,8 @@ void kernel_main(void) {
             volatile_timer_fired = 0;
             timer_count++;
 
-            /* Auto-timer every 3 seconds */
-            if (timer_count % 300 == 0) {
+            /* Auto-timer at HERB-configured interval (Session 56) */
+            if (timer_interval > 0 && timer_count % timer_interval == 0) {
                 cmd_timer();
                 draw_full();
             }

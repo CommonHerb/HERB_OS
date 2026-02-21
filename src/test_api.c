@@ -47,7 +47,7 @@ int main(int argc, char** argv) {
     printf("  CPU0 count=%d\n", cpu_n);
     CHECK(cpu_n == 1, "one process running after boot");
 
-    int ready_n = herb_container_count("READY");
+    int ready_n = herb_container_count("READY_QUEUE");
     printf("  READY count=%d\n", ready_n);
     CHECK(ready_n >= 1, "some processes still ready");
 
@@ -80,7 +80,7 @@ int main(int argc, char** argv) {
     CHECK(total >= 4, "at least 4 entities (4 processes)");
 
     printf("\n=== Test 7: herb_create + herb_set_prop_int ===\n");
-    int new_eid = herb_create("test_p", "Process", "READY");
+    int new_eid = herb_create("test_p", "Process", "READY_QUEUE");
     CHECK(new_eid >= 0, "create returns valid entity id");
 
     int rc = herb_set_prop_int(new_eid, "priority", 99);
@@ -95,8 +95,8 @@ int main(int argc, char** argv) {
     printf("\n=== Test 8: Created process gets scheduled ===\n");
     /* test_p has priority 99, higher than anything. It should get scheduled
        if we preempt the current running process (or if CPU0 is open). */
-    /* First kill signal to open CPU0 */
-    herb_create("ks1", "Signal", "KILL_SIG");
+    /* Force preemption by draining time_slice, then reschedule */
+    herb_set_prop_int(eid, "time_slice", 0);
     ops = herb_run(100);
     printf("  kill+schedule ops=%d\n", ops);
 

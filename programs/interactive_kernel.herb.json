@@ -315,13 +315,13 @@
     },
     {
       "module": "display",
-      "exports": ["Surface", "DisplayCtl", "VISIBLE", "HIDDEN", "SURFACE", "DISPLAY_STATE", "show_surface", "hide_surface"],
+      "exports": ["Surface", "DisplayCtl", "Legend", "VISIBLE", "HIDDEN", "SURFACE", "DISPLAY_STATE", "LEGEND", "show_surface", "hide_surface"],
       "imports": [
         "proc.Process", "proc.CPU0", "proc.READY", "proc.BLOCKED", "proc.TERMINATED",
         "proc.CLICK_SIG", "proc.SIG_DONE", "proc.consume_signal",
         "input.InputCtl", "input.INPUT_STATE"
       ],
-      "entity_types": [{"name": "Surface"}, {"name": "DisplayCtl"}],
+      "entity_types": [{"name": "Surface"}, {"name": "DisplayCtl"}, {"name": "Legend"}],
       "entity_type_extensions": [
         {
           "extend": "Process",
@@ -333,7 +333,8 @@
       "containers": [
         {"name": "VISIBLE",       "kind": "simple", "entity_type": "Surface"},
         {"name": "HIDDEN",        "kind": "simple", "entity_type": "Surface"},
-        {"name": "DISPLAY_STATE", "kind": "slot",   "entity_type": "DisplayCtl"}
+        {"name": "DISPLAY_STATE", "kind": "slot",   "entity_type": "DisplayCtl"},
+        {"name": "LEGEND",        "kind": "simple", "entity_type": "Legend"}
       ],
       "moves": [
         {"name": "show_surface", "from": ["HIDDEN"], "to": ["VISIBLE"], "entity_type": "Surface"},
@@ -865,13 +866,28 @@
      "properties": {"kind": 4, "region_id": 4, "x": 548, "y": 98, "width": 244, "height": 350}},
 
     {"name": "display_ctl", "type": "display.DisplayCtl", "in": "display.DISPLAY_STATE",
-     "properties": {"max_terminated": 3, "max_procs_per_region": 12}},
+     "properties": {"max_terminated": 3, "max_procs_per_region": 12, "timer_interval": 300, "buffer_capacity": 20}},
+
+    {"name": "leg_new",   "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 1,  "key_text": "N",  "label_text": "ew"}},
+    {"name": "leg_kill",  "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 2,  "key_text": "K",  "label_text": "ill"}},
+    {"name": "leg_blk",   "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 3,  "key_text": "B",  "label_text": "lk"}},
+    {"name": "leg_unblk", "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 4,  "key_text": "U",  "label_text": "nblk"}},
+    {"name": "leg_tmr",   "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 5,  "key_text": "T",  "label_text": "mr"}},
+    {"name": "leg_alloc", "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 6,  "key_text": "A",  "label_text": "loc"}},
+    {"name": "leg_open",  "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 7,  "key_text": "O",  "label_text": "pen"}},
+    {"name": "leg_free",  "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 8,  "key_text": "F",  "label_text": "ree"}},
+    {"name": "leg_close", "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 9,  "key_text": "C",  "label_text": "lose"}},
+    {"name": "leg_msg",   "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 10, "key_text": "M",  "label_text": "sg"}},
+    {"name": "leg_sel",   "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 11, "key_text": "[]", "label_text": "sel"}},
+    {"name": "leg_dis",   "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 12, "key_text": "D",  "label_text": "is"}},
+    {"name": "leg_swap",  "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 13, "key_text": "S",  "label_text": "wap"}},
+    {"name": "leg_cmd",   "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 14, "key_text": "/",  "label_text": "Cmd"}},
 
     {"name": "input_ctl", "type": "input.InputCtl", "in": "input.INPUT_STATE",
      "properties": {"mode": 0, "submitted": 0, "pending_cmd": 0, "pending_arg": 0, "mech_action": 0, "panel_click": 0}},
 
     {"name": "shell_ctl", "type": "input.ShellCtl", "in": "input.SHELL_STATE",
-     "properties": {"action": 0}},
+     "properties": {"action": 0, "shell_protected": 1}},
 
     {"name": "spawn_ctl", "type": "spawn.SpawnCtl", "in": "spawn.SPAWN_STATE",
      "properties": {"action": 0, "program_type": 0, "next_priority": 0}},
