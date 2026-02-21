@@ -38,6 +38,13 @@ global serial_print
 global pic_remap
 global pit_init
 
+; PS/2 mouse
+global ps2_wait_input
+global ps2_wait_output
+global mouse_write
+global mouse_read
+global mouse_init
+
 section .text
 
 ; ============================================================
@@ -279,4 +286,106 @@ pit_init:
 
     mov al, ch           ; divisor high byte
     out 0x40, al
+    ret
+
+; ============================================================
+; PS/2 MOUSE — Tier 3/4
+; ============================================================
+
+; void ps2_wait_input(void)
+; Poll status port 0x64 bit 1 until clear (input buffer empty).
+; Timeout after 100,000 iterations to prevent hang on missing hardware.
+ps2_wait_input:
+    mov ecx, 100000
+.loop:
+    in al, 0x64
+    test al, 0x02           ; bit 1 = input buffer full
+    jz .done
+    dec ecx
+    jnz .loop
+.done:
+    ret
+
+; void ps2_wait_output(void)
+; Poll status port 0x64 bit 0 until set (output buffer has data).
+; Timeout after 100,000 iterations.
+ps2_wait_output:
+    mov ecx, 100000
+.loop:
+    in al, 0x64
+    test al, 0x01           ; bit 0 = output buffer full
+    jnz .done
+    dec ecx
+    jnz .loop
+.done:
+    ret
+
+; void mouse_write(uint8_t data)
+; MS x64: data in cl. Send 0xD4 prefix to 0x64, wait, write data to 0x60.
+mouse_write:
+    push rbx                ; save non-volatile (also aligns stack to 16)
+    sub rsp, 32             ; shadow space
+    mov bl, cl              ; save data byte in non-volatile register
+
+    call ps2_wait_input
+    mov al, 0xD4            ; prefix: next byte goes to auxiliary device
+    out 0x64, al
+
+    call ps2_wait_input
+    mov al, bl              ; retrieve saved data byte
+    out 0x60, al
+
+    add rsp, 32
+    pop rbx
+    ret
+
+; uint8_t mouse_read(void)
+; Wait for output buffer, read byte from 0x60. Return in AL.
+mouse_read:
+    sub rsp, 40             ; shadow space (40 = 32 + 8 for alignment, no push)
+    call ps2_wait_output
+    xor eax, eax            ; zero-extend for clean return
+    in al, 0x60
+    add rsp, 40
+    ret
+
+; void mouse_init(void)
+; Full PS/2 mouse initialization: enable aux device, configure IRQ12,
+; enable data reporting.
+mouse_init:
+    push rbx                ; save non-volatile (also aligns stack to 16)
+    sub rsp, 32             ; shadow space
+
+    ; Enable the auxiliary device (mouse)
+    call ps2_wait_input
+    mov al, 0xA8
+    out 0x64, al
+
+    ; Read controller configuration byte
+    call ps2_wait_input
+    mov al, 0x20            ; command: read config
+    out 0x64, al
+    call ps2_wait_output
+    in al, 0x60             ; read config byte
+    mov bl, al              ; save config in non-volatile register
+
+    ; Enable IRQ12 (set bit 1) and enable aux clock (clear bit 5)
+    or bl, 0x02             ; set bit 1: enable IRQ12
+    and bl, 0xDF            ; clear bit 5 (0xDF = ~0x20): enable aux clock
+
+    ; Write modified configuration byte back
+    call ps2_wait_input
+    mov al, 0x60            ; command: write config
+    out 0x64, al
+    call ps2_wait_input
+    mov al, bl              ; modified config
+    out 0x60, al
+
+    ; Enable data reporting on the mouse (command 0xF4)
+    mov cl, 0xF4
+    call mouse_write
+    call mouse_read         ; ACK (0xFA) — discard
+
+    add rsp, 32
+    pop rbx
     ret

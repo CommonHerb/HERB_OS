@@ -231,6 +231,13 @@ extern void serial_print(const char* s);
 extern void pic_remap(void);
 extern void pit_init(int hz);
 
+/* PS/2 mouse — implemented in herb_hw.asm (Phase 2, Session 62) */
+extern void ps2_wait_input(void);
+extern void ps2_wait_output(void);
+extern void mouse_write(uint8_t data);
+extern uint8_t mouse_read(void);
+extern void mouse_init(void);
+
 static void serial_print_int(int val) {
     char buf[16];
     herb_snprintf(buf, sizeof(buf), "%d", val);
@@ -416,37 +423,6 @@ static void idt_install(void) {
  * The ISR fires once per byte. We accumulate 3 bytes before processing.
  * ============================================================ */
 
-/* PS/2 controller ports */
-#define PS2_DATA    0x60
-#define PS2_STATUS  0x64
-#define PS2_CMD     0x64
-
-/* Wait until the input buffer is clear (controller ready to accept command) */
-static void ps2_wait_input(void) {
-    int timeout = 100000;
-    while ((inb(PS2_STATUS) & 0x02) && --timeout > 0);
-}
-
-/* Wait until the output buffer has data (controller has response) */
-static void ps2_wait_output(void) {
-    int timeout = 100000;
-    while (!(inb(PS2_STATUS) & 0x01) && --timeout > 0);
-}
-
-/* Send a command byte to the mouse via the PS/2 controller */
-static void mouse_write(uint8_t data) {
-    ps2_wait_input();
-    outb(PS2_CMD, 0xD4);   /* prefix: next byte goes to auxiliary device */
-    ps2_wait_input();
-    outb(PS2_DATA, data);
-}
-
-/* Read a response byte from the PS/2 controller */
-static uint8_t mouse_read(void) {
-    ps2_wait_output();
-    return inb(PS2_DATA);
-}
-
 /* Mouse state */
 static int mouse_x = 400;       /* absolute cursor position */
 static int mouse_y = 300;
@@ -467,31 +443,6 @@ static int cursor_eid = -1;
 /* Tension panel state */
 static int selected_tension_idx = -1;  /* -1 = no selection */
 
-static void mouse_init(void) {
-    /* Enable the auxiliary device (mouse) */
-    ps2_wait_input();
-    outb(PS2_CMD, 0xA8);
-
-    /* Read controller configuration byte */
-    ps2_wait_input();
-    outb(PS2_CMD, 0x20);
-    ps2_wait_output();
-    uint8_t config = inb(PS2_DATA);
-
-    /* Enable IRQ12 (bit 1) and enable auxiliary clock (clear bit 5) */
-    config |= 0x02;       /* set bit 1: enable IRQ12 */
-    config &= ~0x20;      /* clear bit 5: enable aux clock */
-
-    /* Write modified configuration byte back */
-    ps2_wait_input();
-    outb(PS2_CMD, 0x60);
-    ps2_wait_input();
-    outb(PS2_DATA, config);
-
-    /* Enable data reporting on the mouse (command 0xF4) */
-    mouse_write(0xF4);
-    mouse_read();  /* ACK (0xFA) */
-}
 
 /* Process a complete 3-byte mouse packet */
 static void mouse_handle_packet(void) {
