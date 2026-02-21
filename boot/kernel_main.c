@@ -208,15 +208,9 @@ extern volatile uint8_t volatile_mouse_ready;
  * PORT I/O
  * ============================================================ */
 
-static inline void outb(uint16_t port, uint8_t val) {
-    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
-}
-
-static inline uint8_t inb(uint16_t port) {
-    uint8_t val;
-    __asm__ volatile ("inb %1, %0" : "=a"(val) : "Nd"(port));
-    return val;
-}
+/* Port I/O — implemented in herb_hw.asm (Phase 2) */
+extern void outb(uint16_t port, uint8_t val);
+extern uint8_t inb(uint16_t port);
 
 static inline void io_wait(void) {
     outb(0x80, 0);
