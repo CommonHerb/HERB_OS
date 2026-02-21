@@ -1,0 +1,89 @@
+# Functional Relations Demo
+#
+# FUNCTIONAL declarations eliminate RETRACT boilerplate for single-valued relations.
+# When asserting a new value for a functional relation, any existing value is
+# automatically retracted.
+#
+# Compare the apply_damage rules:
+#
+# OLD (without FUNCTIONAL):
+#   RULE apply_damage
+#     WHEN ?t pending_damage ?dmg
+#     AND ?t hp ?hp
+#     THEN ?t hp (- ?hp ?dmg)
+#     RETRACT ?t hp ?hp              # <-- Manual RETRACT needed!
+#     RETRACT ?t pending_damage ?dmg
+#
+# NEW (with FUNCTIONAL):
+#   FUNCTIONAL hp
+#   RULE apply_damage
+#     WHEN ?t pending_damage ?dmg
+#     AND ?t hp ?hp
+#     THEN ?t hp (- ?hp ?dmg)
+#     RETRACT ?t pending_damage ?dmg  # Only need to retract the trigger
+#     # hp is functional - auto-retract handles the old value
+
+# === FUNCTIONAL DECLARATIONS ===
+# Single-valued relations that auto-retract on update
+
+FUNCTIONAL hp
+FUNCTIONAL location
+FUNCTIONAL gold
+FUNCTIONAL pending_damage
+
+# === ENTITIES ===
+
+FACT hero is_a combatant
+FACT hero hp 100
+FACT hero location town
+FACT hero gold 50
+
+FACT hero attack_bonus 15
+FACT hero attack_bonus 5
+FACT hero attack_bonus 3
+FACT hero attacking goblin
+
+FACT goblin is_a combatant
+FACT goblin hp 40
+FACT goblin defense_bonus 5
+FACT goblin defense_bonus 2
+
+# === AGGREGATE RULES (Phase 1 - no RETRACT) ===
+
+RULE calc_total_attack
+  WHEN ?a attacking ?t
+  THEN ?a total_attack (sum ?b WHERE ?a attack_bonus ?b)
+
+RULE calc_total_defense
+  WHEN ?a attacking ?t
+  THEN ?t total_defense (sum ?b WHERE ?t defense_bonus ?b)
+
+# === POST-AGGREGATE RULES ===
+
+# Note: pending_damage is functional - it will auto-retract if we set it again
+# But we still need to explicitly retract total_attack/total_defense to consume them
+
+RULE calc_net_damage
+  WHEN ?a attacking ?t
+  AND ?a total_attack ?atk
+  AND ?t total_defense ?def
+  THEN ?t pending_damage (- ?atk ?def)
+  RETRACT ?a total_attack ?atk
+  RETRACT ?t total_defense ?def
+
+# THE WIN: No RETRACT needed for hp!
+# Because hp is FUNCTIONAL, asserting a new hp value auto-retracts the old one.
+
+RULE apply_damage
+  WHEN ?t pending_damage ?dmg
+  AND ?t hp ?hp
+  THEN ?t hp (- ?hp ?dmg)
+  RETRACT ?t pending_damage ?dmg
+  # NOTE: No "RETRACT ?t hp ?hp" needed! hp is functional.
+
+# Check for death
+RULE death_check
+  WHEN ?e hp ?hp
+  AND ?e is_a combatant
+  IF (<= ?hp 0)
+  THEN ?e is_dead true

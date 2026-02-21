@@ -1,0 +1,15 @@
+{
+  "tensions": [
+    {
+      "name": "proc.schedule_pri",
+      "priority": 10,
+      "match": [
+        {"bind": "proc", "in": "proc.READY", "select": "max_by", "key": "priority"},
+        {"bind": "cpu", "empty_in": ["proc.CPU0"]}
+      ],
+      "emit": [
+        {"move": "proc.schedule", "entity": "proc", "to": "cpu"}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+# =============================================================================
+# COMBAT WITH DAMAGE CALCULATION — Arithmetic in Rule Templates
+# =============================================================================
+# This demonstrates HERB's ability to compute values during rule firing.
+# When rules match, expressions like (- ?hp ?damage) are evaluated.
+
+# --- Entities ---
+FACT hero is_a combatant
+FACT hero hp 100
+FACT hero max_hp 100
+FACT hero attack 25
+FACT hero defense 10
+FACT hero location arena
+
+FACT goblin is_a combatant
+FACT goblin hp 30
+FACT goblin max_hp 30
+FACT goblin attack 8
+FACT goblin defense 2
+FACT goblin location arena
+FACT goblin hostile true
+
+FACT dragon is_a combatant
+FACT dragon hp 200
+FACT dragon max_hp 200
+FACT dragon attack 50
+FACT dragon defense 20
+FACT dragon location lair
+
+# --- Combat Proximity ---
+# Combatants in the same location can fight
+RULE combat_proximity
+  WHEN ?a is_a combatant
+  AND ?b is_a combatant
+  AND ?a location ?loc
+  AND ?b location ?loc
+  THEN ?a can_target ?b
+
+# --- Damage Calculation ---
+# raw_damage = attacker.attack - defender.defense (minimum 1)
+# This uses arithmetic expressions in templates!
+RULE calculate_raw_damage
+  WHEN ?attacker attack ?atk
+  AND ?defender defense ?def
+  AND ?attacker can_target ?defender
+  THEN ?attacker raw_damage_to ?defender

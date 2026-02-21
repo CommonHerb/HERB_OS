@@ -1,0 +1,86 @@
+# HERB Equipment System Demo
+#
+# Demonstrates stratified aggregation:
+# - Base rules derive individual bonuses (Phase 1)
+# - Aggregate rules sum totals (Phase 2)
+#
+# The aggregate rules see the stable result of Phase 1,
+# ensuring consistent totals.
+
+# === ENTITIES ===
+FACT hero is_a player
+FACT hero base_hp 100
+FACT hero base_attack 10
+
+# === EQUIPMENT ===
+FACT iron_sword is_a weapon
+FACT iron_sword attack_bonus 5
+FACT iron_sword weight 3
+
+FACT steel_sword is_a weapon
+FACT steel_sword attack_bonus 8
+FACT steel_sword weight 5
+
+FACT leather_armor is_a armor
+FACT leather_armor defense_bonus 3
+FACT leather_armor weight 4
+
+FACT iron_shield is_a shield
+FACT iron_shield defense_bonus 5
+FACT iron_shield weight 6
+
+FACT ring_of_power is_a accessory
+FACT ring_of_power attack_bonus 2
+FACT ring_of_power defense_bonus 1
+FACT ring_of_power weight 0
+
+# === HERO'S EQUIPMENT ===
+FACT hero equipped iron_sword
+FACT hero equipped leather_armor
+FACT hero equipped ring_of_power
+
+# === PHASE 1 RULES: Derive individual bonuses ===
+
+# Equipment grants attack bonus
+RULE equipment_attack
+  WHEN ?p is_a player
+  AND ?p equipped ?item
+  AND ?item attack_bonus ?bonus
+  THEN ?p has_attack_bonus ?bonus
+
+# Equipment grants defense bonus
+RULE equipment_defense
+  WHEN ?p is_a player
+  AND ?p equipped ?item
+  AND ?item defense_bonus ?bonus
+  THEN ?p has_defense_bonus ?bonus
+
+# Equipment contributes to carry weight
+RULE equipment_weight
+  WHEN ?p is_a player
+  AND ?p equipped ?item
+  AND ?item weight ?w
+  THEN ?p carries_weight ?w
+
+# === PHASE 2 RULES: Aggregate totals ===
+
+# Total attack = base + sum of all attack bonuses
+RULE total_attack
+  WHEN ?p is_a player
+  AND ?p base_attack ?base
+  THEN ?p total_attack (+ ?base (sum ?b WHERE ?p has_attack_bonus ?b))
+
+# Total defense = sum of all defense bonuses
+RULE total_defense
+  WHEN ?p is_a player
+  THEN ?p total_defense (sum ?b WHERE ?p has_defense_bonus ?b)
+
+# Total carry weight
+RULE total_weight
+  WHEN ?p is_a player
+  THEN ?p total_carry_weight (sum ?w WHERE ?p carries_weight ?w)
+
+# Equipment count
+RULE equipment_count
+  WHEN ?p is_a player
+  THEN ?p equipped_items (count WHERE ?p equipped ?item)

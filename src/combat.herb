@@ -1,0 +1,227 @@
+# =============================================================================
+# COMMON HERB COMBAT SYSTEM
+# =============================================================================
+# This is what "source code" looks like in HERB: a declaration of facts and
+# rules that constitute a system. Not instructions to execute — structure
+# that exists and evolves.
+#
+# Notation:
+#   FACT subject relation object [weight: N]
+#   RULE name WHEN patterns THEN template
+#   COMPUTE expression in templates using ( )
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# SCHEMA: What kinds of things exist
+# -----------------------------------------------------------------------------
+
+FACT entity is_a concept [weight: 1000]
+FACT monster is_a entity [weight: 1000]
+FACT player is_a entity [weight: 1000]
+FACT item is_a concept [weight: 1000]
+FACT location is_a concept [weight: 1000]
+
+
+# -----------------------------------------------------------------------------
+# COMBAT STATS: Base values that equipment modifies
+# -----------------------------------------------------------------------------
+
+# Every entity has these base stats
+RULE has_base_stats
+  WHEN ?e is_a entity
+  THEN ?e base_attack 0
+  THEN ?e base_defense 0
+  THEN ?e attack_speed 1.0    # attacks per tick
+
+# Equipment provides bonuses
+FACT weapon_slot affects attack
+FACT armor_slot affects defense
+FACT shield_slot affects defense
+
+
+# -----------------------------------------------------------------------------
+# EFFECTIVE STATS: Base + Equipment
+# -----------------------------------------------------------------------------
+
+# Effective attack = base + sum of all equipped weapon bonuses
+RULE effective_attack_base
+  WHEN ?e base_attack ?base
+  THEN ?e effective_attack ?base
+
+RULE effective_attack_with_weapon
+  WHEN ?e equipped ?item
+  AND ?item slot weapon_slot
+  AND ?item attack_bonus ?bonus
+  AND ?e effective_attack ?current
+  THEN ?e effective_attack (+ ?current ?bonus)
+
+# Effective defense = base + sum of all equipped armor/shield bonuses
+RULE effective_defense_base
+  WHEN ?e base_defense ?base
+  THEN ?e effective_defense ?base
+
+RULE effective_defense_with_armor
+  WHEN ?e equipped ?item
+  AND ?item slot armor_slot OR ?item slot shield_slot
+  AND ?item defense_bonus ?bonus
+  AND ?e effective_defense ?current
+  THEN ?e effective_defense (+ ?current ?bonus)
+
+
+# -----------------------------------------------------------------------------
+# COMBAT INITIATION: Proximity triggers combat
+# -----------------------------------------------------------------------------
+
+# Entities at the same location CAN see each other
+RULE visibility
+  WHEN ?a location ?loc
+  AND ?b location ?loc
+  AND ?a is_a entity
+  AND ?b is_a entity
+  AND (not= ?a ?b)
+  THEN ?a can_see ?b [weight: 0.1]   # ephemeral - changes with movement
+
+# Monster + Player at same location = combat
+RULE combat_initiation
+  WHEN ?p is_a player
+  AND ?m is_a monster
+  AND ?p can_see ?m
+  AND ?m hostile_to player    # not all monsters are hostile
+  THEN ?p in_combat_with ?m [weight: 10]
+  THEN ?m in_combat_with ?p [weight: 10]
+
+
+# -----------------------------------------------------------------------------
+# COMBAT RESOLUTION: Damage per tick
+# -----------------------------------------------------------------------------
+
+# Each tick, combatants deal damage based on their attack speed
+RULE combat_damage
+  WHEN ?attacker in_combat_with ?defender
+  AND ?attacker effective_attack ?atk
+  AND ?defender effective_defense ?def
+  AND ?attacker attack_speed ?speed
+  AND world tick ?t
+  AND (should_attack ?attacker ?t ?speed)   # timing check
+  THEN ?defender takes_damage (max 1 (- ?atk ?def)) from ?attacker at ?t
+
+# Damage reduces HP
+RULE apply_damage
+  WHEN ?e takes_damage ?dmg from ?source at ?t
+  AND ?e hp ?current
+  THEN ?e hp (- ?current ?dmg)
+  THEN ?e last_hit_by ?source
+  THEN ?e last_hit_at ?t
+
+
+# -----------------------------------------------------------------------------
+# DEATH: HP reaches zero
+# -----------------------------------------------------------------------------
+
+RULE death_check
+  WHEN ?e hp ?hp
+  AND (<= ?hp 0)
+  AND ?e is_a entity
+  THEN ?e is_dead true [weight: 100]   # significant event
+  THEN ?e died_at (world tick)
+
+# Dead entities can't be in combat
+RULE remove_from_combat_on_death
+  WHEN ?e is_dead true
+  AND ?e in_combat_with ?other
+  RETRACT ?e in_combat_with ?other
+  RETRACT ?other in_combat_with ?e
+
+# Dead monsters drop loot
+RULE monster_loot_drop
+  WHEN ?m is_dead true
+  AND ?m is_a monster
+  AND ?m drops ?item_type
+  AND ?m location ?loc
+  THEN (new_item ?item_type) location ?loc    # spawns item at location
+  THEN ?m drops_collected true                 # prevent re-triggering
+
+
+# -----------------------------------------------------------------------------
+# RESPAWN: Monsters come back
+# -----------------------------------------------------------------------------
+
+RULE monster_respawn
+  WHEN ?m is_dead true
+  AND ?m is_a monster
+  AND ?m died_at ?death_tick
+  AND ?m respawn_delay ?delay
+  AND world tick ?now
+  AND (>= (- ?now ?death_tick) ?delay)
+  RETRACT ?m is_dead true
+  THEN ?m hp (?m max_hp)
+  THEN ?m location (?m spawn_location)
+
+
+# -----------------------------------------------------------------------------
+# EXAMPLE INSTANTIATION: A goblin and player
+# -----------------------------------------------------------------------------
+
+# The player
+FACT hero is_a player [weight: 1000]
+FACT hero name "Hero"
+FACT hero hp 100
+FACT hero max_hp 100
+FACT hero base_attack 10
+FACT hero base_defense 5
+FACT hero location town
+
+# A sword the player has
+FACT iron_sword is_a item
+FACT iron_sword slot weapon_slot
+FACT iron_sword attack_bonus 15
+FACT iron_sword name "Iron Sword"
+FACT hero equipped iron_sword
+
+# A goblin
+FACT goblin_1 is_a monster [weight: 100]
+FACT goblin_1 name "Goblin"
+FACT goblin_1 hp 30
+FACT goblin_1 max_hp 30
+FACT goblin_1 base_attack 8
+FACT goblin_1 base_defense 2
+FACT goblin_1 attack_speed 0.5
+FACT goblin_1 location forest
+FACT goblin_1 spawn_location forest
+FACT goblin_1 respawn_delay 100
+FACT goblin_1 hostile_to player
+FACT goblin_1 drops gold_coins
+
+
+# -----------------------------------------------------------------------------
+# WHAT THIS DEMONSTRATES
+# -----------------------------------------------------------------------------
+#
+# 1. Facts have WEIGHT - laws/schema have high weight (survive forgetting),
+#    ephemeral state like visibility has low weight (forgotten quickly)
+#
+# 2. Rules derive facts - effective_attack isn't stored, it's computed
+#    from base stats + equipment whenever queried
+#
+# 3. Rules can RETRACT - death removes combat relationships
+#
+# 4. Rules use COMPUTATION - (+ ?a ?b), (- ?a ?b), (max ...), etc.
+#    These are evaluated when the rule fires, not stored as expressions
+#
+# 5. Time is explicit - "world tick ?t" binds the current tick,
+#    rules can reason about temporal relationships
+#
+# 6. No control flow - there's no "if HP <= 0 then die" as an instruction.
+#    Instead, the RULE death_check pattern-matches on the condition and
+#    DERIVES the consequence. The world evolves, it isn't commanded.
+#
+# Problems this notation reveals:
+#
+# - How does (new_item ?type) work? It needs to generate unique IDs.
+# - The "OR" in effective_defense_with_armor is new syntax.
+# - (should_attack ?attacker ?t ?speed) is handwaving timing logic.
+# - Aggregation (sum of all bonuses) isn't clean - I used sequential rules
+#   but that's order-dependent which breaks the paradigm.
+#
+# These are the hard problems. The notation exposed them.

@@ -1,0 +1,229 @@
+# =============================================================================
+# OS EXPERIMENT 1: PROCESS SCHEDULER
+# =============================================================================
+# Modeling processes, CPU resources, and scheduling as facts and rules.
+#
+# Goal: See if HERB's temporal-fact paradigm can express:
+# - Process state machines (ready → running → blocked → terminated)
+# - Resource allocation (CPU is a limited resource)
+# - Scheduling policies (round-robin, priority)
+# - Time slices and preemption
+#
+# Key questions:
+# - Can we express "longest waiting process gets CPU"?
+# - Can we express priority without explicit ordering?
+# - How do we handle "one CPU, many processes"?
+# =============================================================================
+
+# --- Functional relations (single-valued) ---
+FUNCTIONAL state          # Each process has exactly one state
+FUNCTIONAL assigned_to    # CPU assigned to one process at a time
+FUNCTIONAL waiting_since  # When the process started waiting
+FUNCTIONAL time_slice     # Current remaining time slice
+
+# --- Process metadata (multi-valued is fine) ---
+# (process priority) can just be regular facts
+
+# =============================================================================
+# INITIAL STATE
+# =============================================================================
+
+# CPU resource
+FACT cpu0 is_a cpu
+FACT cpu0 state idle
+
+# Processes with priorities (higher = more important)
+FACT proc_a is_a process
+FACT proc_a priority 2
+FACT proc_a state ready
+FACT proc_a waiting_since 0
+
+FACT proc_b is_a process
+FACT proc_b priority 1
+FACT proc_b state ready
+FACT proc_b waiting_since 0
+
+FACT proc_c is_a process
+FACT proc_c priority 3
+FACT proc_c state blocked
+FACT proc_c waiting_since 0
+
+FACT proc_d is_a process
+FACT proc_d priority 2
+FACT proc_d state ready
+FACT proc_d waiting_since 5
+
+# System config
+FACT system time_quantum 10
+
+# =============================================================================
+# RULES: PRIORITY SCHEDULER
+# =============================================================================
+
+# RULE 1: Find highest priority ready process
+# PROBLEM: We need to compare priorities across processes.
+# This requires finding MAX of a set - an aggregate.
+
+RULE find_max_priority
+  WHEN ?cpu is_a cpu
+  AND ?cpu state idle
+  THEN ?cpu max_ready_priority (max ?p WHERE ?proc is_a process ?proc state ready ?proc priority ?p)
+
+# RULE 2: Candidate processes at max priority
+# Need to find processes whose priority equals the max
+
+RULE identify_candidates
+  WHEN ?cpu is_a cpu
+  AND ?cpu max_ready_priority ?maxp
+  AND ?proc is_a process
+  AND ?proc state ready
+  AND ?proc priority ?maxp
+  THEN ?proc is_candidate true
+
+# RULE 3: Among candidates, find longest waiting
+# PROBLEM: We need MIN of waiting_since (started waiting earliest)
+# This chain is getting complex: max priority → candidates → min wait
+
+RULE find_longest_waiter
+  WHEN ?cpu is_a cpu
+  AND ?cpu state idle
+  THEN ?cpu oldest_wait_time (min ?t WHERE ?proc is_candidate true ?proc waiting_since ?t)
+
+# RULE 4: Select the process to run
+# Match candidate with the oldest wait time
+# PROBLEM: Ties! What if two processes have same wait time?
+# HERB has no built-in tie-breaking. Non-determinism.
+
+RULE select_to_run
+  WHEN ?cpu is_a cpu
+  AND ?cpu state idle
+  AND ?cpu oldest_wait_time ?oldest
+  AND ?proc is_candidate true
+  AND ?proc waiting_since ?oldest
+  THEN ?proc selected_for ?cpu
+
+# RULE 5: Assign CPU to selected process
+# PROBLEM: If multiple processes selected (ties), this fires for ALL of them!
+# CPU assigned_to is FUNCTIONAL, so last one wins. Order-dependent = BAD.
+
+RULE assign_cpu
+  WHEN ?proc selected_for ?cpu
+  AND ?proc state ready
+  THEN ?cpu assigned_to ?proc
+  AND ?cpu state running
+  AND ?proc state running
+  RETRACT ?proc state ready
+  RETRACT ?cpu state idle
+
+# =============================================================================
+# CLEANUP RULES (consume intermediate facts)
+# =============================================================================
+
+RULE cleanup_max_priority
+  WHEN ?cpu max_ready_priority ?p
+  AND ?cpu state running
+  THEN ?cpu had_max_priority ?p
+  RETRACT ?cpu max_ready_priority ?p
+
+RULE cleanup_candidates
+  WHEN ?proc is_candidate true
+  AND ?proc state running
+  THEN ?proc was_candidate true
+  RETRACT ?proc is_candidate true
+
+RULE cleanup_oldest_wait
+  WHEN ?cpu oldest_wait_time ?t
+  AND ?cpu state running
+  THEN ?cpu had_oldest_wait ?t
+  RETRACT ?cpu oldest_wait_time ?t
+
+RULE cleanup_selected
+  WHEN ?proc selected_for ?cpu
+  AND ?proc state running
+  THEN ?proc was_selected_for ?cpu
+  RETRACT ?proc selected_for ?cpu
+
+# =============================================================================
+# TIME SLICE / PREEMPTION (DEFERRED)
+# =============================================================================
+#
+# PROBLEM: How does time advance? HERB ticks are derivation cycles, not
+# wall-clock time. A process "runs for 10ms" means... what?
+#
+# Options:
+# 1. Each HERB tick = 1ms. Very slow derivation for any real work.
+# 2. External oracle asserts (system tick_count 47) and rules check it.
+# 3. Time is modeled differently for simulation vs execution.
+#
+# For a game, option 2 works. For a real OS, this is the fundamental gap.
+
+# =============================================================================
+# BLOCKING / UNBLOCKING (SKETCH)
+# =============================================================================
+
+# Process blocks on I/O
+# RULE block_on_io
+#   WHEN ?proc state running
+#   AND ?proc requested_io ?device
+#   THEN ?proc state blocked
+#   AND ?proc blocked_on ?device
+#   RETRACT ?proc state running
+
+# I/O completes, process becomes ready
+# RULE io_complete
+#   WHEN ?device io_complete ?proc
+#   AND ?proc state blocked
+#   AND ?proc blocked_on ?device
+#   THEN ?proc state ready
+#   RETRACT ?proc state blocked
+#   RETRACT ?proc blocked_on ?device
+#   RETRACT ?device io_complete ?proc
+
+# =============================================================================
+# NOTES: WHAT'S PAINFUL
+# =============================================================================
+#
+# 1. **TIE-BREAKING IS NON-DETERMINISTIC**
+#    Two processes with same priority and wait time? Both selected. Both
+#    try to run. FUNCTIONAL assigned_to picks one arbitrarily. This is
+#    technically correct (scheduler can pick either) but not controllable.
+#
+# 2. **AGGREGATE CHAINS ARE VERBOSE**
+#    Priority scheduling needs: max priority → candidates → min wait → select
+#    Each step is a separate rule, each produces intermediate facts that
+#    must be cleaned up. 4 rules + 4 cleanup rules for one scheduling decision.
+#
+# 3. **TIME IS EXTERNAL**
+#    HERB ticks are logical, not physical. Real scheduling needs wall-clock
+#    time, timer interrupts, preemption after N microseconds. None of this
+#    maps to HERB's derivation model.
+#
+# 4. **ONE-OF-N SELECTION MISSING**
+#    "Pick exactly one from this set" doesn't exist. We approximate with
+#    FUNCTIONAL (last wins) but that's order-dependent.
+#
+# 5. **NO ATOMICITY ACROSS RULES**
+#    The select → assign sequence should be atomic. If another process
+#    asserts something between rules, state could be inconsistent.
+#    HERB derivation is "to fixpoint" but rules interleave freely.
+#
+# =============================================================================
+# NOTES: WHAT WORKS
+# =============================================================================
+#
+# 1. **STATE MACHINES ARE NATURAL**
+#    Process states (ready/running/blocked) work perfectly. FUNCTIONAL
+#    ensures one state. Rules transition cleanly.
+#
+# 2. **PROVENANCE IS VALUABLE**
+#    "Why is proc_a running?" traces to: selected_for → oldest_wait →
+#    candidate → max_priority → was ready. Full causal chain preserved.
+#
+# 3. **HISTORICAL QUERIES**
+#    "What was running at tick 5?" is trivial. Time-travel is built in.
+#
+# 4. **RESOURCE CONSTRAINTS**
+#    FUNCTIONAL assigned_to naturally enforces "one process per CPU."
+#    No explicit mutex needed.
+#
+# =============================================================================

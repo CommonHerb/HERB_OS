@@ -1,0 +1,62 @@
+# Combat System with Aggregate Damage Calculation
+#
+# This demo shows the Phase 2 → Phase 3 pattern:
+# - Phase 2: Calculate total damage using aggregates (sum of attack bonuses)
+# - Phase 3: Apply damage to HP (RETRACT old HP, depends on Phase 2)
+#
+# This is the key unlock for combat: equipment bonuses are aggregated,
+# then that total is used to update HP.
+
+# === ENTITIES ===
+
+FACT hero is_a combatant
+FACT hero hp 100
+FACT hero attack_bonus 15    # base attack
+FACT hero attack_bonus 5     # sword
+FACT hero attack_bonus 3     # strength potion
+FACT hero attacking goblin
+
+FACT goblin is_a combatant
+FACT goblin hp 40
+FACT goblin defense_bonus 5  # armor
+FACT goblin defense_bonus 2  # shield
+
+# === PHASE 2: Aggregate Rules (NO RETRACT) ===
+
+# Sum all attack bonuses for the attacker
+RULE calc_total_attack
+  WHEN ?a attacking ?t
+  THEN ?a total_attack (sum ?b WHERE ?a attack_bonus ?b)
+
+# Sum all defense bonuses for the target
+RULE calc_total_defense
+  WHEN ?a attacking ?t
+  THEN ?t total_defense (sum ?b WHERE ?t defense_bonus ?b)
+
+# === PHASE 3: Post-Aggregate Rules (can RETRACT, see Phase 2 outputs) ===
+
+# Calculate net damage: attack - defense
+# This rule patterns on total_attack and total_defense (Phase 2 outputs)
+RULE calc_net_damage
+  WHEN ?a attacking ?t
+  AND ?a total_attack ?atk
+  AND ?t total_defense ?def
+  THEN ?t pending_damage (- ?atk ?def)
+  RETRACT ?a total_attack ?atk
+  RETRACT ?t total_defense ?def
+
+# Apply pending damage to HP
+# This rule patterns on pending_damage (Phase 3 output)
+RULE apply_damage
+  WHEN ?t pending_damage ?dmg
+  AND ?t hp ?hp
+  THEN ?t hp (- ?hp ?dmg)
+  RETRACT ?t hp ?hp
+  RETRACT ?t pending_damage ?dmg
+
+# Check for death
+RULE death_check
+  WHEN ?e hp ?hp
+  AND ?e is_a combatant
+  IF (<= ?hp 0)
+  THEN ?e is_dead true

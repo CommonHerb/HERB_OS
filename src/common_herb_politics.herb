@@ -1,0 +1,260 @@
+# Common Herb Political System
+#
+# Models the political simulation from Common Herb:
+# - Citizens with ideology (3 axes: tax, war, order — each -1 to +1)
+# - Political ambition determining who runs for office
+# - Elections with voting based on ideology alignment
+# - Legislative bodies that vote on tax bills
+# - Incumbency effects
+#
+# Key HERB features demonstrated:
+# - Temporal facts: election cycles, terms of office
+# - Provenance: trace why someone won, why a bill passed
+# - Aggregation: vote counting
+# - Guards: eligibility checks
+# - Negation: absence of disqualifications
+
+# =============================================================================
+# FUNCTIONAL DECLARATIONS
+# =============================================================================
+
+FUNCTIONAL office_holder    # Who holds an office (single person)
+FUNCTIONAL tax_rate         # Current tax rate for a jurisdiction
+FUNCTIONAL reputation       # Citizen's reputation score
+FUNCTIONAL term_start       # When current term began
+
+# =============================================================================
+# JURISDICTIONS (from economy.herb)
+# =============================================================================
+
+FACT gulpin is_a jurisdiction
+FACT gulpin name "Gulpin"
+
+FACT northvale is_a jurisdiction
+FACT northvale name "Northvale"
+
+# =============================================================================
+# CITIZENS
+# =============================================================================
+# Citizens have:
+# - job (farmer, trader, merchant, municipal)
+# - ideology on 3 axes: tax (-1 low, +1 high), war (-1 peace, +1 war), order (-1 chaos, +1 order)
+# - ambition (0-1, determines if they run for office)
+# - reputation (0-100, affects votes)
+# - home jurisdiction
+
+# --- Gulpin Citizens ---
+
+FACT alice is_a citizen
+FACT alice name "Alice"
+FACT alice job farmer
+FACT alice home gulpin
+FACT alice ideology_tax -0.5
+FACT alice ideology_war -0.8
+FACT alice ideology_order 0.3
+FACT alice ambition 0.2
+FACT alice reputation 50
+
+FACT bob is_a citizen
+FACT bob name "Bob"
+FACT bob job merchant
+FACT bob home gulpin
+FACT bob ideology_tax 0.7
+FACT bob ideology_war 0.2
+FACT bob ideology_order 0.8
+FACT bob ambition 0.9
+FACT bob reputation 65
+
+FACT carol is_a citizen
+FACT carol name "Carol"
+FACT carol job municipal
+FACT carol home gulpin
+FACT carol ideology_tax 0.3
+FACT carol ideology_war -0.3
+FACT carol ideology_order 0.5
+FACT carol ambition 0.7
+FACT carol reputation 70
+
+FACT dan is_a citizen
+FACT dan name "Dan"
+FACT dan job trader
+FACT dan home gulpin
+FACT dan ideology_tax -0.2
+FACT dan ideology_war 0.0
+FACT dan ideology_order -0.1
+FACT dan ambition 0.1
+FACT dan reputation 40
+
+# --- Northvale Citizens ---
+
+FACT eve is_a citizen
+FACT eve name "Eve"
+FACT eve job farmer
+FACT eve home northvale
+FACT eve ideology_tax -0.7
+FACT eve ideology_war -0.5
+FACT eve ideology_order 0.1
+FACT eve ambition 0.3
+FACT eve reputation 55
+
+FACT frank is_a citizen
+FACT frank name "Frank"
+FACT frank job merchant
+FACT frank home northvale
+FACT frank ideology_tax 0.5
+FACT frank ideology_war 0.6
+FACT frank ideology_order 0.7
+FACT frank ambition 0.8
+FACT frank reputation 60
+
+# =============================================================================
+# OFFICES
+# =============================================================================
+# Each jurisdiction has a mayor office
+
+FACT gulpin_mayor is_a office
+FACT gulpin_mayor jurisdiction gulpin
+FACT gulpin_mayor title "Mayor"
+
+FACT northvale_mayor is_a office
+FACT northvale_mayor jurisdiction northvale
+FACT northvale_mayor title "Mayor"
+
+# =============================================================================
+# CURRENT ELECTION
+# =============================================================================
+# Election events are reified entities
+# This models an election in progress
+
+FACT election_1 is_a election
+FACT election_1 for_office gulpin_mayor
+FACT election_1 status open
+
+# =============================================================================
+# RULES
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Rule: Determine candidates based on ambition threshold
+# Citizens with ambition >= 0.5 who live in the jurisdiction can run
+# -----------------------------------------------------------------------------
+RULE determine_candidates
+  WHEN ?election is_a election
+  AND ?election for_office ?office
+  AND ?election status open
+  AND ?office jurisdiction ?j
+  AND ?c is_a citizen
+  AND ?c home ?j
+  AND ?c ambition ?amb
+  IF (>= ?amb 0.5)
+  THEN ?c candidate_for ?election
+
+# -----------------------------------------------------------------------------
+# Rule: Calculate ideology distance between voter and candidate
+# Lower distance = more aligned = more likely to vote for them
+# Distance = |tax_diff| + |war_diff| + |order_diff|
+# We'll compute raw alignment score (higher = better match)
+#
+# Since HERB uses triples, we store: ?voter alignment_with_?cand ?score
+# where alignment_with_X is a dynamic relation name
+# Alternative: reify as entities with voter/candidate/score properties
+#
+# For simplicity, we use the pattern: ?voter aligns_X ?score
+# where X = candidate name. We'll use a simpler model here:
+# Just directly compute who each citizen votes for.
+# -----------------------------------------------------------------------------
+
+# Simplified voting: each citizen in the jurisdiction votes for the candidate
+# whose ideology is closest to their own. We compute distance and compare.
+
+# For the demo, we'll use a direct approach:
+# Each voter evaluates each candidate's total ideology distance
+# Then votes for candidates within a threshold
+
+# Distance per axis: use squared difference (no abs needed)
+# Total distance = (vt-ct)^2 + (vw-cw)^2 + (vo-co)^2
+
+# Vote for candidates with small ideology distance
+# Distance computed inline: sum of squared differences per axis
+# Distance < 1.5 (fairly aligned) triggers a vote
+# We check: (vt-ct)^2 + (vw-cw)^2 + (vo-co)^2 < 1.5
+RULE cast_vote
+  WHEN ?election is_a election
+  AND ?election for_office ?office
+  AND ?office jurisdiction ?j
+  AND ?voter is_a citizen
+  AND ?voter home ?j
+  AND ?voter ideology_tax ?vt
+  AND ?voter ideology_war ?vw
+  AND ?voter ideology_order ?vo
+  AND ?cand candidate_for ?election
+  AND ?cand ideology_tax ?ct
+  AND ?cand ideology_war ?cw
+  AND ?cand ideology_order ?co
+  IF (< (+ (* (- ?vt ?ct) (- ?vt ?ct)) (+ (* (- ?vw ?cw) (- ?vw ?cw)) (* (- ?vo ?co) (- ?vo ?co)))) 1.5)
+  THEN ?voter votes_for ?cand
+
+# -----------------------------------------------------------------------------
+# Rule: Count votes per candidate
+# Uses aggregation to sum up votes
+# -----------------------------------------------------------------------------
+RULE count_votes
+  WHEN ?cand candidate_for ?election
+  THEN ?cand vote_count (count WHERE ?v votes_for ?cand)
+
+# -----------------------------------------------------------------------------
+# Rule: Reputation bonus adds to vote count
+# Candidates get bonus "virtual votes" from reputation
+# reputation/20 = bonus votes (so rep 60 = 3 bonus)
+# -----------------------------------------------------------------------------
+RULE reputation_bonus
+  WHEN ?cand candidate_for ?election
+  AND ?cand reputation ?rep
+  THEN ?cand rep_bonus (/ ?rep 20)
+
+# -----------------------------------------------------------------------------
+# Rule: Calculate total score (votes + rep_bonus)
+# -----------------------------------------------------------------------------
+RULE calc_total_score
+  WHEN ?cand vote_count ?votes
+  AND ?cand rep_bonus ?bonus
+  THEN ?cand total_score (+ ?votes ?bonus)
+
+# -----------------------------------------------------------------------------
+# Rule: Find maximum score per election
+# Uses aggregation to get the highest total_score among all candidates
+# -----------------------------------------------------------------------------
+RULE find_election_max
+  WHEN ?election is_a election
+  THEN ?election max_score (max ?s WHERE ?c candidate_for ?election ?c total_score ?s)
+
+# -----------------------------------------------------------------------------
+# Rule: Declare winner(s)
+# Any candidate whose total_score equals the election's max_score wins
+# (Ties result in multiple winners - could be handled by runoff in a later rule)
+# -----------------------------------------------------------------------------
+RULE declare_winner
+  WHEN ?election max_score ?max
+  AND ?cand candidate_for ?election
+  AND ?cand total_score ?max
+  THEN ?election winner ?cand
+
+# -----------------------------------------------------------------------------
+# Rule: Assign office to winner
+# Uses FUNCTIONAL office_holder so only one person holds office at a time
+# If there are ties, the last one processed wins (could add tiebreaker logic)
+# -----------------------------------------------------------------------------
+RULE assign_office
+  WHEN ?election winner ?winner
+  AND ?election for_office ?office
+  THEN ?office office_holder ?winner
+  AND ?winner holds_office ?office
+
+# -----------------------------------------------------------------------------
+# Rule: Mark election as decided after winner declared
+# Uses a separate relation to avoid cycle with determine_candidates reading status
+# -----------------------------------------------------------------------------
+RULE mark_decided
+  WHEN ?election winner ?winner
+  THEN ?election decided true
+

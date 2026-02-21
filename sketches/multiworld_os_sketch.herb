@@ -1,0 +1,172 @@
+# Multi-World OS Sketch
+# =====================
+# This is a SYNTAX EXPLORATION - not runnable code.
+# Shows what an OS with kernel + processes might look like.
+
+# -----------------------------------------------------
+# KERNEL WORLD (root)
+# -----------------------------------------------------
+
+WORLD kernel
+
+FUNCTIONAL current_process       # Only one process runs at a time
+FUNCTIONAL scheduler_state       # Scheduler FSM
+
+# -- Process Table Management --
+
+# Kernel sees all child process exports
+# Note: EXPORTS pattern matches ANY child's exported facts
+RULE register_process
+  WHEN ?proc EXPORTS is_process true
+  AND ?proc EXPORTS pid ?pid
+  THEN process_table contains ?proc pid ?pid
+
+RULE track_state
+  WHEN ?proc EXPORTS state ?state
+  AND process_table contains ?proc pid ?pid
+  THEN process_table state ?proc ?state
+
+# -- Scheduling --
+
+RULE find_runnable
+  WHEN ?proc EXPORTS state ready
+  AND ?proc EXPORTS priority ?prio
+  THEN runnable_queue has ?proc priority ?prio
+
+RULE select_highest_priority
+  WHEN runnable_queue has ?proc priority ?prio
+  IF (= ?prio (max ?p WHERE runnable_queue has ?any priority ?p))
+  THEN scheduler selected ?proc
+  RETRACT runnable_queue has ?proc priority ?prio
+
+RULE dispatch
+  WHEN scheduler selected ?proc
+  AND current_process assigned_to ?old
+  THEN current_process assigned_to ?proc
+  SEND ?proc command run
+  SEND ?old command preempt
+  RETRACT scheduler selected ?proc
+
+# -- Signal Delivery --
+
+RULE deliver_signal
+  WHEN ?proc pending_signal ?sig
+  AND process_table contains ?proc pid ?pid
+  SEND ?proc signal ?sig
+  RETRACT ?proc pending_signal ?sig
+
+# -- Termination --
+
+RULE handle_exit
+  WHEN ?proc EXPORTS state terminated
+  THEN process_table status ?proc terminated
+  # Could spawn cleanup, notify parent, etc.
+
+# -----------------------------------------------------
+# PROCESS WORLD (template - instantiated per process)
+# -----------------------------------------------------
+
+WORLD proc_$PID
+  PARENT kernel
+  EXPORTS is_process, pid, state, priority
+  INTERNAL memory, registers, open_fds
+
+FUNCTIONAL state
+FUNCTIONAL priority
+
+# Initial state
+FACT self is_process true
+FACT self pid $PID
+FACT self state ready
+FACT self priority 10
+
+# -- Command Handlers --
+
+RULE handle_run_command
+  WHEN inbox command run
+  IF (not-exists self state terminated)
+  THEN self state running
+  RETRACT inbox command run
+
+RULE handle_preempt
+  WHEN inbox command preempt
+  THEN self state ready
+  RETRACT inbox command preempt
+
+RULE handle_signal
+  WHEN inbox signal ?sig
+  THEN self received_signal ?sig
+  RETRACT inbox signal ?sig
+  # Process-specific signal handling would go here
+
+# -- Syscalls (requests to kernel) --
+
+RULE request_io
+  WHEN self needs_io ?resource
+  SEND kernel syscall self read ?resource
+  RETRACT self needs_io ?resource
+
+# -- Process Logic --
+
+# Internal memory operations (never exported)
+RULE allocate_memory
+  WHEN self malloc_request ?size
+  THEN memory allocated ?size  # INTERNAL - kernel can't see this
+
+# -----------------------------------------------------
+# SHARED LIBRARIES WORLD (sibling that processes inherit)
+# -----------------------------------------------------
+
+WORLD shared_libs
+  PARENT kernel
+  EXPORTS provides_function  # Kernel knows what functions exist
+
+# Libraries are visible to all processes that INHERIT this World
+FACT libc provides_function printf
+FACT libc provides_function malloc
+FACT libm provides_function sin
+FACT libm provides_function cos
+
+# -----------------------------------------------------
+# PROCESS WITH LIBRARY ACCESS
+# -----------------------------------------------------
+
+WORLD proc_001
+  PARENT kernel
+  INHERITS shared_libs         # Can see shared_libs facts
+  EXPORTS is_process, pid, state, priority
+  INTERNAL memory, registers
+
+# Can pattern-match on inherited library facts
+RULE use_library
+  WHEN self needs_function ?func
+  AND ?lib provides_function ?func   # Matches inherited fact from shared_libs
+  THEN self using_lib ?lib for ?func
+
+# -----------------------------------------------------
+# NOTES ON THIS SKETCH
+# -----------------------------------------------------
+
+# 1. EXPORTS declares what parent can see
+#    - Kernel queries `?proc EXPORTS state ?s` to see all processes' states
+#    - Kernel cannot see `memory` or `registers` (INTERNAL)
+
+# 2. SEND creates fact in child's `inbox` relation
+#    - Child patterns on `inbox` to receive
+#    - RETRACT removes from inbox after handling
+
+# 3. INHERITS allows sibling visibility
+#    - Process sees shared_libs facts as if they were local
+#    - But cannot modify them (read-only inheritance)
+
+# 4. Each World stratifies independently
+#    - Kernel reaches fixpoint
+#    - Messages delivered to inboxes
+#    - Processes reach fixpoint
+#    - Exports collected for next tick
+
+# 5. Provenance story:
+#    - Kernel sees (proc_001 state running) with cause "exported from:proc_001"
+#    - Kernel does NOT see why proc_001 became running (that's internal)
+#    - proc_001 sees (inbox command run) with cause "received from:kernel"
+#    - proc_001 does NOT see why kernel sent that command

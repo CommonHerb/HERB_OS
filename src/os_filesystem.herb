@@ -1,0 +1,332 @@
+# =============================================================================
+# OS EXPERIMENT 2: FILE SYSTEM AS FACTS
+# =============================================================================
+# Modeling files, directories, permissions, and operations as facts.
+#
+# Goal: See if HERB can express:
+# - Hierarchical directory structure
+# - File metadata (size, type, timestamps)
+# - Permissions (owner, group, mode)
+# - Operations: open(), read(), write(), close()
+# - File locks and concurrent access
+#
+# Key questions:
+# - Can directory containment be modeled cleanly?
+# - How do file operations work as state transitions?
+# - What about locks? Multiple readers, single writer?
+# =============================================================================
+
+# --- Functional relations ---
+FUNCTIONAL parent         # Each file/dir has exactly one parent (except root)
+FUNCTIONAL size           # File size
+FUNCTIONAL owner          # File owner
+FUNCTIONAL group          # File group
+FUNCTIONAL mode           # Permission bits (simplified)
+FUNCTIONAL modified_at    # Last modification tick
+FUNCTIONAL created_at     # Creation tick
+FUNCTIONAL content        # For simplicity, content is a single value (real FS: blocks)
+FUNCTIONAL lock_holder    # If locked exclusively, who holds it
+
+# --- Multi-valued (intentional) ---
+# (file reader ?proc) - multiple concurrent readers allowed
+# (dir contains ?child) - directories contain multiple children
+
+# =============================================================================
+# INITIAL STATE: BASIC FILE SYSTEM
+# =============================================================================
+
+# Root directory
+FACT root is_a directory
+FACT root name "/"
+# root has no parent (special case)
+
+# Home directory
+FACT home is_a directory
+FACT home name "home"
+FACT home parent root
+FACT root contains home
+FACT home owner alice
+FACT home group users
+FACT home mode 755
+
+# Alice's home
+FACT alice_home is_a directory
+FACT alice_home name "alice"
+FACT alice_home parent home
+FACT home contains alice_home
+FACT alice_home owner alice
+FACT alice_home group users
+FACT alice_home mode 700
+
+# A file in alice's home
+FACT notes_txt is_a file
+FACT notes_txt name "notes.txt"
+FACT notes_txt parent alice_home
+FACT alice_home contains notes_txt
+FACT notes_txt owner alice
+FACT notes_txt group users
+FACT notes_txt mode 644
+FACT notes_txt size 1024
+FACT notes_txt content "Hello World"
+FACT notes_txt created_at 0
+FACT notes_txt modified_at 0
+
+# Another file
+FACT config_txt is_a file
+FACT config_txt name "config.txt"
+FACT config_txt parent alice_home
+FACT alice_home contains config_txt
+FACT config_txt owner alice
+FACT config_txt group users
+FACT config_txt mode 600
+FACT config_txt size 256
+FACT config_txt content "secret=12345"
+FACT config_txt created_at 0
+FACT config_txt modified_at 0
+
+# =============================================================================
+# USERS AND PROCESSES
+# =============================================================================
+
+FACT alice is_a user
+FACT alice primary_group users
+FACT alice member_of users
+FACT alice member_of developers
+
+FACT bob is_a user
+FACT bob primary_group users
+FACT bob member_of users
+
+FACT proc1 is_a process
+FACT proc1 run_as alice
+
+FACT proc2 is_a process
+FACT proc2 run_as bob
+
+# =============================================================================
+# PERMISSION RULES
+# =============================================================================
+
+# Check if user is file owner
+RULE check_owner
+  WHEN ?file owner ?user
+  AND ?user is_a user
+  THEN ?user is_owner_of ?file
+
+# Check if user is in file's group
+RULE check_group
+  WHEN ?file group ?grp
+  AND ?user member_of ?grp
+  THEN ?user in_group_of ?file
+
+# Simplified permission check: owner can do anything
+RULE owner_can_read
+  WHEN ?user is_owner_of ?file
+  THEN ?user can_read ?file
+
+RULE owner_can_write
+  WHEN ?user is_owner_of ?file
+  THEN ?user can_write ?file
+
+# Group members can read if group-readable (mode check would need arithmetic)
+# PROBLEM: Mode 644 means (mode & 040) != 0 for group read. Bit operations!
+# HERB has mod (modulo) but not bitwise AND. Would need to decompose mode.
+
+# For now, hardcode: if mode >= 640 and user in group, can read
+# This is a hack. Real permission checks need bitwise ops.
+
+RULE group_can_read_hack
+  WHEN ?file mode ?m
+  AND ?user in_group_of ?file
+  IF (>= ?m 640)
+  THEN ?user can_read ?file
+
+# World-readable: mode >= 644
+RULE world_can_read_hack
+  WHEN ?file mode ?m
+  AND ?user is_a user
+  IF (>= ?m 644)
+  THEN ?user can_read ?file
+
+# =============================================================================
+# FILE OPERATIONS AS STATE TRANSITIONS
+# =============================================================================
+
+# Request to open file for reading
+# External event: process asserts (proc1 open_request notes_txt read)
+
+# RULE: Grant open if permitted and not exclusively locked
+RULE grant_open_read
+  WHEN ?proc open_request ?file read
+  AND ?proc run_as ?user
+  AND ?user can_read ?file
+  IF (not-exists (?file lock_holder ?any))
+  THEN ?proc has_open_fd ?file read
+  RETRACT ?proc open_request ?file read
+
+# Add as reader (multiple allowed)
+RULE add_reader
+  WHEN ?proc has_open_fd ?file read
+  THEN ?file reader ?proc
+
+# Request to open for writing (needs exclusive access)
+RULE grant_open_write
+  WHEN ?proc open_request ?file write
+  AND ?proc run_as ?user
+  AND ?user can_write ?file
+  IF (not-exists (?file lock_holder ?any))
+  IF (not-exists (?file reader ?any))
+  THEN ?proc has_open_fd ?file write
+  AND ?file lock_holder ?proc
+  RETRACT ?proc open_request ?file write
+
+# =============================================================================
+# CLOSE OPERATIONS
+# =============================================================================
+
+# Close read handle
+RULE close_read
+  WHEN ?proc close_request ?file read
+  AND ?proc has_open_fd ?file read
+  THEN ?proc closed_fd ?file read
+  RETRACT ?proc has_open_fd ?file read
+  RETRACT ?file reader ?proc
+  RETRACT ?proc close_request ?file read
+
+# Close write handle (release lock)
+RULE close_write
+  WHEN ?proc close_request ?file write
+  AND ?proc has_open_fd ?file write
+  AND ?file lock_holder ?proc
+  THEN ?proc closed_fd ?file write
+  RETRACT ?proc has_open_fd ?file write
+  RETRACT ?file lock_holder ?proc
+  RETRACT ?proc close_request ?file write
+
+# =============================================================================
+# WRITE OPERATION (sketch)
+# =============================================================================
+
+# Process with write fd can submit write
+# RULE write_data
+#   WHEN ?proc write_request ?file ?newcontent
+#   AND ?proc has_open_fd ?file write
+#   AND ?file lock_holder ?proc
+#   THEN ?file content ?newcontent
+#   AND ?file modified_at (current_tick)   # PROBLEM: No current_tick primitive!
+#   RETRACT ?proc write_request ?file ?newcontent
+
+# PROBLEM: (current_tick) doesn't exist. Time reference in templates.
+# Options:
+# 1. External oracle: (system current_tick 47), pattern on it
+# 2. Built-in function: add current_tick as an Expr operator
+# 3. Reaction rule with access to world.tick
+
+# =============================================================================
+# PATH TRAVERSAL (THE HARD PART)
+# =============================================================================
+
+# "Resolve /home/alice/notes.txt to its file entity"
+#
+# PROBLEM: Path is a STRING or list of names. Directory containment is
+# a graph of facts. Mapping one to the other requires:
+# 1. Parsing the path string into components
+# 2. Iteratively traversing: root → home → alice → notes.txt
+#
+# HERB has no string parsing. HERB has no iteration with accumulators.
+# Path resolution would need to be pre-computed externally or done with
+# a recursive rule that "walks" the path step by step.
+
+# Attempt at path step resolution:
+# If we model paths as linked facts: (pathstep_1 next pathstep_2)...
+# This is verbose but workable.
+
+# FACT resolve_request is_a resolve_request
+# FACT resolve_request path "/home/alice/notes.txt"
+# FACT resolve_request step 0
+# FACT resolve_request current_entity root
+
+# RULE resolve_step
+#   WHEN ?req is_a resolve_request
+#   AND ?req step ?n
+#   AND ?req current_entity ?dir
+#   AND ?req path_component ?n ?name
+#   AND ?dir contains ?child
+#   AND ?child name ?name
+#   THEN ?req step (+ ?n 1)
+#   AND ?req current_entity ?child
+#   RETRACT ?req step ?n
+#   RETRACT ?req current_entity ?dir
+
+# This could work but requires:
+# - Pre-parsing path into (req path_component 0 "home"), (req path_component 1 "alice"), etc.
+# - Multiple ticks to resolve one path
+# - Complex bookkeeping
+
+# =============================================================================
+# NOTES: WHAT'S PAINFUL
+# =============================================================================
+#
+# 1. **NO BITWISE OPERATIONS**
+#    Unix permissions are fundamentally bit masks. Mode 644 = rw-r--r--.
+#    Checking "can group read?" means (mode & 040) != 0. HERB has mod but
+#    not bitwise AND/OR. Would need to encode mode differently.
+#
+# 2. **NO STRING OPERATIONS**
+#    Path "/home/alice/notes.txt" can't be parsed, split, compared.
+#    Path resolution requires pre-structuring paths as facts.
+#
+# 3. **NO current_tick PRIMITIVE**
+#    "Set modified_at to now" requires knowing the current tick in templates.
+#    Currently only available in procedural code (world.tick).
+#
+# 4. **ITERATION/RECURSION IS TICK-BASED**
+#    Path traversal takes N ticks for N components. A single read() syscall
+#    in a real OS is sub-microsecond. Model vs execution mismatch.
+#
+# 5. **CONCURRENT ACCESS NEEDS CARE**
+#    Multiple readers work (multi-valued reader relation).
+#    Exclusive write lock works (FUNCTIONAL lock_holder + not-exists guard).
+#    But upgrade (read → write) and downgrade (write → read) are complex.
+#
+# =============================================================================
+# NOTES: WHAT WORKS
+# =============================================================================
+#
+# 1. **HIERARCHICAL STRUCTURE IS NATURAL**
+#    (dir contains file), (file parent dir) captures hierarchy perfectly.
+#    Both directions for different query patterns.
+#
+# 2. **PERMISSIONS AS DERIVATIONS**
+#    "Can user X read file Y?" becomes a derived fact. The causal chain
+#    (ownership → membership → mode check) is preserved and explainable.
+#
+# 3. **LOCKS AS FACTS**
+#    FUNCTIONAL lock_holder + not-exists guard is elegant for exclusive locks.
+#    No mutex primitives needed.
+#
+# 4. **OPERATION HISTORY FREE**
+#    Every open, read, write, close is a fact with provenance.
+#    "What files did process P access?" is a query.
+#    "Why was access denied?" traces to the permission rule that failed.
+#
+# 5. **STATE MACHINE FOR FD LIFECYCLE**
+#    open_request → has_open_fd → close_request → closed_fd
+#    Clean state transitions with RETRACT consuming triggers.
+#
+# =============================================================================
+# MISSING LANGUAGE FEATURES (proposed)
+# =============================================================================
+#
+# 1. **BITWISE OPERATORS**: (band a b), (bor a b), (bxor a b), (bnot a)
+#    Essential for permissions, flags, packed data.
+#
+# 2. **CURRENT_TICK PRIMITIVE**: (current-tick) evaluates to world.tick
+#    Needed for timestamps in templates.
+#
+# 3. **STRING OPERATIONS** (maybe):
+#    (split path "/") → facts for each component
+#    (concat a b c) → combined string
+#    Or: keep strings out of HERB, model everything as atoms/entities.
+#
+# =============================================================================

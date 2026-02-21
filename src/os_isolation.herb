@@ -1,0 +1,277 @@
+# =============================================================================
+# OS EXPERIMENT 3: PROCESS ISOLATION / NAMESPACES
+# =============================================================================
+# Exploring how HERB might handle isolated execution contexts.
+#
+# Current state: HERB has ONE World. All facts are visible to all rules.
+# This is like a single-user, single-process system — no isolation.
+#
+# Real OSes need:
+# - Process address spaces (can't see each other's memory)
+# - User namespaces (root in container ≠ root on host)
+# - Network namespaces (isolated network stacks)
+# - Mount namespaces (different filesystem views)
+#
+# Goal: Sketch what isolation would look like in HERB.
+# This is exploration, not implementation.
+# =============================================================================
+
+# =============================================================================
+# OPTION 1: NAMESPACED FACTS (prefix everything)
+# =============================================================================
+#
+# The simplest hack: every fact belongs to a namespace, and rules pattern
+# on the namespace to filter visibility.
+#
+# (ns1 proc_a hp 100)           # fact in namespace ns1
+# (ns2 proc_b hp 200)           # fact in namespace ns2
+#
+# RULE within_namespace
+#   WHEN ?ns ?proc hp ?hp
+#   AND ?ns ?proc2 hp ?hp2
+#   AND (= ?ns ?ns)             # redundant but explicit: same namespace
+#   THEN ?ns ?proc sees ?proc2
+#
+# PROBLEMS:
+# - Every pattern gets an extra ?ns variable. Very verbose.
+# - Rules must be namespace-aware. No isolation by default.
+# - Accidental cross-namespace access is easy (forget the ?ns check).
+# - Performance: index lookups now need (ns, subj, rel) compound keys.
+#
+# This is capability-based, not isolation. Any rule CAN access any namespace
+# if it patterns on it. Real isolation needs enforced boundaries.
+
+# =============================================================================
+# OPTION 2: MULTIPLE WORLDS
+# =============================================================================
+#
+# Each "process" or "namespace" is a separate World instance.
+# Rules in World A can't see facts in World B.
+#
+# world_a = World()
+# world_b = World()
+#
+# # Process A's facts live in world_a
+# world_a.assert_fact("proc_a", "hp", 100)
+#
+# # Process B's facts live in world_b
+# world_b.assert_fact("proc_b", "hp", 200)
+#
+# # Rules in world_a never see world_b's facts.
+#
+# PROBLEMS:
+# - How do worlds communicate? Need IPC facts.
+# - Where do shared facts live (e.g., hardware state)?
+# - How does a "kernel" see all worlds to schedule them?
+# - Rules are per-world or global? If per-world, duplication.
+#
+# This needs ARCHITECTURAL CHANGES:
+#
+# struct WorldGroup {
+#     worlds: Map<WorldID, World>,
+#     shared: World,  // kernel/hardware facts visible to all
+#     channels: Map<ChannelID, MessageQueue>,
+# }
+#
+# A "hypervisor" World could have rules that schedule/manage other Worlds.
+
+# =============================================================================
+# OPTION 3: FACT VISIBILITY TAGS
+# =============================================================================
+#
+# Facts have visibility metadata. Pattern matching filters by visibility.
+#
+# (proc_a hp 100 [visible_to: ns1])
+# (kernel_event foo [visible_to: ALL])
+#
+# The query engine respects visibility:
+# - world.query_as(namespace=ns1, patterns...) only sees ns1 and ALL
+#
+# PROBLEMS:
+# - Adds metadata to every fact. Storage and complexity cost.
+# - Still capability-based unless enforced at query construction.
+# - Rules need to know their "execution context" to query correctly.
+#
+# This is cleaner than Option 1 but still opt-in, not enforced.
+
+# =============================================================================
+# OPTION 4: WORLD LAYERS (COMPOSABLE VIEWS)
+# =============================================================================
+#
+# Worlds can "inherit" from parent worlds. Child sees parent's facts
+# but parent can't see child's. Like Docker layers.
+#
+# kernel_world: hardware facts, syscall handlers
+#   └── user_world_1: user 1's processes
+#   └── user_world_2: user 2's processes
+#         └── container_world: container's isolated view
+#
+# Each layer:
+# - Queries traverse up to see parent facts
+# - Assertions stay in current layer (copy-on-write for FUNCTIONAL?)
+# - Retractions... unclear. Retract parent's fact? Shadow it?
+#
+# This is elegant for READ but WRITE is messy:
+# - Child writes to shared HP: visible to parent? siblings?
+# - Child retracts parent's fact: actually removed, or just hidden?
+# - Circular inheritance? (probably disallow)
+
+# =============================================================================
+# SKETCH: MESSAGE PASSING BETWEEN ISOLATED WORLDS
+# =============================================================================
+#
+# Two worlds can communicate via explicit channels.
+# A channel is a fact visible to both (or a shared buffer world).
+
+# Shared "bus" world for IPC
+# FACT channel_1 is_a channel
+# FACT channel_1 endpoint_a ns1
+# FACT channel_1 endpoint_b ns2
+
+# Process in ns1 sends a message:
+# (in ns1's world)
+# FACT msg_001 is_a message
+# FACT msg_001 from proc_a
+# FACT msg_001 to channel_1
+# FACT msg_001 payload "hello"
+
+# Kernel rule: move message from sender world to channel buffer
+# (in kernel world, with access to both)
+# RULE deliver_message
+#   WHEN ?msg is_a message
+#   AND ?msg to ?chan
+#   AND ?chan is_a channel
+#   THEN ?chan has_pending ?msg
+
+# Process in ns2 receives:
+# RULE receive_message
+#   WHEN ?chan has_pending ?msg
+#   AND ?chan endpoint_b ?ns
+#   AND ?msg payload ?data
+#   # ... ?ns gets the payload
+#   THEN ?ns received ?msg
+#   RETRACT ?chan has_pending ?msg
+
+# THIS REQUIRES:
+# - Multi-world orchestration (kernel world runs rules that see other worlds)
+# - Cross-world fact visibility (carefully controlled)
+# - Message queue semantics (FIFO? ordering guarantees?)
+
+# =============================================================================
+# THE FUNDAMENTAL QUESTION
+# =============================================================================
+#
+# HERB's paradigm assumes a single, unified fact store where rules derive
+# new facts from existing ones. This is inherently a SHARED EVERYTHING model.
+#
+# Isolation is the OPPOSITE: different views of reality for different actors.
+# Two processes can have (proc hp 100) and (proc hp 200) — different truths
+# about the same entity.
+#
+# In a game, this doesn't happen much. Everyone sees the same world state.
+# (Fog of war is an exception — Alice sees goblin, Bob doesn't.)
+#
+# In an OS, this is fundamental. Process A's memory is reality for A.
+# Process B's memory is a different reality. Neither is "true" — they coexist.
+#
+# HERB must decide: Is there ONE truth or MANY truths?
+#
+# If ONE truth: isolation is a query-time filter. Facts exist but are hidden.
+# If MANY truths: isolation is structural. Multiple fact stores.
+#
+# The ONE truth model is simpler but breaks provenance:
+# - "Why does Process A see HP=100?" becomes a visibility check, not causality.
+#
+# The MANY truths model preserves provenance per-context but complicates:
+# - Shared resources (hardware, kernel state)
+# - Communication (facts crossing boundaries)
+# - Global queries (what if we NEED to see everything for admin/debug?)
+
+# =============================================================================
+# PROPOSED ARCHITECTURE: HERB MULTIVERSE
+# =============================================================================
+#
+# A "Verse" contains multiple "Worlds" with defined visibility relationships.
+#
+# class Verse:
+#     kernel: World                        # Hardware, syscalls, IPC
+#     user_worlds: dict[UserID, World]     # Per-user isolation
+#     channels: dict[ChannelID, World]     # Shared message buffers
+#
+#     def query_as(world_id, patterns):
+#         # Query sees: own world + kernel + channels
+#         ...
+#
+#     def assert_in(world_id, fact):
+#         # Assertion goes to specified world only
+#         ...
+#
+# Rules would specify their execution context:
+#
+# RULE in_world kernel
+#   WHEN ...
+#   THEN ...
+#
+# RULE in_world user_alice
+#   WHEN ...
+#   THEN ...
+#
+# This is a MAJOR architectural change. It changes:
+# - World class (or adds Verse wrapper)
+# - Rule definition (add world context)
+# - Query engine (add visibility filtering)
+# - Derivation engine (rules run in their world context)
+#
+# NOT implementing this now. Recording as a design direction.
+
+# =============================================================================
+# SIMPLER ALTERNATIVE: CAPABILITY TOKENS
+# =============================================================================
+#
+# Instead of physical isolation, use unforgeable tokens.
+# A "process" is just a token. Facts scoped by token.
+#
+# (token_abc123 proc_a is_a process)
+# (token_abc123 proc_a hp 100)
+#
+# Rules receive their token as a bound variable from the context that
+# invoked derivation. They can only see facts with matching token.
+#
+# RULE scoped_derivation
+#   GIVEN ?ctx                          # Execution context token
+#   WHEN ?ctx ?proc hp ?hp
+#   AND ?ctx ?proc pending_damage ?dmg
+#   THEN ?ctx ?proc hp (- ?hp ?dmg)
+#   RETRACT ?ctx ?proc hp ?hp
+#   RETRACT ?ctx ?proc pending_damage ?dmg
+#
+# The "GIVEN" clause binds the context token. Rules without GIVEN are global.
+#
+# This is less isolation (tokens can be shared/stolen if you know them)
+# but works within the current single-World model.
+
+# =============================================================================
+# VERDICT
+# =============================================================================
+#
+# **HERB cannot currently model OS isolation.**
+#
+# The single-World, all-facts-visible model is fundamentally incompatible
+# with isolated address spaces and process boundaries.
+#
+# To support OS isolation, HERB needs ONE of:
+# 1. **Multi-World architecture** (structural isolation)
+# 2. **Visibility metadata** (query-time filtering)
+# 3. **Capability tokens** (convention-based scoping)
+#
+# Option 1 is the cleanest but requires major refactoring.
+# Option 2 is pragmatic but doesn't give true isolation.
+# Option 3 works now but is error-prone.
+#
+# For the OS mission, this is a CRITICAL GAP. No isolation = no OS.
+#
+# Recommendation: Design the Multi-World architecture carefully, then
+# implement incrementally. Start with a Verse that contains exactly
+# one World (backward compatible), then add multi-world support.
+#
+# =============================================================================
