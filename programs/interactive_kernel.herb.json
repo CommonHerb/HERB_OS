@@ -315,12 +315,13 @@
     },
     {
       "module": "display",
-      "exports": ["Surface", "VISIBLE", "HIDDEN", "SURFACE", "show_surface", "hide_surface"],
+      "exports": ["Surface", "DisplayCtl", "VISIBLE", "HIDDEN", "SURFACE", "DISPLAY_STATE", "show_surface", "hide_surface"],
       "imports": [
         "proc.Process", "proc.CPU0", "proc.READY", "proc.BLOCKED", "proc.TERMINATED",
-        "proc.CLICK_SIG", "proc.SIG_DONE", "proc.consume_signal"
+        "proc.CLICK_SIG", "proc.SIG_DONE", "proc.consume_signal",
+        "input.InputCtl", "input.INPUT_STATE"
       ],
-      "entity_types": [{"name": "Surface"}],
+      "entity_types": [{"name": "Surface"}, {"name": "DisplayCtl"}],
       "entity_type_extensions": [
         {
           "extend": "Process",
@@ -330,8 +331,9 @@
         }
       ],
       "containers": [
-        {"name": "VISIBLE", "kind": "simple", "entity_type": "Surface"},
-        {"name": "HIDDEN",  "kind": "simple", "entity_type": "Surface"}
+        {"name": "VISIBLE",       "kind": "simple", "entity_type": "Surface"},
+        {"name": "HIDDEN",        "kind": "simple", "entity_type": "Surface"},
+        {"name": "DISPLAY_STATE", "kind": "slot",   "entity_type": "DisplayCtl"}
       ],
       "moves": [
         {"name": "show_surface", "from": ["HIDDEN"], "to": ["VISIBLE"], "entity_type": "Surface"},
@@ -347,7 +349,9 @@
              "where": {"op": "!=", "left": {"prop": "state", "of": "surf"}, "right": 1}}
           ],
           "emit": [
-            {"set": "surf", "property": "state", "value": 1}
+            {"set": "surf", "property": "state", "value": 1},
+            {"set": "surf", "property": "border_color", "value": 52326},
+            {"set": "surf", "property": "fill_color", "value": 1060896}
           ]
         },
         {
@@ -359,7 +363,9 @@
              "where": {"op": "!=", "left": {"prop": "state", "of": "surf"}, "right": 2}}
           ],
           "emit": [
-            {"set": "surf", "property": "state", "value": 2}
+            {"set": "surf", "property": "state", "value": 2},
+            {"set": "surf", "property": "border_color", "value": 13412864},
+            {"set": "surf", "property": "fill_color", "value": 2629648}
           ]
         },
         {
@@ -371,7 +377,9 @@
              "where": {"op": "!=", "left": {"prop": "state", "of": "surf"}, "right": 3}}
           ],
           "emit": [
-            {"set": "surf", "property": "state", "value": 3}
+            {"set": "surf", "property": "state", "value": 3},
+            {"set": "surf", "property": "border_color", "value": 13382451},
+            {"set": "surf", "property": "fill_color", "value": 2625552}
           ]
         },
         {
@@ -383,7 +391,9 @@
              "where": {"op": "!=", "left": {"prop": "state", "of": "surf"}, "right": 4}}
           ],
           "emit": [
-            {"set": "surf", "property": "state", "value": 4}
+            {"set": "surf", "property": "state", "value": 4},
+            {"set": "surf", "property": "border_color", "value": 5592405},
+            {"set": "surf", "property": "fill_color", "value": 1579032}
           ]
         },
         {
@@ -475,6 +485,28 @@
           ]
         },
         {
+          "name": "click_panel",
+          "priority": 5,
+          "match": [
+            {"bind": "click", "in": "CLICK_SIG", "select": "first"},
+            {"bind": "panel", "in": "VISIBLE", "select": "first",
+             "where": {"op": "==", "left": {"prop": "kind", "of": "panel"}, "right": 4}},
+            {"bind": "ctl", "in": "INPUT_STATE"},
+            {"guard": {"op": "and",
+              "left": {"op": "and",
+                "left": {"op": ">=", "left": {"prop": "click_x", "of": "click"}, "right": {"prop": "x", "of": "panel"}},
+                "right": {"op": "<", "left": {"prop": "click_x", "of": "click"}, "right": {"op": "+", "left": {"prop": "x", "of": "panel"}, "right": {"prop": "width", "of": "panel"}}}},
+              "right": {"op": "and",
+                "left": {"op": ">=", "left": {"prop": "click_y", "of": "click"}, "right": {"prop": "y", "of": "panel"}},
+                "right": {"op": "<", "left": {"prop": "click_y", "of": "click"}, "right": {"op": "+", "left": {"prop": "y", "of": "panel"}, "right": {"prop": "height", "of": "panel"}}}}
+            }}
+          ],
+          "emit": [
+            {"set": "ctl", "property": "panel_click", "value": 1},
+            {"move": "consume_signal", "entity": "click", "to": "SIG_DONE"}
+          ]
+        },
+        {
           "name": "click_miss",
           "priority": 3,
           "match": [
@@ -488,8 +520,8 @@
     },
     {
       "module": "input",
-      "exports": ["Char", "InputCtl", "ShellCtl", "CHAR_POOL", "CMDLINE", "INPUT_STATE",
-                   "SHELL_STATE", "type_char", "erase_char"],
+      "exports": ["Char", "InputCtl", "ShellCtl", "MechBind", "CHAR_POOL", "CMDLINE", "INPUT_STATE",
+                   "SHELL_STATE", "MECHBIND", "type_char", "erase_char"],
       "imports": [
         "proc.Signal", "proc.KEY_SIG", "proc.CMD_SIG", "proc.SIG_DONE", "proc.consume_signal"
       ],
@@ -499,7 +531,8 @@
         {"name": "ShellCtl"},
         {"name": "KeyBind"},
         {"name": "TextCmd"},
-        {"name": "TextArg"}
+        {"name": "TextArg"},
+        {"name": "MechBind"}
       ],
       "containers": [
         {"name": "CHAR_POOL",   "kind": "simple", "entity_type": "Char"},
@@ -508,7 +541,8 @@
         {"name": "SHELL_STATE", "kind": "slot",   "entity_type": "ShellCtl"},
         {"name": "KEYBIND",     "kind": "simple", "entity_type": "KeyBind"},
         {"name": "TEXTCMD",     "kind": "simple", "entity_type": "TextCmd"},
-        {"name": "TEXTARG",     "kind": "simple", "entity_type": "TextArg"}
+        {"name": "TEXTARG",     "kind": "simple", "entity_type": "TextArg"},
+        {"name": "MECHBIND",   "kind": "simple", "entity_type": "MechBind"}
       ],
       "moves": [
         {"name": "type_char",  "from": ["CHAR_POOL"], "to": ["CMDLINE"],   "entity_type": "Char"},
@@ -642,17 +676,36 @@
           ]
         },
         {
-          "name": "keybind_match",
-          "priority": 22,
+          "name": "keybind_route",
+          "priority": 23,
           "match": [
-            {"bind": "cmd", "in": "CMD_SIG", "select": "first",
-             "where": {"op": ">", "left": {"prop": "key_ascii", "of": "cmd"}, "right": 0}},
+            {"bind": "key", "in": "KEY_SIG", "select": "first",
+             "where": {"op": ">", "left": {"prop": "ascii", "of": "key"}, "right": 0}},
+            {"bind": "ctl", "in": "INPUT_STATE",
+             "where": {"op": "==", "left": {"prop": "mode", "of": "ctl"}, "right": 0}},
             {"bind": "bind", "in": "KEYBIND", "select": "first",
-             "where": {"op": "==", "left": {"prop": "key_ascii", "of": "cmd"}, "right": {"prop": "key", "of": "bind"}}}
+             "where": {"op": "==", "left": {"prop": "ascii", "of": "key"}, "right": {"prop": "key", "of": "bind"}}}
           ],
           "emit": [
-            {"set": "cmd", "property": "cmd_id", "value": {"prop": "cmd_id", "of": "bind"}},
-            {"set": "cmd", "property": "arg_id", "value": {"prop": "arg_id", "of": "bind"}}
+            {"set": "ctl", "property": "pending_cmd", "value": {"prop": "cmd_id", "of": "bind"}},
+            {"set": "ctl", "property": "pending_arg", "value": {"prop": "arg_id", "of": "bind"}},
+            {"move": "consume_signal", "entity": "key", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "mechbind_match",
+          "priority": 23,
+          "match": [
+            {"bind": "key", "in": "KEY_SIG", "select": "first",
+             "where": {"op": ">", "left": {"prop": "ascii", "of": "key"}, "right": 0}},
+            {"bind": "ctl", "in": "INPUT_STATE",
+             "where": {"op": "==", "left": {"prop": "mode", "of": "ctl"}, "right": 0}},
+            {"bind": "bind", "in": "MECHBIND", "select": "first",
+             "where": {"op": "==", "left": {"prop": "ascii", "of": "key"}, "right": {"prop": "key", "of": "bind"}}}
+          ],
+          "emit": [
+            {"set": "ctl", "property": "mech_action", "value": {"prop": "action", "of": "bind"}},
+            {"move": "consume_signal", "entity": "key", "to": "SIG_DONE"}
           ]
         },
         {
@@ -791,25 +844,31 @@
 
     {"name": "surf_server", "type": "display.Surface",
      "in": {"scope": "server", "container": "SURFACE"},
-     "properties": {"kind": 1, "state": 0}},
+     "properties": {"kind": 1, "state": 0, "border_color": 0, "fill_color": 0}},
     {"name": "surf_client", "type": "display.Surface",
      "in": {"scope": "client", "container": "SURFACE"},
-     "properties": {"kind": 1, "state": 0}},
+     "properties": {"kind": 1, "state": 0, "border_color": 0, "fill_color": 0}},
 
     {"name": "cursor", "type": "display.Surface", "in": "display.VISIBLE",
      "properties": {"kind": 2, "x": 400, "y": 300}},
 
     {"name": "region_cpu0", "type": "display.Surface", "in": "display.VISIBLE",
-     "properties": {"kind": 0, "region_id": 0, "x": 8, "y": 76, "width": 262, "height": 190}},
+     "properties": {"kind": 0, "region_id": 0, "x": 8, "y": 76, "width": 262, "height": 190, "border_color": 52326, "fill_color": 1060896}},
     {"name": "region_ready", "type": "display.Surface", "in": "display.VISIBLE",
-     "properties": {"kind": 0, "region_id": 1, "x": 278, "y": 76, "width": 262, "height": 190}},
+     "properties": {"kind": 0, "region_id": 1, "x": 278, "y": 76, "width": 262, "height": 190, "border_color": 13412864, "fill_color": 2629648}},
     {"name": "region_blocked", "type": "display.Surface", "in": "display.VISIBLE",
-     "properties": {"kind": 0, "region_id": 2, "x": 8, "y": 274, "width": 262, "height": 190}},
+     "properties": {"kind": 0, "region_id": 2, "x": 8, "y": 274, "width": 262, "height": 190, "border_color": 13382451, "fill_color": 2625552}},
     {"name": "region_term", "type": "display.Surface", "in": "display.VISIBLE",
-     "properties": {"kind": 0, "region_id": 3, "x": 278, "y": 274, "width": 262, "height": 190}},
+     "properties": {"kind": 0, "region_id": 3, "x": 278, "y": 274, "width": 262, "height": 190, "border_color": 5592405, "fill_color": 1579032}},
+
+    {"name": "region_panel", "type": "display.Surface", "in": "display.VISIBLE",
+     "properties": {"kind": 4, "region_id": 4, "x": 548, "y": 98, "width": 244, "height": 350}},
+
+    {"name": "display_ctl", "type": "display.DisplayCtl", "in": "display.DISPLAY_STATE",
+     "properties": {"max_terminated": 3, "max_procs_per_region": 12}},
 
     {"name": "input_ctl", "type": "input.InputCtl", "in": "input.INPUT_STATE",
-     "properties": {"mode": 0, "submitted": 0}},
+     "properties": {"mode": 0, "submitted": 0, "pending_cmd": 0, "pending_arg": 0, "mech_action": 0, "panel_click": 0}},
 
     {"name": "shell_ctl", "type": "input.ShellCtl", "in": "input.SHELL_STATE",
      "properties": {"action": 0}},
@@ -858,6 +917,31 @@
      "properties": {"text_key": 30319, "arg_id": 3}},
     {"name": "targ_beacon", "type": "input.TextArg", "in": "input.TEXTARG",
      "properties": {"text_key": 24933, "arg_id": 4}},
+
+    {"name": "mech_t",     "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 116, "action": 1}},
+    {"name": "mech_plus",  "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 43, "action": 2}},
+    {"name": "mech_eq",    "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 61, "action": 2}},
+    {"name": "mech_space", "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 32, "action": 3}},
+    {"name": "mech_a",     "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 97, "action": 4}},
+    {"name": "mech_o",     "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 111, "action": 5}},
+    {"name": "mech_f",     "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 102, "action": 6}},
+    {"name": "mech_c",     "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 99, "action": 7}},
+    {"name": "mech_m",     "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 109, "action": 8}},
+    {"name": "mech_lbr",   "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 91, "action": 9}},
+    {"name": "mech_rbr",   "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 93, "action": 10}},
+    {"name": "mech_d",     "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 100, "action": 11}},
 
     {"name": "c00", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
     {"name": "c01", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},

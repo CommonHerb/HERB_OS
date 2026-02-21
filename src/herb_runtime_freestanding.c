@@ -34,13 +34,13 @@
  * CONFIGURATION
  * ============================================================ */
 
-#define MAX_ENTITIES      512
+#define MAX_ENTITIES      1024
 #define MAX_CONTAINERS    256
 #define MAX_MOVE_TYPES    64
 #define MAX_TENSIONS      64
 #define MAX_MATCH_CLAUSES 8
 #define MAX_EMIT_CLAUSES  8
-#define MAX_STRINGS       1024
+#define MAX_STRINGS       2048
 #define MAX_STRING_LEN    128
 #define MAX_ENTITY_PER_CONTAINER 64
 #define MAX_PROPERTIES    16
