@@ -45,9 +45,11 @@
 #define MAX_ENTITY_PER_CONTAINER 64
 #define MAX_PROPERTIES    16
 #define MAX_FROM_TO       16
+#ifndef HERB_BINARY_ONLY
 #define MAX_BINDINGS      32
 #define MAX_BINDING_SETS  128
 #define MAX_INTENDED_MOVES 128
+#endif
 #define MAX_STEPS         100
 #define MAX_OPS           2048
 #define MAX_SCOPE_TEMPLATES 16
@@ -335,6 +337,7 @@ typedef struct {
     int pair_mode;  /* 0 = zip, 1 = cross */
 } Tension;
 
+#ifndef HERB_BINARY_ONLY
 /* ============================================================
  * INTENDED ACTION
  * ============================================================ */
@@ -366,6 +369,7 @@ typedef struct {
     int dup_source_entity;
     int dup_container_idx;
 } IntendedAction;
+#endif
 
 /* ============================================================
  * CHANNEL
@@ -745,6 +749,7 @@ static int do_channel_receive(int ch_idx, int entity_idx, int to_container_idx) 
     return 1;
 }
 
+#ifndef HERB_BINARY_ONLY
 /* Quantity transfer */
 static int do_transfer(int tt_idx, int from_entity, int to_entity, int64_t amount) {
     TransferType* tt = &g_graph.transfer_types[tt_idx];
@@ -798,7 +803,9 @@ static int do_duplicate(int source_idx, int container_idx) {
     g_graph.op_count++;
     return ei;
 }
+#endif
 
+#ifndef HERB_BINARY_ONLY
 /* ============================================================
  * EXPRESSION EVALUATOR
  * ============================================================ */
@@ -1370,7 +1377,6 @@ int herb_run(int max_steps) {
     return total;
 }
 
-#ifndef HERB_BINARY_ONLY
 /* ============================================================
  * MINIMAL JSON PARSER (arena-allocated)
  *
@@ -2887,8 +2893,13 @@ int herb_tension_owner(int idx) {
     return g_graph.tensions[idx].owner;
 }
 
-/* Forward declaration — Phase 3c dirty flag (defined after HAM compiler) */
+/* Phase 3c dirty flag — defined after HAM compiler when HERB_BINARY_ONLY,
+ * no-op stub otherwise (test builds don't have HAM) */
+#ifdef HERB_BINARY_ONLY
 void ham_mark_dirty(void);
+#else
+static inline void ham_mark_dirty(void) {}
+#endif
 
 /* ============================================================
  * RUNTIME TENSION CREATION API
@@ -3884,12 +3895,16 @@ int ham_compile_all(uint8_t* buf, int buf_size, int* out_count) {
     return pos;
 }
 
+#ifdef HERB_BINARY_ONLY
 /* ============================================================
  * Phase 3c: Global HAM bytecode buffer + lazy recompilation
  *
  * All tension resolution goes through ham_run_ham(). The global
  * bytecode buffer is recompiled only when tensions change
  * (dirty flag set by mutation functions).
+ *
+ * Only compiled for bare metal (HERB_BINARY_ONLY) where
+ * herb_ham.asm provides ham_run(). Test builds use herb_run().
  * ============================================================ */
 
 #define HAM_BYTECODE_SIZE 8192
@@ -3911,9 +3926,10 @@ extern int ham_run(uint8_t* bytecode_ptr, int bytecode_len);
 
 int ham_run_ham(int max_steps) {
     ham_ensure_compiled();
-    if (g_ham_bytecode_len <= 0) return herb_run(max_steps);  /* fallback */
+    if (g_ham_bytecode_len <= 0) return 0;  /* no bytecode = no ops */
     return ham_run(g_ham_bytecode, g_ham_bytecode_len);
 }
 
 int ham_get_compiled_count(void) { return g_ham_compiled_count; }
 int ham_get_bytecode_len(void) { return g_ham_bytecode_len; }
+#endif /* HERB_BINARY_ONLY */

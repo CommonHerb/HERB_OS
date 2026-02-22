@@ -109,8 +109,6 @@
 
 extern void herb_init(void* arena_memory, herb_size_t arena_size, HerbErrorFn error_fn);
 extern int herb_load(const char* json_buf, herb_size_t json_len);
-extern int herb_run(int max_steps);
-extern int herb_step(void);
 extern int herb_create(const char* name, const char* type, const char* container);
 extern int herb_state(char* buf, int buf_size);
 extern int herb_set_prop_int(int entity_id, const char* property, int64_t value);
@@ -2111,7 +2109,7 @@ static void cmd_boost(void) {
 
 /* Step: run one tension cycle manually */
 static void cmd_step(void) {
-    int ops = herb_step();
+    int ops = ham_run_ham(1);
     total_ops += ops;
 
     herb_snprintf(last_action, sizeof(last_action),
