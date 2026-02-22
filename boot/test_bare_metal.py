@@ -1353,11 +1353,12 @@ def run_tests(image_path):
             if m:
                 tension_cnt = int(m.group(1))
                 bc_size = int(m.group(2))
+                print(f"  INFO: HAM compiled {tension_cnt} tensions, {bc_size} bytes")
                 t.check("HAM compiled >= 10 tensions",
                          tension_cnt >= 10,
                          f"got {tension_cnt}")
-                t.check("HAM bytecode size reasonable (50-2000 bytes)",
-                         50 <= bc_size <= 2000,
+                t.check("HAM bytecode size reasonable (50-3000 bytes)",
+                         50 <= bc_size <= 3000,
                          f"got {bc_size}")
 
             # ---- TEST: HAM Execution ----

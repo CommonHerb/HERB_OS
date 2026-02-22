@@ -2419,7 +2419,7 @@ static void cmd_tension_toggle(void) {
  * ============================================================ */
 
 static void cmd_ham_test(void) {
-    static uint8_t ham_bc[2048];
+    static uint8_t ham_bc[4096];
     static int ham_bc_len = 0;
     static int ham_tension_cnt = 0;
 

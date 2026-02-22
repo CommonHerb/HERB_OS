@@ -3361,11 +3361,30 @@ int ham_try_move(int mt_idx, int entity_idx, int to_container_idx) {
     return try_move(mt_idx, entity_idx, to_container_idx);
 }
 
-/* Sets integer property on entity */
-void ham_eset(int entity_idx, int prop_id, int64_t value) {
+/* Sets integer property on entity. Returns 1 if value changed, 0 if same. */
+int ham_eset(int entity_idx, int prop_id, int64_t value) {
     if (entity_idx < 0 || entity_idx >= g_graph.entity_count)
-        return;
+        return 0;
+    PropVal old = entity_get_prop(entity_idx, prop_id);
+    if (old.type == PV_INT && old.i == value)
+        return 0;  /* Value unchanged */
     entity_set_prop(entity_idx, prop_id, pv_int(value));
+    return 1;
+}
+
+/* Resolve scoped container: entity_idx + scope_name → container_idx */
+int ham_resolve_scope(int entity_idx, int scope_name_id) {
+    return get_scoped_container(entity_idx, scope_name_id);
+}
+
+/* Try channel send: move entity from sender scope to channel buffer */
+int ham_try_channel_send(int ch_idx, int entity_idx) {
+    return do_channel_send(ch_idx, entity_idx);
+}
+
+/* Try channel receive: move entity from channel buffer to target container */
+int ham_try_channel_recv(int ch_idx, int entity_idx, int to_container_idx) {
+    return do_channel_receive(ch_idx, entity_idx, to_container_idx);
 }
 
 /* Non-static wrapper around intern() */
@@ -3470,14 +3489,9 @@ static int ham_tension_compilable(Tension* t) {
     for (int i = 0; i < t->match_count; i++) {
         MatchClause* mc = &t->matches[i];
         if (mc->kind == MC_ENTITY_IN) {
-            if (mc->scope_bind_id >= 0) return 0;
-            if (mc->channel_idx >= 0) return 0;
-            if (mc->select == SEL_EACH) return 0;
-            if (mc->select == SEL_MIN_BY) return 0;
             if (mc->where_expr && !ham_expr_compilable(mc->where_expr)) return 0;
         } else if (mc->kind == MC_EMPTY_IN) {
             if (mc->container_count != 1) return 0;
-            if (mc->bind_id >= 0 && mc->select == SEL_EACH) return 0;
         } else if (mc->kind == MC_GUARD) {
             if (!mc->guard_expr || !ham_expr_compilable(mc->guard_expr)) return 0;
         } else if (mc->kind == MC_CONTAINER_IS) {
@@ -3490,11 +3504,15 @@ static int ham_tension_compilable(Tension* t) {
     for (int i = 0; i < t->emit_count; i++) {
         EmitClause* ec = &t->emits[i];
         if (ec->kind == EC_MOVE) {
-            if (ec->to_scope_bind_id >= 0) return 0;
+            /* Scoped and non-scoped both supported */
         } else if (ec->kind == EC_SET) {
             if (!ec->value_expr || !ham_expr_compilable(ec->value_expr)) return 0;
+        } else if (ec->kind == EC_SEND) {
+            /* Supported */
+        } else if (ec->kind == EC_RECEIVE) {
+            /* Supported (scoped target) */
         } else {
-            return 0; /* EC_SEND, EC_RECEIVE, EC_TRANSFER, EC_DUPLICATE */
+            return 0; /* EC_TRANSFER, EC_DUPLICATE */
         }
     }
 
@@ -3502,10 +3520,10 @@ static int ham_tension_compilable(Tension* t) {
 }
 
 /* ---- Binding register map ---- */
-#define HAM_MAX_BINDS 3
+#define HAM_MAX_BINDS 4
 typedef struct {
     int ids[HAM_MAX_BINDS];    /* interned bind name */
-    int regs[HAM_MAX_BINDS];   /* register index 0=B0, 1=B1, 2=B2 */
+    int regs[HAM_MAX_BINDS];   /* register index 0=B0, 1=B1, 2=B2, 3=B3 */
     int count;
 } HamBindMap;
 
@@ -3614,9 +3632,33 @@ static int ham_compile_tension(Tension* t, uint8_t* buf, int* pos,
         MatchClause* mc = &t->matches[i];
 
         if (mc->kind == MC_ENTITY_IN) {
-            /* SCAN container */
-            buf[(*pos)++] = 0x01;
-            ham_put_u16(buf, pos, (uint16_t)mc->container_idx);
+            /* SCAN container (may be scoped or channel) */
+            if (mc->scope_bind_id >= 0) {
+                /* Scoped: try binding register first, fallback to entity name */
+                int scope_reg = ham_bind_lookup(&bm, mc->scope_bind_id);
+                if (scope_reg >= 0) {
+                    /* Owner is a bound entity — resolve at runtime */
+                    buf[(*pos)++] = 0x02; /* SCAN_SCOPED */
+                    buf[(*pos)++] = (uint8_t)scope_reg;
+                    ham_put_u16(buf, pos, (uint16_t)mc->scope_cname_id);
+                } else {
+                    /* Owner is a global entity name — resolve at compile time */
+                    int scope_eid = graph_find_entity_by_name(mc->scope_bind_id);
+                    if (scope_eid < 0) return 0;
+                    int scoped_ctnr = get_scoped_container(scope_eid, mc->scope_cname_id);
+                    if (scoped_ctnr < 0) return 0;
+                    buf[(*pos)++] = 0x01; /* SCAN (normal — into resolved scoped container) */
+                    ham_put_u16(buf, pos, (uint16_t)scoped_ctnr);
+                }
+            } else if (mc->channel_idx >= 0) {
+                /* Channel: resolve buffer container at compile time */
+                int buffer_ctnr = g_graph.channels[mc->channel_idx].buffer_container_idx;
+                buf[(*pos)++] = 0x01; /* SCAN (normal — into channel buffer) */
+                ham_put_u16(buf, pos, (uint16_t)buffer_ctnr);
+            } else {
+                buf[(*pos)++] = 0x01; /* SCAN (normal) */
+                ham_put_u16(buf, pos, (uint16_t)mc->container_idx);
+            }
 
             /* WHERE filter (if any) */
             if (mc->where_expr && mc->bind_id >= 0) {
@@ -3641,6 +3683,13 @@ static int ham_compile_tension(Tension* t, uint8_t* buf, int* pos,
                     buf[(*pos)++] = 0x04; /* SEL_MAX */
                     buf[(*pos)++] = (uint8_t)reg;
                     ham_put_u16(buf, pos, (uint16_t)mc->key_prop_id);
+                } else if (mc->select == SEL_MIN_BY) {
+                    buf[(*pos)++] = 0x05; /* SEL_MIN */
+                    buf[(*pos)++] = (uint8_t)reg;
+                    ham_put_u16(buf, pos, (uint16_t)mc->key_prop_id);
+                } else if (mc->select == SEL_EACH) {
+                    buf[(*pos)++] = 0x06; /* SEL_EACH */
+                    buf[(*pos)++] = (uint8_t)reg;
                 }
             }
 
@@ -3692,25 +3741,46 @@ static int ham_compile_tension(Tension* t, uint8_t* buf, int* pos,
         if (ec->kind == EC_MOVE) {
             int reg = ham_bind_lookup(&bm, ec->entity_ref);
             if (reg < 0) return 0;
-            /* Resolve to_ref to container index at compile time.
-             * First try as container name. If that fails, check if
-             * to_ref is a bind name from MC_EMPTY_IN (e.g., "to": "cpu"
-             * where "cpu" was bound via empty_in). */
-            int to_ctnr = graph_find_container_by_name(ec->to_ref);
-            if (to_ctnr < 0) {
-                for (int mi = 0; mi < t->match_count; mi++) {
-                    MatchClause* mc2 = &t->matches[mi];
-                    if (mc2->kind == MC_EMPTY_IN && mc2->bind_id == ec->to_ref) {
-                        to_ctnr = mc2->containers[0];
-                        break;
+
+            if (ec->to_scope_bind_id >= 0) {
+                /* Scoped move: try binding register first, fallback to entity name */
+                int owner_reg = ham_bind_lookup(&bm, ec->to_scope_bind_id);
+                if (owner_reg >= 0) {
+                    /* Owner is bound — resolve at runtime */
+                    buf[(*pos)++] = 0x31; /* EMOV_S */
+                    ham_put_u16(buf, pos, (uint16_t)ec->move_type_idx);
+                    buf[(*pos)++] = (uint8_t)reg;      /* entity bind */
+                    buf[(*pos)++] = (uint8_t)owner_reg; /* scope owner bind */
+                    ham_put_u16(buf, pos, (uint16_t)ec->to_scope_cname_id);
+                } else {
+                    /* Owner is a global entity — resolve at compile time */
+                    int scope_eid = graph_find_entity_by_name(ec->to_scope_bind_id);
+                    if (scope_eid < 0) return 0;
+                    int to_ctnr = get_scoped_container(scope_eid, ec->to_scope_cname_id);
+                    if (to_ctnr < 0) return 0;
+                    buf[(*pos)++] = 0x30; /* EMOV (normal — resolved scoped target) */
+                    ham_put_u16(buf, pos, (uint16_t)ec->move_type_idx);
+                    buf[(*pos)++] = (uint8_t)reg;
+                    ham_put_u16(buf, pos, (uint16_t)to_ctnr);
+                }
+            } else {
+                /* Non-scoped: resolve container at compile time */
+                int to_ctnr = graph_find_container_by_name(ec->to_ref);
+                if (to_ctnr < 0) {
+                    for (int mi = 0; mi < t->match_count; mi++) {
+                        MatchClause* mc2 = &t->matches[mi];
+                        if (mc2->kind == MC_EMPTY_IN && mc2->bind_id == ec->to_ref) {
+                            to_ctnr = mc2->containers[0];
+                            break;
+                        }
                     }
                 }
+                if (to_ctnr < 0) return 0;
+                buf[(*pos)++] = 0x30; /* EMOV */
+                ham_put_u16(buf, pos, (uint16_t)ec->move_type_idx);
+                buf[(*pos)++] = (uint8_t)reg;
+                ham_put_u16(buf, pos, (uint16_t)to_ctnr);
             }
-            if (to_ctnr < 0) return 0;
-            buf[(*pos)++] = 0x30; /* EMOV */
-            ham_put_u16(buf, pos, (uint16_t)ec->move_type_idx);
-            buf[(*pos)++] = (uint8_t)reg;
-            ham_put_u16(buf, pos, (uint16_t)to_ctnr);
 
         } else if (ec->kind == EC_SET) {
             int reg = ham_bind_lookup(&bm, ec->set_entity_ref);
@@ -3721,6 +3791,33 @@ static int ham_compile_tension(Tension* t, uint8_t* buf, int* pos,
             buf[(*pos)++] = 0x32; /* ESET */
             buf[(*pos)++] = (uint8_t)reg;
             ham_put_u16(buf, pos, (uint16_t)ec->set_prop_id);
+
+        } else if (ec->kind == EC_SEND) {
+            int reg = ham_bind_lookup(&bm, ec->send_entity_ref);
+            if (reg < 0) return 0;
+            buf[(*pos)++] = 0x33; /* ESEND */
+            ham_put_u16(buf, pos, (uint16_t)ec->send_channel_idx);
+            buf[(*pos)++] = (uint8_t)reg;
+
+        } else if (ec->kind == EC_RECEIVE) {
+            int entity_reg = ham_bind_lookup(&bm, ec->recv_entity_ref);
+            if (entity_reg < 0) return 0;
+            if (ec->recv_to_scope_bind_id >= 0) {
+                /* Scoped receive target — try binding, fallback to entity name */
+                int owner_reg = ham_bind_lookup(&bm, ec->recv_to_scope_bind_id);
+                if (owner_reg >= 0) {
+                    buf[(*pos)++] = 0x35; /* ERECV_S */
+                    ham_put_u16(buf, pos, (uint16_t)ec->recv_channel_idx);
+                    buf[(*pos)++] = (uint8_t)entity_reg;
+                    buf[(*pos)++] = (uint8_t)owner_reg;
+                    ham_put_u16(buf, pos, (uint16_t)ec->recv_to_scope_cname_id);
+                } else {
+                    /* Owner is a global entity — not expected for RECV but handle */
+                    return 0;
+                }
+            } else {
+                return 0; /* Non-scoped receive not implemented (ERECV) */
+            }
         }
 
         if (*pos >= buf_size - 10) return 0;
