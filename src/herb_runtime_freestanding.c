@@ -65,6 +65,7 @@
 
 static HerbArena* g_arena = HERB_NULL;
 
+
 /* ============================================================
  * STRING INTERN TABLE
  * ============================================================ */
@@ -2777,6 +2778,7 @@ int herb_set_prop_int(int entity_id, const char* property, int64_t value) {
     return 0;
 }
 
+
 /* Get the number of entities in a container.
  * Returns -1 if container not found. */
 int herb_container_count(const char* container) {
@@ -3372,10 +3374,11 @@ int ham_intern(const char* s) {
 }
 
 /* ============================================================
- * HAM BYTECODE COMPILER — Test Tensions
+ * HAM BYTECODE COMPILER — General Purpose (Session 65)
  *
- * Constructs bytecode for schedule_ready and timer_tick using
- * runtime intern IDs. Called after herb_load() completes.
+ * Walks g_graph.tensions[] and compiles each compilable tension
+ * to HAM bytecode. Tensions are sorted by priority (descending)
+ * for pre-sorted bytecode that eliminates O(n²) per-step sorting.
  *
  * Opcode encoding (from HERB Bible Section 3.3):
  *   THDR(0x40): pri(1) owner(2) run_ctnr(2) tension_len(2) = 8 bytes total
@@ -3392,9 +3395,16 @@ int ham_intern(const char* s) {
  *   IPUSH(0x20): val(4) = 5 bytes total
  *   EPROP(0x21): bind(1) prop(2) = 4 bytes total
  *   ECNT(0x22): ctnr(2) = 3 bytes total
- *   EQ(0x2B): 1 byte
- *   GT(0x27): 1 byte
+ *   ADD(0x24): 1 byte
  *   SUB(0x25): 1 byte
+ *   GT(0x27): 1 byte
+ *   LT(0x28): 1 byte
+ *   GTE(0x29): 1 byte
+ *   LTE(0x2A): 1 byte
+ *   EQ(0x2B): 1 byte
+ *   NEQ(0x2C): 1 byte
+ *   AND(0x2D): 1 byte
+ *   NOT(0x2F): 1 byte
  *   EMOV(0x30): mt(2) bind(1) to(2) = 6 bytes total
  *   ESET(0x32): bind(1) prop(2) = 4 bytes total
  * ============================================================ */
@@ -3413,123 +3423,357 @@ static void ham_put_i32(uint8_t* buf, int* pos, int32_t val) {
     buf[(*pos)++] = (uint8_t)((val >> 24) & 0xFF);
 }
 
-int ham_compile_test(uint8_t* buf, int buf_size,
-                     const char* ready_name, const char* cpu0_name) {
-    /* Resolve names to intern IDs */
-    int id_READY    = intern(ready_name);
-    int id_CPU0     = intern(cpu0_name);
-    int id_priority = intern("priority");
-    int id_time_slice = intern("time_slice");
+/* ---- Intern IDs for binary operators (cached) ---- */
+static int ham_op_ids_init = 0;
+static int ham_id_add, ham_id_sub, ham_id_mul;
+static int ham_id_gt, ham_id_lt, ham_id_gte, ham_id_lte;
+static int ham_id_eq, ham_id_neq, ham_id_and, ham_id_or;
 
-    /* Find container and move type indices */
-    int ci_READY = graph_find_container_by_name(id_READY);
-    int ci_CPU0  = graph_find_container_by_name(id_CPU0);
-    int mt_schedule = graph_find_move_type_by_name(intern("schedule"));
-    /* If schedule move type not found, try proc.schedule (kernel mode) */
-    if (mt_schedule < 0)
-        mt_schedule = graph_find_move_type_by_name(intern("proc.schedule"));
+static void ham_init_op_ids(void) {
+    if (ham_op_ids_init) return;
+    ham_id_add = intern("+");  ham_id_sub = intern("-");  ham_id_mul = intern("*");
+    ham_id_gt  = intern(">");  ham_id_lt  = intern("<");
+    ham_id_gte = intern(">="); ham_id_lte = intern("<=");
+    ham_id_eq  = intern("=="); ham_id_neq = intern("!=");
+    ham_id_and = intern("and"); ham_id_or = intern("or");
+    ham_op_ids_init = 1;
+}
 
-    int pos = 0;
+/* ---- Expression compilability check (recursive) ---- */
+static int ham_expr_compilable(Expr* e) {
+    if (!e) return 0;
+    switch (e->kind) {
+        case EX_INT:  return 1;
+        case EX_BOOL: return 1;
+        case EX_PROP: return 1;
+        case EX_COUNT:
+            return !e->count.is_scoped && !e->count.is_channel
+                   && e->count.container_idx >= 0;
+        case EX_BINARY: {
+            ham_init_op_ids();
+            int op = e->binary.op_id;
+            if (op == ham_id_mul || op == ham_id_or) return 0;
+            return ham_expr_compilable(e->binary.left)
+                && ham_expr_compilable(e->binary.right);
+        }
+        case EX_UNARY:
+            return ham_expr_compilable(e->unary.arg);
+        default: return 0; /* EX_FLOAT, EX_STRING, EX_IN_OF unsupported */
+    }
+}
 
-    /* ---- Tension 1: schedule_ready ----
-     * Match: highest-priority entity in READY
-     * Guard: CPU0 is empty
-     * Emit:  MOVE entity to CPU0
-     */
-    int t1_start = pos;
-    buf[pos++] = 0x40;               /* THDR */
-    buf[pos++] = 10;                  /* priority */
-    ham_put_u16(buf, &pos, 0xFFFF);   /* owner = -1 (system) */
-    ham_put_u16(buf, &pos, 0xFFFF);   /* run_container = -1 (none) */
-    int t1_len_pos = pos;             /* save position to patch tension_len */
-    ham_put_u16(buf, &pos, 0);        /* tension_len placeholder */
+/* ---- Tension compilability check ---- */
+static int ham_tension_compilable(Tension* t) {
+    if (!t->enabled) return 0;
+    if (t->owner >= 0) return 0;  /* Only system tensions (Phase 3a) */
 
-    buf[pos++] = 0x01;               /* SCAN */
-    ham_put_u16(buf, &pos, (uint16_t)ci_READY);
+    for (int i = 0; i < t->match_count; i++) {
+        MatchClause* mc = &t->matches[i];
+        if (mc->kind == MC_ENTITY_IN) {
+            if (mc->scope_bind_id >= 0) return 0;
+            if (mc->channel_idx >= 0) return 0;
+            if (mc->select == SEL_EACH) return 0;
+            if (mc->select == SEL_MIN_BY) return 0;
+            if (mc->where_expr && !ham_expr_compilable(mc->where_expr)) return 0;
+        } else if (mc->kind == MC_EMPTY_IN) {
+            if (mc->container_count != 1) return 0;
+            if (mc->bind_id >= 0 && mc->select == SEL_EACH) return 0;
+        } else if (mc->kind == MC_GUARD) {
+            if (!mc->guard_expr || !ham_expr_compilable(mc->guard_expr)) return 0;
+        } else if (mc->kind == MC_CONTAINER_IS) {
+            /* Always compilable */
+        } else {
+            return 0;
+        }
+    }
 
-    buf[pos++] = 0x04;               /* SEL_MAX */
-    buf[pos++] = 0;                   /* bind = B0 */
-    ham_put_u16(buf, &pos, (uint16_t)id_priority);
+    for (int i = 0; i < t->emit_count; i++) {
+        EmitClause* ec = &t->emits[i];
+        if (ec->kind == EC_MOVE) {
+            if (ec->to_scope_bind_id >= 0) return 0;
+        } else if (ec->kind == EC_SET) {
+            if (!ec->value_expr || !ham_expr_compilable(ec->value_expr)) return 0;
+        } else {
+            return 0; /* EC_SEND, EC_RECEIVE, EC_TRANSFER, EC_DUPLICATE */
+        }
+    }
 
-    buf[pos++] = 0x14;               /* REQUIRE */
+    return 1;
+}
 
-    buf[pos++] = 0x22;               /* ECNT */
-    ham_put_u16(buf, &pos, (uint16_t)ci_CPU0);
+/* ---- Binding register map ---- */
+#define HAM_MAX_BINDS 3
+typedef struct {
+    int ids[HAM_MAX_BINDS];    /* interned bind name */
+    int regs[HAM_MAX_BINDS];   /* register index 0=B0, 1=B1, 2=B2 */
+    int count;
+} HamBindMap;
 
-    buf[pos++] = 0x20;               /* IPUSH 0 */
-    ham_put_i32(buf, &pos, 0);
+static int ham_bind_lookup(HamBindMap* m, int bind_id) {
+    for (int i = 0; i < m->count; i++)
+        if (m->ids[i] == bind_id) return m->regs[i];
+    return -1;
+}
 
-    buf[pos++] = 0x2B;               /* EQ */
+static int ham_bind_alloc(HamBindMap* m, int bind_id) {
+    int r = ham_bind_lookup(m, bind_id);
+    if (r >= 0) return r;
+    if (m->count >= HAM_MAX_BINDS) return -1;
+    int reg = m->count;
+    m->ids[m->count] = bind_id;
+    m->regs[m->count] = reg;
+    m->count++;
+    return reg;
+}
 
-    buf[pos++] = 0x12;               /* GUARD */
-    buf[pos++] = 0x13;               /* ENDGUARD */
+/* ---- Expression compiler (recursive) ---- */
+static int ham_compile_expr(Expr* e, uint8_t* buf, int* pos,
+                            HamBindMap* bm, int buf_size) {
+    if (!e || *pos >= buf_size - 10) return 0;
 
-    buf[pos++] = 0x30;               /* EMOV */
-    ham_put_u16(buf, &pos, (uint16_t)mt_schedule);
-    buf[pos++] = 0;                   /* bind = B0 */
-    ham_put_u16(buf, &pos, (uint16_t)ci_CPU0);
+    switch (e->kind) {
+        case EX_INT:
+            buf[(*pos)++] = 0x20;  /* IPUSH */
+            ham_put_i32(buf, pos, (int32_t)e->int_val);
+            return 1;
 
-    buf[pos++] = 0x41;               /* TEND */
+        case EX_BOOL:
+            buf[(*pos)++] = 0x20;  /* IPUSH */
+            ham_put_i32(buf, pos, e->bool_val ? 1 : 0);
+            return 1;
 
-    /* Patch tension_len: bytes from after THDR to end of this tension */
-    int t1_len = pos - t1_start;
-    buf[t1_len_pos]     = (uint8_t)(t1_len & 0xFF);
-    buf[t1_len_pos + 1] = (uint8_t)((t1_len >> 8) & 0xFF);
+        case EX_PROP: {
+            int reg = ham_bind_lookup(bm, e->prop.of_id);
+            if (reg < 0) return 0;
+            buf[(*pos)++] = 0x21;  /* EPROP */
+            buf[(*pos)++] = (uint8_t)reg;
+            ham_put_u16(buf, pos, (uint16_t)e->prop.prop_id);
+            return 1;
+        }
 
-    /* ---- Tension 2: timer_tick ----
-     * Match: entities in CPU0 where time_slice > 0
-     * Select first
-     * Emit:  SET time_slice = time_slice - 1
-     */
-    int t2_start = pos;
-    buf[pos++] = 0x40;               /* THDR */
-    buf[pos++] = 15;                  /* priority */
-    ham_put_u16(buf, &pos, 0xFFFF);   /* owner = -1 (system) */
-    ham_put_u16(buf, &pos, 0xFFFF);   /* run_container = -1 (none) */
-    int t2_len_pos = pos;
-    ham_put_u16(buf, &pos, 0);        /* tension_len placeholder */
+        case EX_COUNT:
+            buf[(*pos)++] = 0x22;  /* ECNT */
+            ham_put_u16(buf, pos, (uint16_t)e->count.container_idx);
+            return 1;
 
-    buf[pos++] = 0x01;               /* SCAN */
-    ham_put_u16(buf, &pos, (uint16_t)ci_CPU0);
+        case EX_BINARY: {
+            if (!ham_compile_expr(e->binary.left, buf, pos, bm, buf_size)) return 0;
+            if (!ham_compile_expr(e->binary.right, buf, pos, bm, buf_size)) return 0;
+            ham_init_op_ids();
+            int op = e->binary.op_id;
+            if      (op == ham_id_add) buf[(*pos)++] = 0x24;
+            else if (op == ham_id_sub) buf[(*pos)++] = 0x25;
+            else if (op == ham_id_gt)  buf[(*pos)++] = 0x27;
+            else if (op == ham_id_lt)  buf[(*pos)++] = 0x28;
+            else if (op == ham_id_gte) buf[(*pos)++] = 0x29;
+            else if (op == ham_id_lte) buf[(*pos)++] = 0x2A;
+            else if (op == ham_id_eq)  buf[(*pos)++] = 0x2B;
+            else if (op == ham_id_neq) buf[(*pos)++] = 0x2C;
+            else if (op == ham_id_and) buf[(*pos)++] = 0x2D;
+            else return 0;
+            return 1;
+        }
 
-    buf[pos++] = 0x10;               /* WHERE */
-    buf[pos++] = 0;                   /* bind = B0 */
+        case EX_UNARY:
+            if (!ham_compile_expr(e->unary.arg, buf, pos, bm, buf_size)) return 0;
+            buf[(*pos)++] = 0x2F;  /* NOT */
+            return 1;
 
-    buf[pos++] = 0x21;               /* EPROP */
-    buf[pos++] = 0;                   /* bind = B0 */
-    ham_put_u16(buf, &pos, (uint16_t)id_time_slice);
+        default: return 0;
+    }
+}
 
-    buf[pos++] = 0x20;               /* IPUSH 0 */
-    ham_put_i32(buf, &pos, 0);
+/* ---- Compile a single tension ---- */
+static int ham_compile_tension(Tension* t, uint8_t* buf, int* pos,
+                               int buf_size) {
+    HamBindMap bm;
+    bm.count = 0;
 
-    buf[pos++] = 0x27;               /* GT */
+    /* Pre-allocate bindings by scanning match clauses */
+    for (int i = 0; i < t->match_count; i++) {
+        MatchClause* mc = &t->matches[i];
+        if (mc->bind_id >= 0) {
+            if (ham_bind_alloc(&bm, mc->bind_id) < 0)
+                return 0; /* Too many bindings */
+        }
+    }
 
-    buf[pos++] = 0x11;               /* ENDWHERE */
+    int t_start = *pos;
 
-    buf[pos++] = 0x03;               /* SEL_FIRST */
-    buf[pos++] = 0;                   /* bind = B0 */
+    /* THDR: priority(1) owner(2) run_container(2) tension_len(2) */
+    buf[(*pos)++] = 0x40;
+    buf[(*pos)++] = (uint8_t)(t->priority > 255 ? 255 : t->priority);
+    ham_put_u16(buf, pos, t->owner >= 0 ? (uint16_t)t->owner : 0xFFFF);
+    ham_put_u16(buf, pos, t->owner_run_container >= 0
+                          ? (uint16_t)t->owner_run_container : 0xFFFF);
+    int len_pos = *pos;
+    ham_put_u16(buf, pos, 0); /* tension_len placeholder */
 
-    buf[pos++] = 0x14;               /* REQUIRE */
+    /* Compile match clauses */
+    for (int i = 0; i < t->match_count; i++) {
+        MatchClause* mc = &t->matches[i];
 
-    buf[pos++] = 0x21;               /* EPROP */
-    buf[pos++] = 0;                   /* bind = B0 */
-    ham_put_u16(buf, &pos, (uint16_t)id_time_slice);
+        if (mc->kind == MC_ENTITY_IN) {
+            /* SCAN container */
+            buf[(*pos)++] = 0x01;
+            ham_put_u16(buf, pos, (uint16_t)mc->container_idx);
 
-    buf[pos++] = 0x20;               /* IPUSH 1 */
-    ham_put_i32(buf, &pos, 1);
+            /* WHERE filter (if any) */
+            if (mc->where_expr && mc->bind_id >= 0) {
+                int reg = ham_bind_lookup(&bm, mc->bind_id);
+                if (reg < 0) return 0;
+                buf[(*pos)++] = 0x10; /* WHERE */
+                buf[(*pos)++] = (uint8_t)reg;
+                if (!ham_compile_expr(mc->where_expr, buf, pos, &bm, buf_size))
+                    return 0;
+                buf[(*pos)++] = 0x11; /* ENDWHERE */
+            }
 
-    buf[pos++] = 0x25;               /* SUB */
+            /* Select mode */
+            if (mc->bind_id >= 0) {
+                int reg = ham_bind_lookup(&bm, mc->bind_id);
+                if (reg < 0) return 0;
 
-    buf[pos++] = 0x32;               /* ESET */
-    buf[pos++] = 0;                   /* bind = B0 */
-    ham_put_u16(buf, &pos, (uint16_t)id_time_slice);
+                if (mc->select == SEL_FIRST) {
+                    buf[(*pos)++] = 0x03; /* SEL_FIRST */
+                    buf[(*pos)++] = (uint8_t)reg;
+                } else if (mc->select == SEL_MAX_BY) {
+                    buf[(*pos)++] = 0x04; /* SEL_MAX */
+                    buf[(*pos)++] = (uint8_t)reg;
+                    ham_put_u16(buf, pos, (uint16_t)mc->key_prop_id);
+                }
+            }
 
-    buf[pos++] = 0x41;               /* TEND */
+            /* REQUIRE if needed */
+            if (mc->required) {
+                buf[(*pos)++] = 0x14;
+            }
+
+        } else if (mc->kind == MC_EMPTY_IN) {
+            /* Check single container is empty:
+             * ECNT(ctnr) + IPUSH(0) + EQ + GUARD + ENDGUARD */
+            buf[(*pos)++] = 0x22; /* ECNT */
+            ham_put_u16(buf, pos, (uint16_t)mc->containers[0]);
+            buf[(*pos)++] = 0x20; /* IPUSH 0 */
+            ham_put_i32(buf, pos, 0);
+            buf[(*pos)++] = 0x2B; /* EQ */
+            buf[(*pos)++] = 0x12; /* GUARD */
+            buf[(*pos)++] = 0x13; /* ENDGUARD */
+
+        } else if (mc->kind == MC_CONTAINER_IS) {
+            /* Check container empty/non-empty */
+            buf[(*pos)++] = 0x22; /* ECNT */
+            ham_put_u16(buf, pos, (uint16_t)mc->guard_container_idx);
+            buf[(*pos)++] = 0x20; /* IPUSH 0 */
+            ham_put_i32(buf, pos, 0);
+            if (mc->is_empty) {
+                buf[(*pos)++] = 0x2B; /* EQ (count == 0) */
+            } else {
+                buf[(*pos)++] = 0x27; /* GT (count > 0) */
+            }
+            buf[(*pos)++] = 0x12; /* GUARD */
+            buf[(*pos)++] = 0x13; /* ENDGUARD */
+
+        } else if (mc->kind == MC_GUARD) {
+            /* Compile guard expression + GUARD */
+            if (!ham_compile_expr(mc->guard_expr, buf, pos, &bm, buf_size))
+                return 0;
+            buf[(*pos)++] = 0x12; /* GUARD */
+            buf[(*pos)++] = 0x13; /* ENDGUARD */
+        }
+
+        if (*pos >= buf_size - 20) return 0; /* Buffer safety */
+    }
+
+    /* Compile emit clauses */
+    for (int i = 0; i < t->emit_count; i++) {
+        EmitClause* ec = &t->emits[i];
+
+        if (ec->kind == EC_MOVE) {
+            int reg = ham_bind_lookup(&bm, ec->entity_ref);
+            if (reg < 0) return 0;
+            /* Resolve to_ref to container index at compile time.
+             * First try as container name. If that fails, check if
+             * to_ref is a bind name from MC_EMPTY_IN (e.g., "to": "cpu"
+             * where "cpu" was bound via empty_in). */
+            int to_ctnr = graph_find_container_by_name(ec->to_ref);
+            if (to_ctnr < 0) {
+                for (int mi = 0; mi < t->match_count; mi++) {
+                    MatchClause* mc2 = &t->matches[mi];
+                    if (mc2->kind == MC_EMPTY_IN && mc2->bind_id == ec->to_ref) {
+                        to_ctnr = mc2->containers[0];
+                        break;
+                    }
+                }
+            }
+            if (to_ctnr < 0) return 0;
+            buf[(*pos)++] = 0x30; /* EMOV */
+            ham_put_u16(buf, pos, (uint16_t)ec->move_type_idx);
+            buf[(*pos)++] = (uint8_t)reg;
+            ham_put_u16(buf, pos, (uint16_t)to_ctnr);
+
+        } else if (ec->kind == EC_SET) {
+            int reg = ham_bind_lookup(&bm, ec->set_entity_ref);
+            if (reg < 0) return 0;
+            /* Compile value expression */
+            if (!ham_compile_expr(ec->value_expr, buf, pos, &bm, buf_size))
+                return 0;
+            buf[(*pos)++] = 0x32; /* ESET */
+            buf[(*pos)++] = (uint8_t)reg;
+            ham_put_u16(buf, pos, (uint16_t)ec->set_prop_id);
+        }
+
+        if (*pos >= buf_size - 10) return 0;
+    }
+
+    /* TEND */
+    buf[(*pos)++] = 0x41;
 
     /* Patch tension_len */
-    int t2_len = pos - t2_start;
-    buf[t2_len_pos]     = (uint8_t)(t2_len & 0xFF);
-    buf[t2_len_pos + 1] = (uint8_t)((t2_len >> 8) & 0xFF);
+    int t_len = *pos - t_start;
+    buf[len_pos]     = (uint8_t)(t_len & 0xFF);
+    buf[len_pos + 1] = (uint8_t)((t_len >> 8) & 0xFF);
 
+    return 1;
+}
+
+/* ============================================================
+ * ham_compile_system — Compile all system tensions to bytecode
+ *
+ * Walks g_graph.tensions[], sorts by priority (descending),
+ * compiles each compilable tension. Returns total bytes written.
+ * *out_count is set to the number of tensions compiled.
+ * ============================================================ */
+
+int ham_compile_system(uint8_t* buf, int buf_size, int* out_count) {
+    ham_init_op_ids();
+
+    /* Build priority-sorted order (descending) */
+    int order[MAX_TENSIONS];
+    int n = g_graph.tension_count;
+    for (int i = 0; i < n; i++) order[i] = i;
+    for (int i = 0; i < n - 1; i++)
+        for (int j = i + 1; j < n; j++)
+            if (g_graph.tensions[order[i]].priority <
+                g_graph.tensions[order[j]].priority) {
+                int tmp = order[i]; order[i] = order[j]; order[j] = tmp;
+            }
+
+    int pos = 0;
+    int compiled = 0;
+
+    for (int i = 0; i < n; i++) {
+        Tension* t = &g_graph.tensions[order[i]];
+        if (!ham_tension_compilable(t)) continue;
+
+        int save_pos = pos;
+        if (ham_compile_tension(t, buf, &pos, buf_size)) {
+            compiled++;
+        } else {
+            pos = save_pos; /* Rollback on failure */
+        }
+    }
+
+    if (out_count) *out_count = compiled;
     return pos;
 }

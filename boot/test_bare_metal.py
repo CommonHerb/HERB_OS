@@ -1341,34 +1341,39 @@ def run_tests(image_path):
                 t.check("Shell tension re-enabled", False, "could not find shell tension")
 
             # ============================================================
-            # TEST: HAM (HERB Abstract Machine) — Session 64
+            # TEST: HAM (HERB Abstract Machine) — Sessions 64-65
             # ============================================================
 
-            # ---- TEST: HAM Bytecode Compilation ----
-            print("\n--- Test: HAM Bytecode Compilation ---")
+            # ---- TEST: HAM System Compilation ----
+            print("\n--- Test: HAM System Compilation ---")
             pos = t.serial_pos()
             t.send_key('h')
-            m = t.wait_for(r"\[HAM\] Compiled (\d+) bytes", after=pos, timeout=5)
-            t.check("HAM bytecode compiles", m is not None)
+            m = t.wait_for(r"\[HAM\] Compiled (\d+) tensions, (\d+) bytes", after=pos, timeout=5)
+            t.check("HAM system compilation succeeds", m is not None)
             if m:
-                bc_size = int(m.group(1))
-                t.check("HAM bytecode size reasonable (20-200 bytes)",
-                         20 <= bc_size <= 200,
+                tension_cnt = int(m.group(1))
+                bc_size = int(m.group(2))
+                t.check("HAM compiled >= 10 tensions",
+                         tension_cnt >= 10,
+                         f"got {tension_cnt}")
+                t.check("HAM bytecode size reasonable (50-2000 bytes)",
+                         50 <= bc_size <= 2000,
                          f"got {bc_size}")
 
             # ---- TEST: HAM Execution ----
             print("\n--- Test: HAM Execution ---")
-            m2 = t.wait_for(r"\[HAM\] ops=(\d+) ready=(\d+)->(\d+) cpu0=(\d+)->(\d+) ts=(-?\d+)->(-?\d+)",
+            m2 = t.wait_for(r"\[HAM\] ops=(\d+) tensions=(\d+) ready=(\d+)->(\d+) cpu0=(\d+)->(\d+) ts=(-?\d+)->(-?\d+)",
                             after=pos, timeout=5)
             t.check("HAM produces output", m2 is not None)
             if m2:
                 ops = int(m2.group(1))
-                pre_ready = int(m2.group(2))
-                post_ready = int(m2.group(3))
-                pre_cpu0 = int(m2.group(4))
-                post_cpu0 = int(m2.group(5))
-                pre_ts = int(m2.group(6))
-                post_ts = int(m2.group(7))
+                t_cnt = int(m2.group(2))
+                pre_ready = int(m2.group(3))
+                post_ready = int(m2.group(4))
+                pre_cpu0 = int(m2.group(5))
+                post_cpu0 = int(m2.group(6))
+                pre_ts = int(m2.group(7))
+                post_ts = int(m2.group(8))
 
                 t.check("HAM executed operations", ops > 0, f"ops={ops}")
                 t.check("HAM returns without infinite loop", True)
@@ -1380,11 +1385,11 @@ def run_tests(image_path):
                              post_cpu0 == 1 and post_ready == pre_ready - 1,
                              f"ready {pre_ready}->{post_ready}, cpu0 {pre_cpu0}->{post_cpu0}")
 
-                # Verify timer_tick: HAM runs to fixpoint, so timer_tick
-                # decrements time_slice repeatedly until it reaches 0
+                # Verify timer_tick: with one TIMER_SIG, timer_tick fires
+                # once, decrementing time_slice by 1
                 if post_cpu0 > 0 and pre_ts > 0:
-                    t.check("HAM timer_tick: time_slice reached 0 at fixpoint",
-                             post_ts == 0,
+                    t.check("HAM timer_tick: time_slice decremented",
+                             post_ts == pre_ts - 1,
                              f"ts {pre_ts}->{post_ts}")
 
             # ---- TEST: HAM Idempotent (second run) ----

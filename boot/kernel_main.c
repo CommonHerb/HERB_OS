@@ -239,10 +239,9 @@ extern void mouse_write(uint8_t data);
 extern uint8_t mouse_read(void);
 extern void mouse_init(void);
 
-/* HAM — HERB Abstract Machine (Phase 3, Session 64) */
+/* HAM — HERB Abstract Machine (Phase 3, Sessions 64-65) */
 extern int ham_run(uint8_t* bytecode_ptr, int bytecode_len);
-extern int ham_compile_test(uint8_t* buf, int buf_size,
-                            const char* ready_name, const char* cpu0_name);
+extern int ham_compile_system(uint8_t* buf, int buf_size, int* out_count);
 extern int ham_intern(const char* s);
 
 static void serial_print_int(int val) {
@@ -250,6 +249,7 @@ static void serial_print_int(int val) {
     herb_snprintf(buf, sizeof(buf), "%d", val);
     serial_print(buf);
 }
+
 
 /* ============================================================
  * VGA TEXT MODE
@@ -2419,16 +2419,22 @@ static void cmd_tension_toggle(void) {
  * ============================================================ */
 
 static void cmd_ham_test(void) {
-    static uint8_t ham_bc[256];
+    static uint8_t ham_bc[2048];
     static int ham_bc_len = 0;
+    static int ham_tension_cnt = 0;
 
     /* Compile bytecode on first invocation */
     if (ham_bc_len == 0) {
-        ham_bc_len = ham_compile_test(ham_bc, sizeof(ham_bc), CN_READY, CN_CPU0);
+        ham_bc_len = ham_compile_system(ham_bc, sizeof(ham_bc), &ham_tension_cnt);
         serial_print("[HAM] Compiled ");
+        serial_print_int(ham_tension_cnt);
+        serial_print(" tensions, ");
         serial_print_int(ham_bc_len);
         serial_print(" bytes of bytecode\n");
     }
+
+    /* Create a TIMER_SIG so timer_tick can fire */
+    herb_create("ham_timer", ET_SIGNAL, CN_TIMER_SIG);
 
     /* Record pre-state */
     int pre_ready = herb_container_count(CN_READY);
@@ -2457,6 +2463,8 @@ static void cmd_ham_test(void) {
     /* Report to serial */
     serial_print("[HAM] ops=");
     serial_print_int(ops);
+    serial_print(" tensions=");
+    serial_print_int(ham_tension_cnt);
     serial_print(" ready=");
     serial_print_int(pre_ready);
     serial_print("->");
@@ -2473,8 +2481,8 @@ static void cmd_ham_test(void) {
 
     /* Update last_action for display */
     herb_snprintf(last_action, sizeof(last_action),
-        "HAM: %d ops, ready %d->%d, cpu0 %d->%d",
-        ops, pre_ready, post_ready, pre_cpu0, post_cpu0);
+        "HAM: %d tensions %d ops, ready %d->%d, cpu0 %d->%d",
+        ham_tension_cnt, ops, pre_ready, post_ready, pre_cpu0, post_cpu0);
 }
 
 /* ============================================================

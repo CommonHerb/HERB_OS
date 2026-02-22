@@ -5,6 +5,7 @@
 ; tension programs. Pre-sorted bytecode eliminates O(n²) sorting.
 ;
 ; Session 64 — Phase 3a: Core engine + 19 instruction handlers
+; Session 65 — Phase 3b Part 1: +7 expression instructions (26 total)
 ;
 ; Register allocation (persistent across C calls via MS x64 ABI):
 ;   RBX = bytecode start pointer (for fixpoint loop reset)
@@ -40,8 +41,15 @@ extern ham_entity_loc
 extern ham_try_move
 extern ham_eset
 
-; Export entry point
+; Export entry point and debug counters
 global ham_run
+global ham_dbg_thdr
+global ham_dbg_fail
+global ham_dbg_tend
+global ham_dbg_action
+global ham_dbg_scan_nz
+global ham_dbg_require
+global ham_dbg_guard
 
 ; ============================================================
 ; BSS — Static data for HAM execution
@@ -62,6 +70,14 @@ where_read_idx:  resd 1        ; current read position in WHERE iteration
 where_write_idx: resd 1        ; current write position in WHERE iteration
 where_orig_cnt:  resd 1        ; original scan_count before WHERE filtering
 total_ops:       resd 1        ; total operations executed (returned to caller)
+; Debug counters (read by C after ham_run returns)
+ham_dbg_thdr:    resd 1        ; number of THDR entries
+ham_dbg_fail:    resd 1        ; number of FAILs
+ham_dbg_tend:    resd 1        ; number of TENDs with actions
+ham_dbg_action:  resd 1        ; number of actions attempted
+ham_dbg_scan_nz: resd 1        ; number of SCANs returning >0 entities
+ham_dbg_require: resd 1        ; number of REQUIREs reached
+ham_dbg_guard:   resd 1        ; number of GUARDs reached
 
 ; ============================================================
 ; TEXT — HAM engine code
@@ -93,12 +109,26 @@ ham_dispatch:
     je   ham_op_eprop
     cmp  al, 0x22
     je   ham_op_ecnt
+    cmp  al, 0x24
+    je   ham_op_add
     cmp  al, 0x25
     je   ham_op_sub
     cmp  al, 0x27
     je   ham_op_gt
+    cmp  al, 0x28
+    je   ham_op_lt
+    cmp  al, 0x29
+    je   ham_op_gte
+    cmp  al, 0x2A
+    je   ham_op_lte
     cmp  al, 0x2B
     je   ham_op_eq
+    cmp  al, 0x2C
+    je   ham_op_neq
+    cmp  al, 0x2D
+    je   ham_op_and
+    cmp  al, 0x2F
+    je   ham_op_not
 
     ; Scanning
     cmp  al, 0x01
@@ -185,6 +215,13 @@ ham_run:
     mov  dword [total_ops], 0
     mov  dword [action_count], 0
     mov  dword [scan_count], 0
+    mov  dword [ham_dbg_thdr], 0
+    mov  dword [ham_dbg_fail], 0
+    mov  dword [ham_dbg_tend], 0
+    mov  dword [ham_dbg_action], 0
+    mov  dword [ham_dbg_scan_nz], 0
+    mov  dword [ham_dbg_require], 0
+    mov  dword [ham_dbg_guard], 0
 
     ; Begin dispatch: fetch first opcode
     cmp  rsi, [bytecode_end_p]
@@ -231,6 +268,7 @@ ham_invalid:
 ; Sets up tension_end, resets expression stack and action buffer.
 ; For Phase 3a: only system tensions (owner == -1) are executed.
 ham_op_thdr:
+    inc  dword [ham_dbg_thdr]
     movzx eax, byte [rsi]          ; pri (1 byte) — not used in dispatch yet
     inc  rsi
 
@@ -269,6 +307,7 @@ ham_op_tend:
     mov  ecx, [action_count]
     test ecx, ecx
     jz   .no_actions
+    inc  dword [ham_dbg_tend]       ; count TENDs with actions
 
     ; Iterate action buffer
     lea  r8, [action_buf]
@@ -290,6 +329,7 @@ ham_op_tend:
     ; Action MOVE: field1=mt_idx, field2=entity_idx, field3(lo32)=to_container
     ; Call ham_try_move(mt_idx, entity_idx, to_container_idx)
     ; Save volatile state
+    inc  dword [ham_dbg_action]
     push r8
     push r9
 
@@ -311,6 +351,7 @@ ham_op_tend:
 .do_set:
     ; Action SET: field1=entity_idx, field2=prop_id, field3=value(i64)
     ; Call ham_eset(entity_idx, prop_id, value)
+    inc  dword [ham_dbg_action]
     push r8
     push r9
 
@@ -354,6 +395,7 @@ ham_op_tend:
 
 ; FAIL (0x42): Tension failed — clear actions, skip to tension_end
 ham_op_fail:
+    inc  dword [ham_dbg_fail]
     mov  dword [action_count], 0
     mov  rsi, [tension_end_p]
 
@@ -381,7 +423,10 @@ ham_op_scan:
 
     ; EAX = count
     mov  [scan_count], eax
-
+    test eax, eax
+    jz   .scan_zero
+    inc  dword [ham_dbg_scan_nz]
+.scan_zero:
     DISPATCH
 
 ; SEL_FIRST (0x03): Select first entity from scan buffer
@@ -414,10 +459,12 @@ ham_op_sel_first:
 
 ; SEL_MAX (0x04): Select entity with maximum property value
 ; Format: SEL_MAX bind(1) prop(2) = 3 bytes after opcode
+; Note: R10/R11 are volatile in MS x64 ABI, so we save bind_idx
+; and prop_id on the stack across ham_eprop calls.
 ham_op_sel_max:
-    movzx r10d, byte [rsi]         ; bind register index (save in r10)
+    movzx r10d, byte [rsi]         ; bind register index
     inc  rsi
-    movzx r11d, word [rsi]         ; prop_id (save in r11)
+    movzx r11d, word [rsi]         ; prop_id
     add  rsi, 2
 
     ; Iterate scan_buf to find entity with max prop value
@@ -425,9 +472,15 @@ ham_op_sel_max:
     test ecx, ecx
     jz   .sm_done                   ; no entities
 
-    ; Use stack to track best entity and best value
-    ; Save iteration state on the regular stack
-    push rsi                        ; save PC (callee-saved but push for safety)
+    ; Stack layout (bottom to top):
+    ;   [rsp+32] = saved RSI (PC)
+    ;   [rsp+24] = saved bind_idx (from r10)
+    ;   [rsp+16] = saved prop_id (from r11)
+    ;   [rsp+8]  = best_entity
+    ;   [rsp]    = best_value
+    push rsi                        ; save PC
+    push r10                        ; save bind_idx (volatile across calls)
+    push r11                        ; save prop_id (volatile across calls)
 
     ; best_entity = scan_buf[0]
     mov  eax, [scan_buf]
@@ -435,7 +488,7 @@ ham_op_sel_max:
 
     ; Get initial best value: ham_eprop(scan_buf[0], prop_id)
     mov  ecx, eax                   ; entity_idx
-    mov  edx, r11d                  ; prop_id
+    mov  edx, r11d                  ; prop_id (still valid, haven't called yet)
     call ham_eprop
     push rax                        ; [rsp] = best_value, [rsp+8] = best_entity
 
@@ -452,7 +505,9 @@ ham_op_sel_max:
     mov  ecx, [rcx + rax*4]        ; entity_idx = scan_buf[i]
     push rcx                        ; save entity_idx
 
-    mov  edx, r11d                  ; prop_id
+    mov  edx, [rsp + 24]           ; prop_id from saved stack slot
+                                    ; (rsp+0=eid, +8=best_val, +16=best_ent,
+                                    ;  +24=prop_id, +32=bind_idx, +40=PC)
     call ham_eprop                  ; RAX = prop value
 
     pop  rcx                        ; restore entity_idx
@@ -463,7 +518,7 @@ ham_op_sel_max:
 
     ; New best
     mov  [rsp], rax                 ; update best_value
-    mov  [rsp + 8], ecx             ; update best_entity
+    mov  [rsp + 8], rcx             ; update best_entity (use 64-bit write)
 
 .sm_not_better:
     inc  dword [where_read_idx]
@@ -471,7 +526,9 @@ ham_op_sel_max:
 
 .sm_found:
     pop  rax                        ; discard best_value
-    pop  rax                        ; best_entity
+    pop  rax                        ; best_entity (result)
+    pop  r11                        ; restore prop_id (discard)
+    pop  r10                        ; restore bind_idx
     pop  rsi                        ; restore PC
 
     ; Store in binding register
@@ -496,6 +553,7 @@ ham_op_sel_max:
 
 ; REQUIRE (0x14): If scan_count == 0, FAIL
 ham_op_require:
+    inc  dword [ham_dbg_require]
     cmp  dword [scan_count], 0
     je   ham_op_fail
     DISPATCH
@@ -604,6 +662,7 @@ ham_op_endwhere:
 
 ; GUARD (0x12): Pop expression stack. If falsy, jump to tension_end.
 ham_op_guard:
+    inc  dword [ham_dbg_guard]
     sub  rdi, 8
     mov  rax, [rdi]
     test rax, rax
@@ -713,6 +772,115 @@ ham_op_sub:
     sub  rdi, 8
     mov  rax, [rdi]                 ; second
     sub  rax, rcx                   ; second - top
+    mov  [rdi], rax
+    add  rdi, 8
+    DISPATCH
+
+; ADD (0x24): Pop two, push (second + top)
+ham_op_add:
+    sub  rdi, 8
+    mov  rcx, [rdi]                 ; top
+    sub  rdi, 8
+    mov  rax, [rdi]                 ; second
+    add  rax, rcx                   ; second + top
+    mov  [rdi], rax
+    add  rdi, 8
+    DISPATCH
+
+; LT (0x28): Pop two, push (second < top ? 1 : 0)
+ham_op_lt:
+    sub  rdi, 8
+    mov  rcx, [rdi]                 ; top
+    sub  rdi, 8
+    mov  rax, [rdi]                 ; second
+    cmp  rax, rcx
+    jl   .lt_true
+    xor  eax, eax
+    jmp  .lt_push
+.lt_true:
+    mov  eax, 1
+.lt_push:
+    mov  [rdi], rax
+    add  rdi, 8
+    DISPATCH
+
+; GTE (0x29): Pop two, push (second >= top ? 1 : 0)
+ham_op_gte:
+    sub  rdi, 8
+    mov  rcx, [rdi]                 ; top
+    sub  rdi, 8
+    mov  rax, [rdi]                 ; second
+    cmp  rax, rcx
+    jge  .gte_true
+    xor  eax, eax
+    jmp  .gte_push
+.gte_true:
+    mov  eax, 1
+.gte_push:
+    mov  [rdi], rax
+    add  rdi, 8
+    DISPATCH
+
+; LTE (0x2A): Pop two, push (second <= top ? 1 : 0)
+ham_op_lte:
+    sub  rdi, 8
+    mov  rcx, [rdi]                 ; top
+    sub  rdi, 8
+    mov  rax, [rdi]                 ; second
+    cmp  rax, rcx
+    jle  .lte_true
+    xor  eax, eax
+    jmp  .lte_push
+.lte_true:
+    mov  eax, 1
+.lte_push:
+    mov  [rdi], rax
+    add  rdi, 8
+    DISPATCH
+
+; NEQ (0x2C): Pop two, push (second != top ? 1 : 0)
+ham_op_neq:
+    sub  rdi, 8
+    mov  rcx, [rdi]                 ; top
+    sub  rdi, 8
+    mov  rax, [rdi]                 ; second
+    cmp  rax, rcx
+    jne  .neq_true
+    xor  eax, eax
+    jmp  .neq_push
+.neq_true:
+    mov  eax, 1
+.neq_push:
+    mov  [rdi], rax
+    add  rdi, 8
+    DISPATCH
+
+; AND (0x2D): Pop two, push (both truthy ? 1 : 0)
+ham_op_and:
+    sub  rdi, 8
+    mov  rcx, [rdi]                 ; top
+    sub  rdi, 8
+    mov  rax, [rdi]                 ; second
+    test rax, rax
+    jz   .and_false
+    test rcx, rcx
+    jz   .and_false
+    mov  eax, 1
+    jmp  .and_push
+.and_false:
+    xor  eax, eax
+.and_push:
+    mov  [rdi], rax
+    add  rdi, 8
+    DISPATCH
+
+; NOT (0x2F): Pop one, push (!val ? 1 : 0)
+ham_op_not:
+    sub  rdi, 8
+    mov  rax, [rdi]                 ; val
+    test rax, rax
+    setz al
+    movzx eax, al                   ; EAX = 0 or 1
     mov  [rdi], rax
     add  rdi, 8
     DISPATCH
