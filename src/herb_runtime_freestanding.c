@@ -3307,3 +3307,229 @@ int herb_load_program(const uint8_t* data, herb_size_t len,
 
     return loaded;
 }
+
+/* ============================================================
+ * HAM (HERB Abstract Machine) BRIDGE FUNCTIONS
+ *
+ * Non-static C functions callable from herb_ham.asm.
+ * The HAM's assembly engine calls these for graph data access
+ * and mutation, avoiding fragile struct offset computation in
+ * assembly while proving the architecture first.
+ *
+ * Session 64 — Phase 3a
+ * ============================================================ */
+
+/* Fill buf with entity indices from container, returns count */
+int ham_scan(int container_idx, int* buf, int max_count) {
+    if (container_idx < 0 || container_idx >= g_graph.container_count)
+        return 0;
+    Container* c = &g_graph.containers[container_idx];
+    int n = c->entity_count < max_count ? c->entity_count : max_count;
+    for (int i = 0; i < n; i++)
+        buf[i] = c->entities[i];
+    return n;
+}
+
+/* Returns integer value of property on entity. 0 if not found. */
+int64_t ham_eprop(int entity_idx, int prop_id) {
+    if (entity_idx < 0 || entity_idx >= g_graph.entity_count)
+        return 0;
+    PropVal v = entity_get_prop(entity_idx, prop_id);
+    if (v.type == PV_INT) return v.i;
+    if (v.type == PV_FLOAT) return (int64_t)v.f;
+    return 0;
+}
+
+/* Returns entity count of container */
+int ham_ecnt(int container_idx) {
+    if (container_idx < 0 || container_idx >= g_graph.container_count)
+        return 0;
+    return g_graph.containers[container_idx].entity_count;
+}
+
+/* Returns container index where entity resides */
+int ham_entity_loc(int entity_idx) {
+    if (entity_idx < 0 || entity_idx >= g_graph.entity_count)
+        return -1;
+    return g_graph.entity_location[entity_idx];
+}
+
+/* Wrapper around try_move(). Returns 1 if successful. */
+int ham_try_move(int mt_idx, int entity_idx, int to_container_idx) {
+    return try_move(mt_idx, entity_idx, to_container_idx);
+}
+
+/* Sets integer property on entity */
+void ham_eset(int entity_idx, int prop_id, int64_t value) {
+    if (entity_idx < 0 || entity_idx >= g_graph.entity_count)
+        return;
+    entity_set_prop(entity_idx, prop_id, pv_int(value));
+}
+
+/* Non-static wrapper around intern() */
+int ham_intern(const char* s) {
+    return intern(s);
+}
+
+/* ============================================================
+ * HAM BYTECODE COMPILER — Test Tensions
+ *
+ * Constructs bytecode for schedule_ready and timer_tick using
+ * runtime intern IDs. Called after herb_load() completes.
+ *
+ * Opcode encoding (from HERB Bible Section 3.3):
+ *   THDR(0x40): pri(1) owner(2) run_ctnr(2) tension_len(2) = 8 bytes total
+ *   TEND(0x41): 1 byte
+ *   FAIL(0x42): 1 byte
+ *   SCAN(0x01): ctnr(2) = 3 bytes total
+ *   SEL_FIRST(0x03): bind(1) = 2 bytes total
+ *   SEL_MAX(0x04): bind(1) prop(2) = 4 bytes total
+ *   REQUIRE(0x14): 1 byte
+ *   WHERE(0x10): bind(1) = 2 bytes total
+ *   ENDWHERE(0x11): 1 byte
+ *   GUARD(0x12): 1 byte
+ *   ENDGUARD(0x13): 1 byte
+ *   IPUSH(0x20): val(4) = 5 bytes total
+ *   EPROP(0x21): bind(1) prop(2) = 4 bytes total
+ *   ECNT(0x22): ctnr(2) = 3 bytes total
+ *   EQ(0x2B): 1 byte
+ *   GT(0x27): 1 byte
+ *   SUB(0x25): 1 byte
+ *   EMOV(0x30): mt(2) bind(1) to(2) = 6 bytes total
+ *   ESET(0x32): bind(1) prop(2) = 4 bytes total
+ * ============================================================ */
+
+/* Helper: write u16 little-endian to buffer */
+static void ham_put_u16(uint8_t* buf, int* pos, uint16_t val) {
+    buf[(*pos)++] = (uint8_t)(val & 0xFF);
+    buf[(*pos)++] = (uint8_t)((val >> 8) & 0xFF);
+}
+
+/* Helper: write i32 little-endian to buffer */
+static void ham_put_i32(uint8_t* buf, int* pos, int32_t val) {
+    buf[(*pos)++] = (uint8_t)(val & 0xFF);
+    buf[(*pos)++] = (uint8_t)((val >> 8) & 0xFF);
+    buf[(*pos)++] = (uint8_t)((val >> 16) & 0xFF);
+    buf[(*pos)++] = (uint8_t)((val >> 24) & 0xFF);
+}
+
+int ham_compile_test(uint8_t* buf, int buf_size,
+                     const char* ready_name, const char* cpu0_name) {
+    /* Resolve names to intern IDs */
+    int id_READY    = intern(ready_name);
+    int id_CPU0     = intern(cpu0_name);
+    int id_priority = intern("priority");
+    int id_time_slice = intern("time_slice");
+
+    /* Find container and move type indices */
+    int ci_READY = graph_find_container_by_name(id_READY);
+    int ci_CPU0  = graph_find_container_by_name(id_CPU0);
+    int mt_schedule = graph_find_move_type_by_name(intern("schedule"));
+    /* If schedule move type not found, try proc.schedule (kernel mode) */
+    if (mt_schedule < 0)
+        mt_schedule = graph_find_move_type_by_name(intern("proc.schedule"));
+
+    int pos = 0;
+
+    /* ---- Tension 1: schedule_ready ----
+     * Match: highest-priority entity in READY
+     * Guard: CPU0 is empty
+     * Emit:  MOVE entity to CPU0
+     */
+    int t1_start = pos;
+    buf[pos++] = 0x40;               /* THDR */
+    buf[pos++] = 10;                  /* priority */
+    ham_put_u16(buf, &pos, 0xFFFF);   /* owner = -1 (system) */
+    ham_put_u16(buf, &pos, 0xFFFF);   /* run_container = -1 (none) */
+    int t1_len_pos = pos;             /* save position to patch tension_len */
+    ham_put_u16(buf, &pos, 0);        /* tension_len placeholder */
+
+    buf[pos++] = 0x01;               /* SCAN */
+    ham_put_u16(buf, &pos, (uint16_t)ci_READY);
+
+    buf[pos++] = 0x04;               /* SEL_MAX */
+    buf[pos++] = 0;                   /* bind = B0 */
+    ham_put_u16(buf, &pos, (uint16_t)id_priority);
+
+    buf[pos++] = 0x14;               /* REQUIRE */
+
+    buf[pos++] = 0x22;               /* ECNT */
+    ham_put_u16(buf, &pos, (uint16_t)ci_CPU0);
+
+    buf[pos++] = 0x20;               /* IPUSH 0 */
+    ham_put_i32(buf, &pos, 0);
+
+    buf[pos++] = 0x2B;               /* EQ */
+
+    buf[pos++] = 0x12;               /* GUARD */
+    buf[pos++] = 0x13;               /* ENDGUARD */
+
+    buf[pos++] = 0x30;               /* EMOV */
+    ham_put_u16(buf, &pos, (uint16_t)mt_schedule);
+    buf[pos++] = 0;                   /* bind = B0 */
+    ham_put_u16(buf, &pos, (uint16_t)ci_CPU0);
+
+    buf[pos++] = 0x41;               /* TEND */
+
+    /* Patch tension_len: bytes from after THDR to end of this tension */
+    int t1_len = pos - t1_start;
+    buf[t1_len_pos]     = (uint8_t)(t1_len & 0xFF);
+    buf[t1_len_pos + 1] = (uint8_t)((t1_len >> 8) & 0xFF);
+
+    /* ---- Tension 2: timer_tick ----
+     * Match: entities in CPU0 where time_slice > 0
+     * Select first
+     * Emit:  SET time_slice = time_slice - 1
+     */
+    int t2_start = pos;
+    buf[pos++] = 0x40;               /* THDR */
+    buf[pos++] = 15;                  /* priority */
+    ham_put_u16(buf, &pos, 0xFFFF);   /* owner = -1 (system) */
+    ham_put_u16(buf, &pos, 0xFFFF);   /* run_container = -1 (none) */
+    int t2_len_pos = pos;
+    ham_put_u16(buf, &pos, 0);        /* tension_len placeholder */
+
+    buf[pos++] = 0x01;               /* SCAN */
+    ham_put_u16(buf, &pos, (uint16_t)ci_CPU0);
+
+    buf[pos++] = 0x10;               /* WHERE */
+    buf[pos++] = 0;                   /* bind = B0 */
+
+    buf[pos++] = 0x21;               /* EPROP */
+    buf[pos++] = 0;                   /* bind = B0 */
+    ham_put_u16(buf, &pos, (uint16_t)id_time_slice);
+
+    buf[pos++] = 0x20;               /* IPUSH 0 */
+    ham_put_i32(buf, &pos, 0);
+
+    buf[pos++] = 0x27;               /* GT */
+
+    buf[pos++] = 0x11;               /* ENDWHERE */
+
+    buf[pos++] = 0x03;               /* SEL_FIRST */
+    buf[pos++] = 0;                   /* bind = B0 */
+
+    buf[pos++] = 0x14;               /* REQUIRE */
+
+    buf[pos++] = 0x21;               /* EPROP */
+    buf[pos++] = 0;                   /* bind = B0 */
+    ham_put_u16(buf, &pos, (uint16_t)id_time_slice);
+
+    buf[pos++] = 0x20;               /* IPUSH 1 */
+    ham_put_i32(buf, &pos, 1);
+
+    buf[pos++] = 0x25;               /* SUB */
+
+    buf[pos++] = 0x32;               /* ESET */
+    buf[pos++] = 0;                   /* bind = B0 */
+    ham_put_u16(buf, &pos, (uint16_t)id_time_slice);
+
+    buf[pos++] = 0x41;               /* TEND */
+
+    /* Patch tension_len */
+    int t2_len = pos - t2_start;
+    buf[t2_len_pos]     = (uint8_t)(t2_len & 0xFF);
+    buf[t2_len_pos + 1] = (uint8_t)((t2_len >> 8) & 0xFF);
+
+    return pos;
+}

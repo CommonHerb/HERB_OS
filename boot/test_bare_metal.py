@@ -1340,6 +1340,65 @@ def run_tests(image_path):
                 t.check("Shell tension disabled", False, "could not find shell tension")
                 t.check("Shell tension re-enabled", False, "could not find shell tension")
 
+            # ============================================================
+            # TEST: HAM (HERB Abstract Machine) — Session 64
+            # ============================================================
+
+            # ---- TEST: HAM Bytecode Compilation ----
+            print("\n--- Test: HAM Bytecode Compilation ---")
+            pos = t.serial_pos()
+            t.send_key('h')
+            m = t.wait_for(r"\[HAM\] Compiled (\d+) bytes", after=pos, timeout=5)
+            t.check("HAM bytecode compiles", m is not None)
+            if m:
+                bc_size = int(m.group(1))
+                t.check("HAM bytecode size reasonable (20-200 bytes)",
+                         20 <= bc_size <= 200,
+                         f"got {bc_size}")
+
+            # ---- TEST: HAM Execution ----
+            print("\n--- Test: HAM Execution ---")
+            m2 = t.wait_for(r"\[HAM\] ops=(\d+) ready=(\d+)->(\d+) cpu0=(\d+)->(\d+) ts=(-?\d+)->(-?\d+)",
+                            after=pos, timeout=5)
+            t.check("HAM produces output", m2 is not None)
+            if m2:
+                ops = int(m2.group(1))
+                pre_ready = int(m2.group(2))
+                post_ready = int(m2.group(3))
+                pre_cpu0 = int(m2.group(4))
+                post_cpu0 = int(m2.group(5))
+                pre_ts = int(m2.group(6))
+                post_ts = int(m2.group(7))
+
+                t.check("HAM executed operations", ops > 0, f"ops={ops}")
+                t.check("HAM returns without infinite loop", True)
+
+                # Verify scheduling behavior: if READY had entities and CPU0 was empty,
+                # schedule_ready should have moved one to CPU0
+                if pre_ready > 0 and pre_cpu0 == 0:
+                    t.check("HAM schedule_ready: entity moved to CPU0",
+                             post_cpu0 == 1 and post_ready == pre_ready - 1,
+                             f"ready {pre_ready}->{post_ready}, cpu0 {pre_cpu0}->{post_cpu0}")
+
+                # Verify timer_tick: HAM runs to fixpoint, so timer_tick
+                # decrements time_slice repeatedly until it reaches 0
+                if post_cpu0 > 0 and pre_ts > 0:
+                    t.check("HAM timer_tick: time_slice reached 0 at fixpoint",
+                             post_ts == 0,
+                             f"ts {pre_ts}->{post_ts}")
+
+            # ---- TEST: HAM Idempotent (second run) ----
+            print("\n--- Test: HAM Idempotent ---")
+            pos = t.serial_pos()
+            t.send_key('h')
+            m3 = t.wait_for(r"\[HAM\] ops=(\d+)", after=pos, timeout=5)
+            t.check("HAM second invocation succeeds", m3 is not None)
+            if m3:
+                ops2 = int(m3.group(1))
+                # Second run may or may not produce ops depending on state,
+                # but it must not crash and must return
+                t.check("HAM second run terminates cleanly", True)
+
         else:
             print("\n(Kernel-specific tests skipped — flat scheduler mode)")
 

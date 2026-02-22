@@ -243,7 +243,7 @@ If any answer is unfavorable — stop, rethink, and find something better.
 
 ## STATUS
 
-**Last updated:** February 20, 2026 (Session 61 -- PIC/PIT Initialization to Assembly)
+**Last updated:** February 21, 2026 (Session 64 -- Phase 3a: Core HAM Engine — Proof of Architecture)
 
 ### What Works
 - MOVE primitive with containers, MoveTypes, slot constraints, provenance (`src/herb_move.py`)
@@ -277,7 +277,7 @@ If any answer is unfavorable — stop, rethink, and find something better.
 - **HERB OS boots on bare metal** -- x86-64 bootloader (NASM, MBR + second stage), 64-bit kernel entry with SSE enable and 256KB stack, C kernel with VGA text mode, serial debug output, IDT/PIC/PIT (100Hz timer), HERB runtime integration; timer interrupts create HERB Signal entities, runtime resolves to equilibrium, system runs autonomously; boots in QEMU, runs indefinitely (`boot/`)
 - **Interactive HERB OS** -- PS/2 keyboard input mapped to HERB signals; 7 commands (new process, kill, block, unblock, timer, boost, step); structured VGA display with color-coded process table; runtime API extensions for structured state queries (herb_set_prop_int, herb_container_count, herb_entity_name, etc.); dynamic process creation with properties; boots from native .herb binary (`boot/`, `programs/interactive_os.herb`)
 - **Four-Module Kernel on Bare Metal** -- proc+mem+fs+ipc modules running interactively on bare metal; 12 keyboard commands including resource management (A=alloc page, O=open FD, F=free page, C=close FD, M=send message); per-process scoped resources visible in VGA display (MEM free/used, FD free/open counts per process); dynamic process creation auto-allocates 2 pages + 2 FDs in scoped containers; resource isolation proven on hardware: alloc on process A only affects A's scope, not B's; kernel image 60KB (`boot/`, `programs/interactive_kernel.herb`)
-- **Automated QEMU Test Harness** -- Python script boots QEMU headless, sends keystrokes via QMP (QEMU Machine Protocol), captures serial output, asserts expected behavior; 127 automated tests covering boot, timer, process creation, kill, block, unblock, page allocation, FD open, page free, FD close, resource isolation, kill-with-resources, tension selection, tension toggle, behavioral consequences of disabled tensions, behavior restoration, process-as-tensions (program loading, behavioral verification, tension removal on kill, blocked process stops behavior), cross-process interaction (producer/consumer through shared buffer, blocking effects, kill effects, tension toggle on interaction), hot-swappable policy (swap, behavioral difference, restore, rapid multi-swap), text input (enter/exit text mode, character typing, buffer growth, backspace, command submission, ESC cancel with buffer recycling, empty submit, rapid mode switching, command key coexistence), shell commands (help, list, kill, block, unblock, swap, load producer, unknown command, shell tensions visible in panel, disable/enable shell tension); runs in ~80 seconds; `make test-bare-metal` integrates with build system (`boot/test_bare_metal.py`)
+- **Automated QEMU Test Harness** -- Python script boots QEMU headless, sends keystrokes via QMP (QEMU Machine Protocol), captures serial output, asserts expected behavior; 135 automated tests covering boot, timer, process creation, kill, block, unblock, page allocation, FD open, page free, FD close, resource isolation, kill-with-resources, tension selection, tension toggle, behavioral consequences of disabled tensions, behavior restoration, process-as-tensions (program loading, behavioral verification, tension removal on kill, blocked process stops behavior), cross-process interaction (producer/consumer through shared buffer, blocking effects, kill effects, tension toggle on interaction), hot-swappable policy (swap, behavioral difference, restore, rapid multi-swap), text input (enter/exit text mode, character typing, buffer growth, backspace, command submission, ESC cancel with buffer recycling, empty submit, rapid mode switching, command key coexistence), shell commands (help, list, kill, block, unblock, swap, load producer, unknown command, shell tensions visible in panel, disable/enable shell tension), HAM engine (bytecode compilation, execution, fixpoint, idempotent re-runs); runs in ~80 seconds; `make test-bare-metal` integrates with build system (`boot/test_bare_metal.py`)
 - **Pixel Framebuffer (BGA)** -- Bochs Graphics Adapter initialization via PCI config space (vendor 0x1234, device 0x1111); BAR0 read for framebuffer physical address; page table extension maps framebuffer MMIO into virtual address space (PDPT[3] for 3-4GB range, 2MB pages, uncached); BGA DISPI registers set 800x600x32bpp with LFB; double-buffered rendering: back buffer in system RAM (0x500000), fb_flip() copies to MMIO; 8x16 bitmap font (VGA ROM compatible); rendering primitives (fill_rect, draw_rect, draw_char, draw_string); HERB state rendered as colored container regions with process entity rectangles; scoped resources as visual indicators; text mode fallback via compile flag; graphics kernel 75KB, text kernel 61KB; `make run` (graphics) / `make run-text` (text) (`boot/framebuffer.h`, `boot/font8x16.h`)
 - **Display as HERB State** -- The display is no longer hardcoded C rendering logic. A `display` module (5th module in the kernel composition) models visual elements as HERB entities. Surface entity type with `state` property. Scoped `SURFACE` container per Process (slot, one surface per process). Container region positions stored as integer properties on Surface entities in `display.VISIBLE`. Four tensions (`sync_running`, `sync_ready`, `sync_blocked`, `sync_terminated`) reactively set surface state when processes change containers. The C renderer reads Surface entities and maps state values to pixel colors -- HERB is policy (visual state decisions), C is mechanism (pixels). Container regions read from HERB properties (x, y, width, height, region_id). Process colors read from scoped SURFACE entity state. All layout decisions that were previously hardcoded in C now live in HERB state, kept in sync by tensions. (`programs/interactive_kernel.herb.json` display module, `boot/kernel_main.c` Surface-reading renderer)
 - **Mouse Input as HERB Signals with Spatial Interaction** -- PS/2 mouse driver (IRQ12) on bare metal. Cursor is a Surface entity in display.VISIBLE (kind=2) with x,y properties updated by C on mouse movement. Cursor rendered as a 10x14 arrow bitmap directly to MMIO framebuffer for efficient tracking (no full redraw per mouse move). Left clicks create CLICK_SIG Signal entities with click_x, click_y properties. Five hit-test tensions in the display module use guard expressions with cross-binding property comparison (>=, <, +) to match click coordinates against container region bounds. When a click lands inside a region containing a process, the tension sets selected=1 on that process. A click_miss fallback tension (pri=3) consumes unmatched clicks. Selected processes get a bright white 3px highlight border. The cursor entity's position is HERB state -- C writes it, HERB owns it. (`boot/kernel_entry.asm` mouse ISR, `boot/kernel_main.c` PS/2 init + packet assembly + click handling, `boot/framebuffer.h` cursor rendering, `programs/interactive_kernel.herb.json` CLICK_SIG + hit-test tensions)
@@ -299,6 +299,7 @@ If any answer is unfavorable — stop, rethink, and find something better.
 - **Serial Port to Assembly (Session 60)** -- Tier 3 Part 1: serial port functions migrated from C to assembly. 3 new functions in `boot/herb_hw.asm`: `serial_init` (7 direct port writes configuring COM1 UART at 115200 baud 8N1), `serial_putchar` (poll LSR bit 5 + transmit, inline port ops), `serial_print` (string loop with `\n`→`\r\n` translation, calls `serial_putchar`). All use inline `out dx, al` / `in al, dx` directly — no function call overhead for port ops within the same function. `serial_print_int` stays in C as thin wrapper (formats via `herb_snprintf` then calls extern `serial_print`). `COM1` define removed from C (no longer referenced). **herb_hw.asm now has 14 functions** (was 11). `fb_init_display()` stays in C — it's algorithmic (PCI scanning, page tables, conditionals), not a hardware recipe; its port I/O already routes through assembly `outw`/`inw`. Image stable at 108KB (108,032 bytes). 748 tests pass. **Discovery 39: Init sequences are hardware scripts, not algorithms.** (`boot/herb_hw.asm` 3 new functions, `boot/kernel_main.c` extern declarations replace static definitions)
 - **PIC/PIT Initialization to Assembly (Session 61)** -- Tier 3 Part 2: interrupt infrastructure migrated from C to assembly. 2 new functions in `boot/herb_hw.asm`: `pic_remap` (remap 8259 PICs with inline port ops — ICW1-4 sequence + IMR masks, no function calls) and `pit_init` (integer division for divisor + 3 port writes to PIT channel 0). Both are pure hardware scripts — fixed sequences of port writes with no conditional logic. `pic_remap` uses inline `in al, imm8` / `out imm8, al` and `out 0x80, al` for io_wait — zero function call overhead, the entire PIC init is a straight-line port script. `pit_init` uses `div ecx` for the 1193182/hz divisor calculation. 6 `#define` constants removed from C (PIC1_CMD, PIC1_DATA, PIC2_CMD, PIC2_DATA, PIT_CHANNEL0, PIT_CMD). **herb_hw.asm now has 16 functions** (was 14). Image stable at 108KB (108,032 bytes). 748 tests pass. (`boot/herb_hw.asm` 2 new functions, `boot/kernel_main.c` extern declarations replace static definitions + removed #defines)
 - **PS/2 Mouse to Assembly (Session 62)** -- Tier 3 Part 3 + Tier 4: PS/2 mouse functions migrated from C to assembly. 5 new functions in `boot/herb_hw.asm`: `ps2_wait_input` (poll 0x64 bit 1 until clear, 100K timeout), `ps2_wait_output` (poll 0x64 bit 0 until set, 100K timeout), `mouse_write` (send 0xD4 prefix + data byte via PS/2 controller), `mouse_read` (wait + read from 0x60), `mouse_init` (full PS/2 init: enable aux device, configure IRQ12, enable reporting). The functions form a natural call hierarchy: wait primitives are leaf functions with inline port ops, protocol functions call wait primitives, init calls everything. `mouse_init` reads and modifies the PS/2 config byte using non-volatile RBX to preserve state across calls. 3 `#define` constants removed from C (PS2_DATA, PS2_STATUS, PS2_CMD). `mouse_handle_packet()` stays in C — pure integer math (sign extension, clamping, button detection), no port I/O. **herb_hw.asm now has 21 functions** (was 16). Image stable at 108KB (108,032 bytes). 748 tests pass. **Discovery 40: PS/2 protocol functions form a call hierarchy that maps naturally to assembly — wait primitives are leaves, protocol functions call them, init calls everything.** (`boot/herb_hw.asm` 5 new functions, `boot/kernel_main.c` extern declarations replace static definitions + removed #defines)
+- **HAM Core Engine — Proof of Architecture (Session 64)** -- The HERB Abstract Machine (HAM) runs on bare metal. `boot/herb_ham.asm` is a token-threaded bytecode interpreter with 19 instruction handlers across 6 categories: control (THDR, TEND, FAIL), scanning (SCAN, SEL_FIRST, SEL_MAX), filtering (WHERE, ENDWHERE, GUARD, ENDGUARD, REQUIRE), expression stack (IPUSH, EPROP, ECNT, EQ, GT, SUB), and emit (EMOV, ESET). Comparison-chain dispatch (no jump table — avoids PE linker relocation limits). Register allocation: RBX=bytecode start, RSI=PC, RDI=expression stack pointer, R12-R14=binding registers B0-B2, R15=changed flag — all non-volatile in MS x64 ABI, preserved across C bridge calls automatically. Two tensions compiled to bytecode: `schedule_ready` (highest-priority entity from READY to CPU0 when CPU0 empty) and `timer_tick` (decrement time_slice on CPU0 entities where time_slice>0). Total bytecode: 76 bytes for 2 tensions (vs ~5,000 bytes for 2 C Tension structs = **66:1 reduction**). Fixpoint loop proven: timer_tick decrements time_slice to 0 across multiple cycles. Seven C bridge functions (ham_scan, ham_eprop, ham_ecnt, ham_entity_loc, ham_try_move, ham_eset, ham_intern) provide graph access without fragile struct offset computation in assembly. `ham_compile_test()` constructs bytecode at runtime using `intern()` to resolve string IDs — no string mapping problem. 'h' key triggers HAM test via MechBind entity (action=12). 8 new automated bare metal tests verify compilation, execution, fixpoint behavior, and idempotent re-runs. Image: 109KB graphics (111,616 bytes), 90KB text (91,648 bytes). **Discovery 42: The PE linker's relocation limit forced comparison-chain dispatch over jump tables. But the comparison chain is actually more appropriate for the HAM — 19 opcodes don't justify a 256-entry table, and the chain makes the valid opcode set explicit in the code rather than implicit in table structure.** (`boot/herb_ham.asm` NEW, `src/herb_runtime_freestanding.c` C bridge + bytecode compiler, `boot/kernel_main.c` cmd_ham_test + MechBind, `programs/interactive_kernel.herb.json` mech_h entity, `boot/test_bare_metal.py` HAM tests)
 - **Cross-runtime equivalence** -- same program loaded in Python and C produces identical final states under identical signal sequences; proven for FIFO scheduler, priority scheduler, DOM layout pipeline, **multi-process OS (scoped containers), economy (conservation pools), IPC (channels + duplication), and four-module kernel (all features combined)**; **freestanding runtime proven equivalent (10/10 match)**; **cross-format equivalence: .herb binary and .herb.json produce identical state for all 10 programs (13/13 test scenarios)**
 - Autonomous process schedulers: FIFO (`src/herb_scheduler.py`) AND priority-based (`src/herb_scheduler_priority.py`)
 - Browser DOM layout pipeline as pure HERB data (`src/herb_dom.py`)
@@ -311,8 +312,8 @@ If any answer is unfavorable — stop, rethink, and find something better.
 - **449 v2 tests passing** across `test_tensions.py`, `test_goal_pursuit.py`, `test_herb_program.py`, `test_session29.py`, `test_session30.py`, `test_session31.py`, `test_session32.py`, `test_session33.py`, `test_session34.py`, `test_session35.py`
 - v1 Datalog runtime with 142 tests (historical, in `src/herb_core.py`)
 - 17 API tests (`src/test_api.c`), 13 cross-format equivalence tests (`src/test_binary_format.sh`)
-- 127 bare metal QEMU tests (`boot/test_bare_metal.py`)
-- **Total: 591 + 17 + 13 + 127 = 748 tests passing** (all re-verified Session 56; API tests fixed)
+- 135 bare metal QEMU tests (`boot/test_bare_metal.py`)
+- **Total: 591 + 17 + 13 + 135 = 756 tests passing** (bare metal count updated Session 64; +8 HAM tests)
 
 ### Session 34 Milestone: SERIALIZATION + C RUNTIME
 
@@ -1411,8 +1412,8 @@ These are memory stores, not port I/O. C handles them fine. Assembly migration h
 |----------|-------|--------|
 | Port I/O primitives (Tier 1) | ~30 | **7/7 DONE** |
 | Privileged ops (Tier 2) | ~40 | **4/4 DONE** |
-| Init sequences (Tier 3) | ~350 | **3/5 DONE** (serial_init, pic_remap, pit_init) |
-| Device protocols (Tier 4) | ~180 | **2/7 DONE** (serial_putchar, serial_print) |
+| Init sequences (Tier 3) | ~350 | **4/5 DONE** (serial_init, pic_remap, pit_init, mouse_init) |
+| Device protocols (Tier 4) | ~180 | **6/7 DONE** (serial_putchar, serial_print, ps2_wait_input, ps2_wait_output, mouse_write, mouse_read) |
 | **Total hardware-mandatory** | **~600** | |
 | MMIO rendering (Tier 5, optional) | ~200-400 | |
 | **Total with MMIO** | **~800-1000** | |
@@ -1424,8 +1425,8 @@ These are memory stores, not port I/O. C handles them fine. Assembly migration h
 | **58** | `inb`, `outb` → herb_hw.asm. Audit + plan. | ~30 | **DONE** |
 | **59** | `outw`, `inw`, `outl`, `inl`, `io_wait`, LIDT, STI/HLT, CR3 flush | ~70 | **DONE** |
 | **60** | Serial port: `serial_init`, `serial_putchar`, `serial_print`. BGA stays in C. | ~150 | **DONE** |
-| **61** | Timer + PIC: `pit_init`, `pic_remap`, `idt_set_gate` | ~150 |
-| **62** | PS/2 mouse: `ps2_wait_*`, `mouse_write`, `mouse_read`, `mouse_init` | ~200 |
+| **61** | Timer + PIC: `pit_init`, `pic_remap`, `idt_set_gate` | ~150 | **DONE** |
+| **62** | PS/2 mouse: `ps2_wait_*`, `mouse_write`, `mouse_read`, `mouse_init` | ~200 | **DONE** |
 | **63+** | Optional MMIO: VGA text, `fb_flip` SIMD, framebuffer primitives | ~200-400 |
 
 #### Interaction with Existing Assembly
@@ -1433,6 +1434,379 @@ These are memory stores, not port I/O. C handles them fine. Assembly migration h
 - `boot.asm` (bootloader): Unchanged. Runs before kernel, separate binary.
 - `kernel_entry.asm`: Unchanged. Contains ISR stubs and `_start`. Already uses `in`/`out` directly in ISR stubs (interrupt context, not callable functions).
 - `herb_hw.asm`: **New file (Session 58).** Contains callable functions only. Linked alongside kernel_entry.o. This file grows each session.
+
+### Phase 3: The HERB Abstract Machine (HAM)
+
+Phase 1 moved all policy from C to HERB. Phase 2 moved all hardware from C to assembly. What remains in C is the runtime engine — the code that evaluates tensions against entities and resolves to fixpoint. Phase 3 replaces this with an assembly abstract machine: the HAM.
+
+The HAM is to HERB what the WAM is to Prolog, what the ABC machine is to Clean, what the inner interpreter is to Forth. It is the minimal assembly substrate that HERB programs compile to and execute on. It is permanent — not scaffolding. The research documents (RESEARCH_PHASE3_STRATEGY.md, RESEARCH_ASSEMBLY_INTERPRETER.md, RESEARCH_BOOTSTRAP.md) establish why: a pattern-matching engine cannot self-interpret its own pattern matching without absorbing the mechanism from below (the "absorption problem"). The HAM is the irreducible assembly layer that HERB programs target but never absorb.
+
+#### 3.1 Why Not Translate C to Assembly?
+
+The C runtime is an interpreter: it loads a .herb binary as C data structures (Tension structs with nested MatchClause arrays, EmitClause arrays, and recursive Expr trees), then walks those data structures evaluating tensions against entities. Translating this line-by-line to assembly would produce ~3000 lines of assembly that does the same pointer-chasing, the same recursive function calls, the same dynamic dispatch — just without libc.
+
+The abstract machine approach is fundamentally different. Instead of loading tensions as data structures and interpreting them, you **compile** each tension into a flat sequence of primitive instructions. The tension "match entity in CPU0 where priority > 3, match empty READY → move to READY" becomes a concrete bytecode sequence: SCAN container, WHERE filter, SELECT entity, CHECK empty, EMIT move. No interpretation at runtime. No pointer indirection. No recursive expression evaluation. The bytecode stream is flat, sequential, and cache-friendly.
+
+The C runtime's `evaluate_tension()` allocates a 33KB `BindingSetList` on the stack every call, sorts tensions with O(n²) bubble sort every step, and walks recursive `Expr` trees via function calls. The HAM eliminates all of this: bindings live in registers, tensions are pre-sorted in the bytecode layout, and expressions are compiled to flat stack operations inline.
+
+#### 3.2 The Instruction Set
+
+37 instructions in 6 categories. 12 are irreducible primitives (cannot be composed from others). 25 are performance extensions (could be composed but are primitive for efficiency). This parallels Forth's 31 core words, many of which (like OVER) could be composed from simpler words but are primitive for performance.
+
+**Category 1: Scanning (5 instructions)**
+
+These iterate entities within containers. Container-scoped iteration is critical: SCAN walks a container's entity list, not all entities. This is O(C) per match clause, not O(E).
+
+| Opcode | Name | Operands | Semantics |
+|--------|------|----------|-----------|
+| 0x01 | SCAN | ctnr:u16 | Begin scanning container `ctnr`. Sets up iteration state (entity list pointer + count). Subsequent WHERE/SELECT operate on this scan's results. |
+| 0x02 | SCAN_SCOPED | bind:u8, scope:u16 | Resolve scoped container `B[bind]::scope_name`, then scan it. Calls scope resolution subroutine. |
+| 0x03 | SEL_FIRST | bind:u8 | Select first entity from current scan results → B[bind]. If scan is empty after WHERE filtering, leaves bind unset. |
+| 0x04 | SEL_MAX | bind:u8, prop:u16 | Select entity with maximum value of property `prop` → B[bind]. Linear scan of candidates comparing property values. |
+| 0x05 | SEL_MIN | bind:u8, prop:u16 | Select entity with minimum value of property `prop` → B[bind]. |
+
+**Category 2: Filtering (5 instructions)**
+
+These reduce scan results or binding sets.
+
+| Opcode | Name | Operands | Semantics |
+|--------|------|----------|-----------|
+| 0x10 | WHERE | bind:u8 | Begin where-filter block. For each entity in current scan, temporarily bind it to B[bind], evaluate following expression bytecode. Keep entity only if result is truthy. |
+| 0x11 | ENDWHERE | — | End where-filter block. Scan results now contain only entities that passed the filter. |
+| 0x12 | GUARD | — | Begin guard block. Evaluate following expression bytecode against current binding set. If result is falsy, skip this binding set's emit phase. |
+| 0x13 | ENDGUARD | — | End guard block. |
+| 0x14 | REQUIRE | — | If current scan produced zero results (after WHERE filtering), FAIL the entire tension. |
+
+**Category 3: Expression Stack (16 instructions)**
+
+Stack-based expression evaluation. Expressions from match clauses and emit values compile to postfix sequences operating on a 16-slot expression stack. This replaces the C runtime's recursive `eval_expr()` function and its `Expr` tree data structure.
+
+| Opcode | Name | Operands | Semantics |
+|--------|------|----------|-----------|
+| 0x20 | IPUSH | val:i32 | Push 32-bit integer constant onto expression stack. |
+| 0x21 | EPROP | bind:u8, prop:u16 | Push property `prop` of entity B[bind] onto expression stack. Linear scan of entity's property keys. |
+| 0x22 | ECNT | ctnr:u16 | Push entity count of container `ctnr` onto expression stack. |
+| 0x23 | ECNT_S | bind:u8, scope:u16 | Push entity count of scoped container B[bind]::scope onto expression stack. |
+| 0x24 | ADD | — | Pop two values, push their sum. |
+| 0x25 | SUB | — | Pop two values, push difference (second - top). |
+| 0x26 | MUL | — | Pop two values, push product. |
+| 0x27 | GT | — | Pop two values, push 1 if second > top, else 0. |
+| 0x28 | LT | — | Pop two values, push 1 if second < top, else 0. |
+| 0x29 | GTE | — | Pop two values, push 1 if second >= top, else 0. |
+| 0x2A | LTE | — | Pop two values, push 1 if second <= top, else 0. |
+| 0x2B | EQ | — | Pop two values, push 1 if equal, else 0. |
+| 0x2C | NEQ | — | Pop two values, push 1 if not equal, else 0. |
+| 0x2D | AND | — | Pop two values, push 1 if both truthy, else 0. |
+| 0x2E | OR | — | Pop two values, push 1 if either truthy, else 0. |
+| 0x2F | NOT | — | Pop one value, push 1 if falsy, else 0. |
+
+**Category 4: Emit (8 instructions)**
+
+These generate graph mutations. Each emit instruction produces an IntendedAction. All actions from a tension are accumulated, then executed after the tension's evaluation completes (two-phase: generate then execute, matching the C runtime's semantics).
+
+| Opcode | Name | Operands | Semantics |
+|--------|------|----------|-----------|
+| 0x30 | EMOV | mt:u16, bind:u8, to:u16 | Emit move: move entity B[bind] to container `to` via move type `mt`. |
+| 0x31 | EMOV_S | mt:u16, bind:u8, owner:u8, scope:u16 | Emit scoped move: move entity B[bind] to B[owner]::scope via move type `mt`. |
+| 0x32 | ESET | bind:u8, prop:u16 | Emit set: set property `prop` on entity B[bind] to value popped from expression stack. |
+| 0x33 | ESEND | chan:u16, bind:u8 | Emit channel send: send entity B[bind] on channel `chan`. |
+| 0x34 | ERECV | chan:u16, bind:u8, to:u16 | Emit channel receive: receive entity B[bind] from channel `chan` into container `to`. |
+| 0x35 | ERECV_S | chan:u16, bind:u8, owner:u8, scope:u16 | Emit scoped channel receive. |
+| 0x36 | EXFER | tt:u16, from:u8, to_bind:u8 | Emit transfer: transfer amount (popped from expression stack) between entities B[from] and B[to_bind] via transfer type `tt`. |
+| 0x37 | EDUP | bind:u8, to:u16 | Emit duplicate: duplicate entity B[bind] into container `to`. |
+
+**Category 5: Control (3 instructions)**
+
+| Opcode | Name | Operands | Semantics |
+|--------|------|----------|-----------|
+| 0x40 | THDR | pri:u8, owner:i16, run_ctnr:i16 | Tension header. Marks the start of a tension's bytecode. `owner`=-1 for system tensions. `run_ctnr`=-1 for always-fire. If owner >= 0 and entity_location[owner] != run_ctnr, skip to TEND. Checks enabled flag. |
+| 0x41 | TEND | — | Tension end. Execute accumulated actions. Reset scan/binding state for next tension. |
+| 0x42 | FAIL | — | Abandon current tension. Skip to TEND without executing actions. Used by REQUIRE when scan is empty. |
+
+**Bytecode encoding:** 1-byte opcode + variable-length operands. u16 = 2 bytes little-endian, u8 = 1 byte, i16 = 2 bytes signed, i32 = 4 bytes signed. Typical instruction: 3 bytes. Largest (THDR): 6 bytes. Smallest (ADD, NOT, etc.): 1 byte.
+
+**Compiled tension size:** 20-80 bytes per tension (vs ~2,500 bytes for the C Tension struct). Entire system (50 tensions): ~1,500-2,500 bytes of bytecode. This is a ~50:1 reduction in tension representation.
+
+#### 3.3 The Data Model in Memory
+
+The HAM operates on the same data structures as the C runtime, with minor layout optimizations. Everything is arrays indexed by integers — no pointers, no dynamic allocation on the hot path.
+
+**Entity:**
+```
+entity_type[MAX_ENTITIES]     : int32  (interned type name ID)
+entity_name[MAX_ENTITIES]     : int32  (interned entity name ID)
+entity_location[MAX_ENTITIES] : int32  (container index, -1 = none)
+entity_prop_count[MAX_ENTITIES] : int32
+entity_prop_keys[MAX_ENTITIES][MAX_PROPERTIES] : int32  (interned key IDs)
+entity_prop_vals[MAX_ENTITIES][MAX_PROPERTIES] : int64  (tagged values)
+```
+
+Properties remain Array-of-Structs per entity (all properties of entity N are adjacent). This is correct for the access pattern: `EPROP B0, priority` needs to scan entity B0's property keys, which are contiguous. SoA per-property-slot would scatter this across memory.
+
+**Container:**
+```
+container_name[MAX_CONTAINERS]        : int32
+container_kind[MAX_CONTAINERS]        : int32  (SIMPLE=0, SLOT=1)
+container_type[MAX_CONTAINERS]        : int32  (-1 = any)
+container_count[MAX_CONTAINERS]       : int32
+container_owner[MAX_CONTAINERS]       : int32  (-1 = global)
+container_entities[MAX_CONTAINERS][MAX_PER_CONTAINER] : int32  (entity indices)
+```
+
+Entity lists within containers are the iteration substrate for SCAN instructions. `container_entities[ci]` is a packed array of entity indices with `container_count[ci]` entries.
+
+**Move types, channels, pools, transfer types:** Same as C runtime. These are referenced by index from bytecode operands. They're small tables (MAX_MOVE_TYPES=64, MAX_CHANNELS=16, etc.) that change only at load time.
+
+**String intern table:** Same as C runtime. All bytecode operands reference strings by interned integer ID. The HAM hot path performs ZERO string comparisons.
+
+**Expression stack:** 16 slots of int64 in BSS. Addressed by RDI (expression stack pointer). Operations push/pop by adjusting RDI.
+
+**Action buffer:** MAX_INTENDED_MOVES entries in BSS. Each tension's emit phase appends to this buffer; the execution phase after TEND walks and executes it.
+
+**Binding registers:** B0-B2 in x86-64 registers R12-R14. B3-B7 spill to stack (red zone or explicit stack frame). Most tensions use 1-3 bindings; the kernel's most complex tension (click hit-test) uses 3.
+
+#### 3.4 The Execution Model
+
+**Three nested loops** matching the C runtime exactly:
+
+```
+OUTER (fixpoint):
+  changed = 0
+  FOR each tension in bytecode (pre-sorted by priority, highest first):
+    IF tension disabled: skip to TEND
+    IF tension has owner AND owner not in run_container: skip to TEND
+    Execute tension bytecode (THDR → match → filter → emit → TEND)
+    Execute accumulated actions (move/set/send/receive/transfer/duplicate)
+    IF any action mutated state: changed = 1
+  IF changed: repeat OUTER
+  HALT (return to caller)
+```
+
+**Pre-sorted bytecode** eliminates the C runtime's O(n²) per-step bubble sort. Tensions are laid out in priority-descending order in the bytecode at compile time. The engine walks sequentially — no sorting needed.
+
+**Register allocation (Microsoft x64 ABI):**
+
+```
+PERSISTENT (non-volatile, survive function calls):
+  RBX = graph base pointer (address of entity/container arrays)
+  RBP = stack frame base
+  RSI = bytecode program counter (advances through HAM bytecode)
+  RDI = expression stack pointer
+  R12 = binding register B0 (entity index)
+  R13 = binding register B1 (entity index)
+  R14 = binding register B2 (entity index)
+  R15 = changed flag (0 = no mutations this cycle)
+
+TEMPORARY (volatile, free for computation):
+  RAX = accumulator / return values / scratch
+  RCX = loop counter / scratch (1st argument in MS x64)
+  RDX = scratch (2nd argument in MS x64)
+  R8  = scan iteration pointer / scratch
+  R9  = scan count / property value
+  R10 = condition/action pointer / scratch
+  R11 = scratch
+```
+
+Since the HAM engine is a leaf function during the hot loop (no external calls), all 16 GPRs are freely available. This is the fundamental advantage over C that Mike Pall identified: "There's a point where you start to fight the compiler and this is a game you cannot win."
+
+**Dispatch mechanism:** Token threading with distributed dispatch. Each instruction handler ends with its own copy of the fetch-decode-dispatch sequence:
+
+```nasm
+; At the end of EVERY handler:
+    movzx eax, byte [rsi]        ; fetch next opcode
+    inc   rsi                     ; advance PC
+    jmp   [ham_dispatch + rax*8]  ; jump to handler via table
+```
+
+This gives the Branch Target Buffer a unique prediction site per dispatch location. For fixed-order tension iteration, the BTB achieves near-perfect prediction from the second fixpoint cycle onward — the instruction sequence is identical every cycle unless state changes cause different control flow (REQUIRE failing, WHERE filtering differently).
+
+**Two-phase action execution:** Matching the C runtime, each tension first generates all IntendedActions into a buffer, then executes them sequentially. This preserves the semantics where evaluation sees pre-mutation state while execution sees evolving state. Within a tension, actions are ordered by binding-set-index × emit-clause-index.
+
+#### 3.5 Compiled Tension Examples
+
+**Example 1: schedule_ready** (match entity in READY with max_by priority + empty CPU0 → move to CPU0)
+
+```
+THDR    pri=10, owner=-1, run_ctnr=-1    ; system tension, always fire
+SCAN    ctnr=READY                        ; scan READY container
+SEL_MAX bind=B0, prop=priority            ; B0 = highest-priority entity
+REQUIRE                                    ; fail if READY is empty
+ECNT    ctnr=CPU0                          ; push count(CPU0)
+IPUSH   0                                  ; push 0
+EQ                                         ; CPU0 empty?
+GUARD                                      ; skip if not empty
+ENDGUARD
+EMOV    mt=schedule, bind=B0, to=CPU0     ; emit move B0 to CPU0
+TEND                                       ; execute actions
+```
+
+10 instructions, ~28 bytes. The C Tension struct for this: ~2,500 bytes.
+
+**Example 2: timer_tick** (match proc in CPU0 where time_slice > 0 → set time_slice = time_slice - 1)
+
+```
+THDR    pri=15, owner=-1, run_ctnr=-1
+SCAN    ctnr=CPU0
+WHERE   bind=B0                            ; filter: for each entity in CPU0...
+  EPROP B0, time_slice                     ;   push entity.time_slice
+  IPUSH 0                                  ;   push 0
+  GT                                       ;   time_slice > 0?
+ENDWHERE
+SEL_FIRST bind=B0                          ; B0 = first (only) matching entity
+REQUIRE
+EPROP   B0, time_slice                     ; push B0.time_slice (for emit value)
+IPUSH   1                                  ; push 1
+SUB                                        ; time_slice - 1
+ESET    B0, time_slice                     ; set B0.time_slice = stack top
+TEND
+```
+
+13 instructions, ~35 bytes.
+
+**Example 3: keybind_route** (match signal + ctl where mode==0 + keybind where key matches → set pending_cmd/arg)
+
+```
+THDR    pri=23, owner=-1, run_ctnr=-1
+SCAN    ctnr=KEY_SIG
+SEL_FIRST bind=B0                          ; B0 = signal entity
+REQUIRE
+SCAN    ctnr=INPUT_STATE
+WHERE   bind=B1
+  EPROP B1, mode
+  IPUSH 0
+  EQ                                       ; mode == 0?
+ENDWHERE
+SEL_FIRST bind=B1                          ; B1 = InputCtl
+REQUIRE
+SCAN    ctnr=KEYBIND
+WHERE   bind=B2
+  EPROP B2, key_ascii
+  EPROP B0, key_ascii                      ; cross-binding reference!
+  EQ                                       ; keybind.key_ascii == signal.key_ascii?
+ENDWHERE
+SEL_FIRST bind=B2                          ; B2 = matching keybind
+REQUIRE
+EPROP   B2, cmd_id
+ESET    B1, pending_cmd                    ; ctl.pending_cmd = keybind.cmd_id
+EPROP   B2, arg_id
+ESET    B1, pending_arg                    ; ctl.pending_arg = keybind.arg_id
+TEND
+```
+
+22 instructions, ~55 bytes. This demonstrates cross-binding property comparison: inside the WHERE block for B2, the expression references B0 (already bound). The expression stack naturally handles this because B0 is available when we reach this point.
+
+#### 3.6 What Stays Outside the HAM
+
+**Below the HAM (already assembly — herb_hw.asm):**
+21 hardware functions: port I/O, privileged CPU ops, serial, PIC/PIT, PS/2 mouse. Called by kernel_main.c, not by the HAM engine.
+
+**Above the HAM (compiled to bytecode):**
+All .herb programs. A compiler transforms .herb binaries into HAM bytecode sequences. The programs are "above" because they are expressed in HERB's declarative semantics and compiled down to HAM's imperative instructions.
+
+**The C bridge (remains in C, interfaces with HAM):**
+- `herb_init()` — arena setup, zero out globals
+- `herb_load()` — binary format detection, calls loader
+- `load_program_binary()` — .herb binary parser → populates entity/container/tension arrays AND compiles tension bytecode
+- `herb_create()` — signal entity creation from hardware events
+- `herb_set_prop_int()` — property setup from kernel_main.c
+- `herb_load_program()` — runtime program loading (compiles to HAM bytecode on the fly)
+- `herb_tension_create()` — runtime tension creation API
+- `intern()` — string interning (load-time only in the hot path)
+- All query APIs (`herb_container_count`, `herb_entity_name`, `herb_entity_prop_int`, etc.)
+- `herb_state()` — state serialization
+
+**Inside the HAM engine (assembly — new file herb_ham.asm):**
+- Fixpoint loop (outer)
+- Tension iteration (middle — sequential bytecode walk)
+- Bytecode instruction dispatch (jump table)
+- All 37 instruction handlers
+- Expression stack operations
+- Graph mutation primitives (try_move, container_add, container_remove, entity_get_prop, entity_set_prop, do_channel_send, do_channel_receive, do_transfer, do_duplicate)
+- Action buffer management
+
+The C bridge calls INTO the HAM via `ham_run()` / `ham_step()`. The HAM calls OUT to nothing during the hot path — it operates entirely on in-memory data structures addressed by integer indices. Zero string operations, zero allocation, zero external function calls.
+
+#### 3.7 The Absorption Problem
+
+The research (RESEARCH_BOOTSTRAP.md) identifies a fundamental asymmetry: in Lisp, code and data share the same representation (S-expressions), making metacircularity nearly trivial. In a pattern-matching language like HERB, the execution mechanism — container scanning, property matching, binding management, fixpoint detection — is categorically more complex than the declarative rules it executes.
+
+A HERB program describing "how to evaluate tensions" would delegate the actual pattern matching to the underlying engine. This is metacircular, not self-hosting. Every declarative language hits this wall. The solution, proven by Prolog (WAM), Clean (ABC machine), and Forth (inner interpreter): implement a minimal abstract machine in assembly, express the language's semantics as loadable programs that compile to abstract machine instructions, then (optionally, much later) write a compiler in HERB itself that targets the abstract machine.
+
+The HAM is therefore **permanent**. It is not scaffolding like Python was (replaced by C) or like libc was (replaced by freestanding). The HAM is the irreducible assembly substrate. HERB programs compile to it but never absorb it. The final stack is: hardware → herb_hw.asm → HAM (herb_ham.asm) → HERB programs (compiled to HAM bytecode). Assembly + HERB, nothing else.
+
+#### 3.8 Migration Strategy
+
+**Phase 3a: Core HAM Engine (Session 64)**
+- Implement the HAM engine skeleton in `boot/herb_ham.asm`: fixpoint loop, tension iteration, bytecode dispatch jump table
+- Implement ~10 core instructions: THDR, TEND, FAIL, SCAN, SEL_MAX, REQUIRE, ECNT, IPUSH, EQ, EMOV
+- Write a Python compiler (`src/herb_ham_compile.py`) that compiles one tension (schedule_ready) from .herb binary to HAM bytecode
+- Test: schedule_ready as HAM bytecode produces identical behavior to C runtime
+- MVP proof that the architecture works
+- Estimated size: ~500-800 bytes of assembly for the engine
+
+**Phase 3b: Complete Instruction Set (Sessions 65-67)**
+- Add filtering instructions: WHERE, ENDWHERE, GUARD, ENDGUARD, SEL_FIRST, SEL_MIN
+- Add expression operations: EPROP, ADD, SUB, MUL, GT, LT, GTE, LTE, NEQ, AND, OR, NOT
+- Add emit instructions: ESET, ESEND, ERECV, EXFER, EDUP, EMOV_S, ERECV_S
+- Add scoped operations: SCAN_SCOPED, ECNT_S
+- Compile progressively more tensions, testing each against C runtime
+- 2-3 sessions depending on complexity encountered
+
+**Phase 3c: Full HAM OS (Sessions 68-69)**
+- Extend Python compiler to handle all 41 system tensions + 9 shell tensions
+- Handle vector bindings ("each" mode) and zip/cross binding set expansion
+- Handle process-owned tensions (owner check, run_container check)
+- Compile process program fragments (producer, consumer, worker, beacon)
+- Compile scheduling policy fragments (priority, round-robin)
+- Test: entire OS running on HAM bytecode, C runtime as verification oracle
+- 2 sessions
+
+**Phase 3d: Boot from HAM (Sessions 70-71)**
+- Modify `load_program_binary()` to emit HAM bytecode instead of C tension structs
+- Replace `herb_step()` / `herb_run()` with calls to `ham_step()` / `ham_run()`
+- Modify `herb_load_program()` to compile to HAM bytecode on the fly (for runtime loading)
+- C runtime kept as test oracle only (not in boot path)
+- Performance measurement: HAM vs C runtime
+- 1-2 sessions
+
+**Total estimate: 6-8 sessions (64-71)**
+
+#### 3.9 Open Questions
+
+1. **Vector binding expansion.** The C runtime builds a 33KB BindingSetList on stack for "each" mode matches. The HAM needs a strategy. Options: (a) pre-allocate binding set buffer in BSS, (b) iterate one binding set at a time with lower memory, (c) limit to one vector binding (covers all current tensions). Start with (c), implement (b) when needed.
+
+2. **Scoped container resolution.** Resolving `B[n]::SCOPE_NAME` requires iterating the entity's scope table. Implement as an assembly subroutine called by SCAN_SCOPED and EMOV_S. The scope table is small (MAX_SCOPE_TEMPLATES=16) so linear scan is fine.
+
+3. **Property lookup optimization.** `EPROP` does linear scan over entity property keys (up to MAX_PROPERTIES=16). For entities with many properties, this could be slow. Options: (a) keep linear scan (simple, matches C), (b) sort properties by key ID for binary search, (c) fixed property layout per entity type. Start with (a), profile later. Most entities have 3-6 properties.
+
+4. **Online compilation.** `herb_load_program()` currently constructs C Tension structs at runtime for dynamically loaded process programs. In Phase 3d, it must compile .herb binary fragments to HAM bytecode on the fly. The compiler logic can be in C (part of the C bridge) — it's not on the hot path.
+
+5. **Native code generation.** The HAM interprets bytecode via a dispatch loop. A future Phase 4 could compile HAM bytecode directly to x86-64 machine code, eliminating dispatch overhead entirely. This is a JIT or ahead-of-time compilation step, analogous to what GraalVM/Truffle does. Not needed for Phase 3.
+
+6. **Rete-style incremental evaluation.** The HAM re-evaluates all tensions every fixpoint cycle (brute-force). For systems with >1000 entities, Rete-inspired incremental evaluation (only re-evaluate tensions affected by recent state changes) would be essential. The TREAT variant (no stored joins) is more appropriate for the HAM's minimal memory model. Future optimization, not Phase 3.
+
+7. **SIMD column scanning.** The research describes AVX2 8-wide entity filtering for type checks and property comparisons. This requires migrating hot-path data to Structure-of-Arrays layout. Future optimization after Phase 3 proves correctness with AoS.
+
+8. **Superinstructions.** Common opcode sequences (SCAN + SEL_FIRST + REQUIRE, EPROP + IPUSH + EQ) could be fused into single handlers, reducing dispatch overhead by up to 4.5× per Ertl & Gregg's research. Future optimization after profiling identifies bottlenecks.
+
+#### 3.10 Performance Expectations
+
+| Approach | Typical vs Native | Status |
+|----------|-------------------|--------|
+| C runtime (current) | ~10-50× interpreted overhead | Current |
+| HAM bytecode engine | ~3-15× (no struct interpretation, pre-sorted, fixed registers) | Phase 3 |
+| HAM + superinstructions | ~2-8× | Future |
+| HAM + SoA + SIMD | ~1-5× | Future |
+| Native code generation | ~1-2× | Future (Phase 4) |
+
+The HAM's performance advantage over the C runtime comes from:
+- **Eliminating per-step O(n²) sorting** (pre-sorted bytecode)
+- **Eliminating struct interpretation** (compiled bytecode vs walking data structures)
+- **Eliminating recursive expression evaluation** (flat stack operations vs tree walk)
+- **Eliminating 33KB stack allocation per tension** (register bindings + small buffer)
+- **Fixed register allocation** (all 16 GPRs assigned, no save/restore overhead)
+- **Sequential instruction fetch** (cache-friendly linear bytecode vs scattered struct fields)
+- **Near-perfect branch prediction** (fixed tension order → BTB learns the sequence)
 
 ### Former Problems: SOLVED
 
@@ -1497,7 +1871,7 @@ These are memory stores, not port I/O. C handles them fine. Assembly migration h
    - ~~**Buffer capacity:** `#define BUFFER_CAPACITY 20` (~L1695). Could be a HERB property on the buffer entity read at creation.~~ **SOLVED (Session 56):** `buffer_capacity=20` property on DisplayCtl entity. C reads at boot, `#define BUFFER_CAPACITY` removed.
    - ~~**Shell protection value:** C sets `protected=1` on shell entity at boot (~L2900). The HERB `where` guard already reads it structurally, but C decides the initial value.~~ **SOLVED (Session 56):** `shell_protected=1` property on ShellCtl entity. C reads after ShellCtl discovery, sets shell entity's `protected` property from HERB value.
 
-3. **Phase 2: C Mechanism → Assembly** -- `boot/herb_hw.asm` now has 16 functions: all Tier 1 port I/O (`outb`, `inb`, `outw`, `inw`, `outl`, `inl`, `io_wait`), all Tier 2 privileged CPU ops (`hw_lidt`, `hw_sti`, `hw_hlt`, `hw_flush_tlb`), serial port (`serial_init`, `serial_putchar`, `serial_print`), and interrupt infrastructure (`pic_remap`, `pit_init`). Tiers 1-2 COMPLETE (Sessions 58-59). Tier 3: serial + PIC + PIT COMPLETE (Sessions 60-61). Zero inline asm in kernel_main.c or framebuffer.h. Tier 3 remainder (mouse) + Tiers 4-5 remain across sessions 62-63+. See Phase 2 Migration Plan section.
+3. **Phase 2: C Mechanism → Assembly** -- `boot/herb_hw.asm` now has 21 functions: all Tier 1 port I/O (`outb`, `inb`, `outw`, `inw`, `outl`, `inl`, `io_wait`), all Tier 2 privileged CPU ops (`hw_lidt`, `hw_sti`, `hw_hlt`, `hw_flush_tlb`), serial port (`serial_init`, `serial_putchar`, `serial_print`), interrupt infrastructure (`pic_remap`, `pit_init`), and PS/2 mouse (`ps2_wait_input`, `ps2_wait_output`, `mouse_write`, `mouse_read`, `mouse_init`). Tiers 1-4 COMPLETE (Sessions 58-62). Zero inline asm in kernel_main.c or framebuffer.h. Tier 5 (optional MMIO) remains. See Phase 2 Migration Plan section. **Phase 3 (HAM) begins Session 64 — replacing C runtime with assembly abstract machine.** See Phase 3 section.
 4. **Compositor / window manager** -- Container regions have fixed positions. Next step: layout tensions that compute positions dynamically based on window count, size, and z-order. Moving toward a full compositor where HERB manages the window tree. Mouse interaction now available for drag-and-drop, resize, and window manipulation.
 5. **First real target** -- Pick the first real deliverable built entirely in HERB.
 6. **Vector scoped queries** -- Currently scoped match clauses require a scalar scope binding. Supporting vector scope bindings (nested loops) would enable "for each process, count its FDs" patterns.
@@ -1548,6 +1922,9 @@ These are memory stores, not port I/O. C handles them fine. Assembly migration h
 36. **UI text IS HERB entities with string properties** -- Session 56 proved that user-facing text (keybinding legends, help text) doesn't need to be hardcoded C strings. Legend entries are Legend entities in a LEGEND container with `key_text` and `label_text` string properties. C iterates sorted by `order`, renders key in highlight color and label in dim color. Adding a legend entry = adding an entity. Removing one = removing an entity. Reordering = changing `order` properties. The pattern generalizes beyond legend: any UI text that derives from system configuration (help text, error messages, status labels) can be HERB entities that C renders. This completes the migration arc: Sessions 52-55 migrated behavioral decisions and numeric configuration. Session 56 migrates textual content. The only C strings remaining are debug/logging messages — mechanism, not policy.
 37. **The C→HERB migration is complete — and the boundary is sharp** -- Session 57 completed the Phase 1 migration: 14 behavioral decisions moved from C to HERB across 7 sessions. The final state reveals a clean architectural boundary. HERB owns all policy: what happens when a key is pressed, what color a process is, what the help text says, which process gets the CPU, how priorities are assigned. C owns all mechanism: reading hardware ports, writing pixels, loading binaries, creating signal entities. The boundary is always one entity creation: C creates a signal from a hardware event, HERB tensions resolve it, C reads the result. This boundary was not designed upfront — it emerged from systematically asking "is this a WHAT decision or a HOW decision?" for every line of C code. The 14 migrations followed different patterns (tensions, entity properties, lookup entities, conservation pools, string entities) but they all moved in the same direction: C shrinks to mechanism, HERB grows to contain all policy. The kernel binary grew 2.5KB because HERB state is more verbose than hardcoded C — but every byte of that growth is data that can be changed, inspected, and replaced at runtime without recompilation.
 38. **Inline asm constraints cost more than the assembly itself** -- Session 58's first Phase 2 migration (outb/inb to herb_hw.asm) produced an unexpected 11KB image reduction (119KB → 108KB, ~9%). The two assembly functions total ~30 bytes. The saving came not from smaller code but from removing GCC's inline asm constraints. When `outb`/`inb` were `static inline` with `__asm__ volatile` and operand constraints (`"a"`, `"Nd"`), GCC was conservative about register allocation, instruction scheduling, and optimization around every call site. With `extern`, GCC follows the standard calling convention and can optimize the surrounding C code aggressively. The implication for Phase 2: every inline asm wrapper migrated to herb_hw.asm will likely shrink the image, not grow it. The C compiler's cost model for inline assembly significantly overestimates the actual hardware instruction cost.
+39. **Init sequences are hardware scripts, not algorithms** -- Session 60's serial port migration revealed that hardware initialization functions (serial_init, pic_remap, pit_init, mouse_init) are fixed sequences of port writes — hardware scripts with no conditional logic, no loops over data, no algorithmic complexity. Assembly is their natural notation because there's nothing for a high-level language to abstract. The C versions were already assembly in disguise: each line was a single `outb()` call with constant arguments. The migration to assembly didn't change the logic — it removed the pretense that these were C functions.
+40. **PS/2 protocol functions form a natural call hierarchy** -- Session 62 proved that device protocols have a three-level structure that maps directly to assembly: wait primitives are leaf functions (inline port ops, tight loops), protocol functions call them (mouse_write, mouse_read), and the init function calls everything. This hierarchy — polling → commands → initialization — is the natural structure of all device protocols. Each level adds one layer of abstraction over the hardware, and each layer is small enough to fit in a single assembly function.
+41. **Tensions are bytecode, not data structures** -- Session 63's HAM design revealed a 50:1 reduction in tension representation: from ~2,500-byte C structs (MatchClause arrays, EmitClause arrays, recursive Expr trees) to ~30-80 bytes of flat bytecode per tension. This reduction comes not from compression but from eliminating representation overhead that served C's type system, not HERB's semantics. The transition from "interpreted data structures" to "compiled bytecode" is the same evolution that Prolog made from naive interpreters to the WAM, and that Java made from tree-walking interpreters to the JVM. It eliminates recursive expression evaluation, per-step O(n²) sorting, 33KB stack allocation for binding sets, and all pointer indirection in expression trees. The HAM is the irreducible assembly substrate — permanent, not scaffolding.
 
 ---
 

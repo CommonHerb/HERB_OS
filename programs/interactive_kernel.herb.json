@@ -967,6 +967,8 @@
      "properties": {"key": 93, "action": 10}},
     {"name": "mech_d",     "type": "input.MechBind", "in": "input.MECHBIND",
      "properties": {"key": 100, "action": 11}},
+    {"name": "mech_h",     "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 104, "action": 12}},
 
     {"name": "c00", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
     {"name": "c01", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},

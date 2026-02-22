@@ -176,6 +176,7 @@ static void cmd_send_msg(void);
 static void cmd_tension_prev(void);
 static void cmd_tension_next(void);
 static void cmd_tension_toggle(void);
+static void cmd_ham_test(void);
 #endif
 
 /* Forward declarations — HERB-based command dispatch (Session 53-54) */
@@ -237,6 +238,12 @@ extern void ps2_wait_output(void);
 extern void mouse_write(uint8_t data);
 extern uint8_t mouse_read(void);
 extern void mouse_init(void);
+
+/* HAM — HERB Abstract Machine (Phase 3, Session 64) */
+extern int ham_run(uint8_t* bytecode_ptr, int bytecode_len);
+extern int ham_compile_test(uint8_t* buf, int buf_size,
+                            const char* ready_name, const char* cpu0_name);
+extern int ham_intern(const char* s);
 
 static void serial_print_int(int val) {
     char buf[16];
@@ -1995,6 +2002,7 @@ static void dispatch_mech_action(int action) {
         case 9:  cmd_tension_prev();   break;
         case 10: cmd_tension_next();   break;
         case 11: cmd_tension_toggle(); break;
+        case 12: cmd_ham_test();       break;
         default: break;
     }
 }
@@ -2401,6 +2409,72 @@ static void cmd_tension_toggle(void) {
     serial_print(" ");
     serial_print(state);
     serial_print("\n");
+}
+
+/* ============================================================
+ * HAM TEST (Session 64 — Phase 3a)
+ *
+ * Compile schedule_ready + timer_tick to HAM bytecode, run
+ * through the assembly engine, report results via serial.
+ * ============================================================ */
+
+static void cmd_ham_test(void) {
+    static uint8_t ham_bc[256];
+    static int ham_bc_len = 0;
+
+    /* Compile bytecode on first invocation */
+    if (ham_bc_len == 0) {
+        ham_bc_len = ham_compile_test(ham_bc, sizeof(ham_bc), CN_READY, CN_CPU0);
+        serial_print("[HAM] Compiled ");
+        serial_print_int(ham_bc_len);
+        serial_print(" bytes of bytecode\n");
+    }
+
+    /* Record pre-state */
+    int pre_ready = herb_container_count(CN_READY);
+    int pre_cpu0  = herb_container_count(CN_CPU0);
+
+    /* Get first entity on CPU0 and its time_slice (if any) */
+    int64_t pre_ts = -1;
+    if (pre_cpu0 > 0) {
+        int cpu0_eid = herb_container_entity(CN_CPU0, 0);
+        pre_ts = herb_entity_prop_int(cpu0_eid, "time_slice", -1);
+    }
+
+    /* Run HAM */
+    int ops = ham_run(ham_bc, ham_bc_len);
+
+    /* Record post-state */
+    int post_ready = herb_container_count(CN_READY);
+    int post_cpu0  = herb_container_count(CN_CPU0);
+
+    int64_t post_ts = -1;
+    if (post_cpu0 > 0) {
+        int cpu0_eid = herb_container_entity(CN_CPU0, 0);
+        post_ts = herb_entity_prop_int(cpu0_eid, "time_slice", -1);
+    }
+
+    /* Report to serial */
+    serial_print("[HAM] ops=");
+    serial_print_int(ops);
+    serial_print(" ready=");
+    serial_print_int(pre_ready);
+    serial_print("->");
+    serial_print_int(post_ready);
+    serial_print(" cpu0=");
+    serial_print_int(pre_cpu0);
+    serial_print("->");
+    serial_print_int(post_cpu0);
+    serial_print(" ts=");
+    serial_print_int((int)pre_ts);
+    serial_print("->");
+    serial_print_int((int)post_ts);
+    serial_print("\n");
+
+    /* Update last_action for display */
+    herb_snprintf(last_action, sizeof(last_action),
+        "HAM: %d ops, ready %d->%d, cpu0 %d->%d",
+        ops, pre_ready, post_ready, pre_cpu0, post_cpu0);
 }
 
 /* ============================================================
