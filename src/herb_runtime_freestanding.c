@@ -72,9 +72,17 @@ static HerbArena* g_arena = HERB_NULL;
  * STRING INTERN TABLE
  * ============================================================ */
 
-static char g_strings[MAX_STRINGS][MAX_STRING_LEN];
-static int g_string_count = 0;
+/* Non-static: accessible from assembly (boot/herb_graph.asm) */
+char g_strings[MAX_STRINGS][MAX_STRING_LEN];
+int g_string_count = 0;
 
+#ifdef HERB_BINARY_ONLY
+/* Assembly implementations in boot/herb_graph.asm (Phase 4b) */
+extern int intern(const char* s);
+extern const char* str_of(int id);
+extern void container_add(int ci, int ei);
+extern void container_remove(int ci, int ei);
+#else
 static int intern(const char* s) {
     for (int i = 0; i < g_string_count; i++) {
         if (herb_strcmp(g_strings[i], s) == 0) return i;
@@ -92,6 +100,7 @@ static const char* str_of(int id) {
     if (id >= 0 && id < g_string_count) return g_strings[id];
     return "?";
 }
+#endif /* !HERB_BINARY_ONLY — end of C intern/str_of */
 
 /* ============================================================
  * PROPERTY VALUE
@@ -107,6 +116,16 @@ typedef struct {
         int s;  /* interned string */
     };
 } PropVal;
+
+/* entity_get_prop: always static C (inlinable).
+ * Discovery 47: Making this function non-inlinable (extern, noinline, or wrapper-to-extern)
+ * causes 48 test failures. The assembly version returns correct values but GCC's caller
+ * optimization changes when the function can't be inlined. Deferred to Phase 4b Part 2. */
+
+#ifdef HERB_BINARY_ONLY
+/* Assembly implementation in boot/herb_graph.asm — void return, PropVal by pointer (safe ABI) */
+extern void entity_set_prop(int ei, int prop_id, PropVal val);
+#endif
 
 static PropVal pv_none(void) { PropVal v; v.type = PV_NONE; return v; }
 static PropVal pv_int(int64_t i) { PropVal v; v.type = PV_INT; v.i = i; return v; }
@@ -456,7 +475,8 @@ typedef struct {
     int op_count;
 } Graph;
 
-static Graph g_graph;
+/* Non-static: accessible from assembly (boot/herb_graph.asm) */
+Graph g_graph;
 
 /* ============================================================
  * GRAPH OPERATIONS
@@ -497,6 +517,7 @@ static int graph_find_transfer_by_name(int name_id) {
     return -1;
 }
 
+#ifndef HERB_BINARY_ONLY
 static void container_add(int ci, int ei) {
     Container* c = &g_graph.containers[ci];
     if (c->entity_count < MAX_ENTITY_PER_CONTAINER) {
@@ -513,6 +534,7 @@ static void container_remove(int ci, int ei) {
         }
     }
 }
+#endif /* container_add/remove guard */
 
 static PropVal entity_get_prop(int ei, int prop_id) {
     Entity* e = &g_graph.entities[ei];
@@ -522,6 +544,7 @@ static PropVal entity_get_prop(int ei, int prop_id) {
     return pv_none();
 }
 
+#ifndef HERB_BINARY_ONLY
 static void entity_set_prop(int ei, int prop_id, PropVal val) {
     Entity* e = &g_graph.entities[ei];
     for (int i = 0; i < e->prop_count; i++) {
@@ -536,6 +559,7 @@ static void entity_set_prop(int ei, int prop_id, PropVal val) {
         e->prop_count++;
     }
 }
+#endif
 
 /* Get scoped container for an entity by scope name */
 static int get_scoped_container(int entity_idx, int scope_name_id) {
