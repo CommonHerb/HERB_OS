@@ -1,0 +1,1006 @@
+{
+  "compose": ["proc", "mem", "fs", "ipc", "display", "input", "spawn"],
+  "modules": [
+    {
+      "module": "proc",
+      "exports": [
+        "Process", "Signal",
+        "READY", "CPU0", "BLOCKED", "TERMINATED",
+        "schedule", "preempt", "block_proc", "unblock", "terminate",
+        "TIMER_SIG", "KILL_SIG", "BLOCK_SIG", "UNBLOCK_SIG", "BOOST_SIG",
+        "ALLOC_SIG", "FREE_SIG", "OPEN_SIG", "CLOSE_SIG",
+        "SEND_SIG", "RECV_SIG",
+        "CLICK_SIG", "KEY_SIG", "CMD_SIG", "SPAWN_SIG",
+        "SIG_DONE",
+        "consume_signal"
+      ],
+      "imports": [],
+      "entity_types": [
+        {"name": "Process"},
+        {"name": "Signal"}
+      ],
+      "containers": [
+        {"name": "READY",       "kind": "simple", "entity_type": "Process"},
+        {"name": "CPU0",        "kind": "slot",   "entity_type": "Process"},
+        {"name": "BLOCKED",     "kind": "simple", "entity_type": "Process"},
+        {"name": "TERMINATED",  "kind": "simple", "entity_type": "Process"},
+        {"name": "TIMER_SIG",   "kind": "simple", "entity_type": "Signal"},
+        {"name": "KILL_SIG",    "kind": "simple", "entity_type": "Signal"},
+        {"name": "BLOCK_SIG",   "kind": "simple", "entity_type": "Signal"},
+        {"name": "UNBLOCK_SIG", "kind": "simple", "entity_type": "Signal"},
+        {"name": "BOOST_SIG",   "kind": "simple", "entity_type": "Signal"},
+        {"name": "ALLOC_SIG",   "kind": "simple", "entity_type": "Signal"},
+        {"name": "FREE_SIG",    "kind": "simple", "entity_type": "Signal"},
+        {"name": "OPEN_SIG",    "kind": "simple", "entity_type": "Signal"},
+        {"name": "CLOSE_SIG",   "kind": "simple", "entity_type": "Signal"},
+        {"name": "SEND_SIG",    "kind": "simple", "entity_type": "Signal"},
+        {"name": "RECV_SIG",    "kind": "simple", "entity_type": "Signal"},
+        {"name": "CLICK_SIG",   "kind": "simple", "entity_type": "Signal"},
+        {"name": "KEY_SIG",     "kind": "simple", "entity_type": "Signal"},
+        {"name": "CMD_SIG",     "kind": "simple", "entity_type": "Signal"},
+        {"name": "SPAWN_SIG",   "kind": "simple", "entity_type": "Signal"},
+        {"name": "SIG_DONE",    "kind": "simple", "entity_type": "Signal"}
+      ],
+      "moves": [
+        {"name": "schedule",    "from": ["READY"],   "to": ["CPU0"],        "entity_type": "Process"},
+        {"name": "preempt",     "from": ["CPU0"],    "to": ["READY"],       "entity_type": "Process"},
+        {"name": "block_proc",  "from": ["CPU0"],    "to": ["BLOCKED"],     "entity_type": "Process"},
+        {"name": "unblock",     "from": ["BLOCKED"], "to": ["READY"],       "entity_type": "Process"},
+        {"name": "terminate",   "from": ["CPU0"],    "to": ["TERMINATED"],  "entity_type": "Process"},
+        {
+          "name": "consume_signal",
+          "from": ["TIMER_SIG", "KILL_SIG", "BLOCK_SIG", "UNBLOCK_SIG", "BOOST_SIG",
+                   "ALLOC_SIG", "FREE_SIG", "OPEN_SIG", "CLOSE_SIG",
+                   "SEND_SIG", "RECV_SIG", "CLICK_SIG", "KEY_SIG", "CMD_SIG", "SPAWN_SIG"],
+          "to": ["SIG_DONE"],
+          "entity_type": "Signal"
+        }
+      ],
+      "tensions": [
+        {
+          "name": "schedule_ready",
+          "priority": 10,
+          "match": [
+            {"bind": "proc", "in": "READY", "select": "max_by", "key": "priority"},
+            {"bind": "cpu", "empty_in": ["CPU0"]}
+          ],
+          "emit": [
+            {"move": "schedule", "entity": "proc", "to": "cpu"}
+          ]
+        },
+        {
+          "name": "timer_tick",
+          "priority": 20,
+          "match": [
+            {"bind": "sig", "in": "TIMER_SIG"},
+            {"bind": "proc", "in": "CPU0", "required": false}
+          ],
+          "emit": [
+            {"set": "proc", "property": "time_slice",
+             "value": {"op": "-", "left": {"prop": "time_slice", "of": "proc"}, "right": 1}},
+            {"move": "consume_signal", "entity": "sig", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "preempt_expired",
+          "priority": 15,
+          "match": [
+            {"bind": "proc", "in": "CPU0",
+             "where": {"op": "<=", "left": {"prop": "time_slice", "of": "proc"}, "right": 0}}
+          ],
+          "emit": [
+            {"move": "preempt", "entity": "proc", "to": "READY"},
+            {"set": "proc", "property": "time_slice", "value": 3}
+          ]
+        },
+        {
+          "name": "kill_running",
+          "priority": 25,
+          "match": [
+            {"bind": "sig", "in": "KILL_SIG", "select": "first"},
+            {"bind": "proc", "in": "CPU0", "select": "first"}
+          ],
+          "emit": [
+            {"move": "terminate", "entity": "proc", "to": "TERMINATED"},
+            {"move": "consume_signal", "entity": "sig", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "block_running",
+          "priority": 25,
+          "match": [
+            {"bind": "sig", "in": "BLOCK_SIG", "select": "first"},
+            {"bind": "proc", "in": "CPU0", "select": "first"}
+          ],
+          "emit": [
+            {"move": "block_proc", "entity": "proc", "to": "BLOCKED"},
+            {"move": "consume_signal", "entity": "sig", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "unblock_first",
+          "priority": 25,
+          "match": [
+            {"bind": "sig", "in": "UNBLOCK_SIG", "select": "first"},
+            {"bind": "proc", "in": "BLOCKED", "select": "first"}
+          ],
+          "emit": [
+            {"move": "unblock", "entity": "proc", "to": "READY"},
+            {"move": "consume_signal", "entity": "sig", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "boost_running",
+          "priority": 25,
+          "match": [
+            {"bind": "sig", "in": "BOOST_SIG", "select": "first"},
+            {"bind": "proc", "in": "CPU0", "select": "first"}
+          ],
+          "emit": [
+            {"set": "proc", "property": "priority",
+             "value": {"op": "+", "left": {"prop": "priority", "of": "proc"}, "right": 1}},
+            {"move": "consume_signal", "entity": "sig", "to": "SIG_DONE"}
+          ]
+        }
+      ]
+    },
+    {
+      "module": "mem",
+      "exports": ["Page", "MEM_FREE", "MEM_USED", "alloc_page", "free_page"],
+      "imports": [
+        "proc.Process", "proc.CPU0",
+        "proc.ALLOC_SIG", "proc.FREE_SIG",
+        "proc.SIG_DONE", "proc.consume_signal"
+      ],
+      "entity_types": [{"name": "Page"}],
+      "entity_type_extensions": [
+        {
+          "extend": "Process",
+          "add_scoped_containers": [
+            {"name": "MEM_FREE", "kind": "simple", "entity_type": "Page"},
+            {"name": "MEM_USED", "kind": "simple", "entity_type": "Page"}
+          ]
+        }
+      ],
+      "containers": [],
+      "moves": [
+        {"name": "alloc_page", "scoped_from": ["MEM_FREE"], "scoped_to": ["MEM_USED"], "entity_type": "Page"},
+        {"name": "free_page",  "scoped_from": ["MEM_USED"], "scoped_to": ["MEM_FREE"], "entity_type": "Page"}
+      ],
+      "tensions": [
+        {
+          "name": "do_alloc",
+          "priority": 12,
+          "match": [
+            {"bind": "sig",  "in": "ALLOC_SIG"},
+            {"bind": "proc", "in": "CPU0"},
+            {"bind": "page", "in": {"scope": "proc", "container": "MEM_FREE"}, "select": "first"}
+          ],
+          "emit": [
+            {"move": "alloc_page", "entity": "page", "to": {"scope": "proc", "container": "MEM_USED"}},
+            {"move": "consume_signal", "entity": "sig", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "do_free",
+          "priority": 12,
+          "match": [
+            {"bind": "sig",  "in": "FREE_SIG"},
+            {"bind": "proc", "in": "CPU0"},
+            {"bind": "page", "in": {"scope": "proc", "container": "MEM_USED"}, "select": "first"}
+          ],
+          "emit": [
+            {"move": "free_page", "entity": "page", "to": {"scope": "proc", "container": "MEM_FREE"}},
+            {"move": "consume_signal", "entity": "sig", "to": "SIG_DONE"}
+          ]
+        }
+      ]
+    },
+    {
+      "module": "fs",
+      "exports": ["FileDescriptor", "FD_FREE", "FD_OPEN", "open_fd", "close_fd"],
+      "imports": [
+        "proc.Process", "proc.CPU0",
+        "proc.OPEN_SIG", "proc.CLOSE_SIG",
+        "proc.SIG_DONE", "proc.consume_signal"
+      ],
+      "entity_types": [{"name": "FileDescriptor"}],
+      "entity_type_extensions": [
+        {
+          "extend": "Process",
+          "add_scoped_containers": [
+            {"name": "FD_FREE", "kind": "simple", "entity_type": "FileDescriptor"},
+            {"name": "FD_OPEN", "kind": "simple", "entity_type": "FileDescriptor"}
+          ]
+        }
+      ],
+      "containers": [],
+      "moves": [
+        {"name": "open_fd",  "scoped_from": ["FD_FREE"], "scoped_to": ["FD_OPEN"], "entity_type": "FileDescriptor"},
+        {"name": "close_fd", "scoped_from": ["FD_OPEN"], "scoped_to": ["FD_FREE"], "entity_type": "FileDescriptor"}
+      ],
+      "tensions": [
+        {
+          "name": "do_open",
+          "priority": 12,
+          "match": [
+            {"bind": "sig", "in": "OPEN_SIG"},
+            {"bind": "proc", "in": "CPU0"},
+            {"bind": "fd", "in": {"scope": "proc", "container": "FD_FREE"}, "select": "first"}
+          ],
+          "emit": [
+            {"move": "open_fd", "entity": "fd", "to": {"scope": "proc", "container": "FD_OPEN"}},
+            {"move": "consume_signal", "entity": "sig", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "do_close",
+          "priority": 12,
+          "match": [
+            {"bind": "sig", "in": "CLOSE_SIG"},
+            {"bind": "proc", "in": "CPU0"},
+            {"bind": "fd", "in": {"scope": "proc", "container": "FD_OPEN"}, "select": "first"}
+          ],
+          "emit": [
+            {"move": "close_fd", "entity": "fd", "to": {"scope": "proc", "container": "FD_FREE"}},
+            {"move": "consume_signal", "entity": "sig", "to": "SIG_DONE"}
+          ]
+        }
+      ]
+    },
+    {
+      "module": "ipc",
+      "exports": ["Message", "INBOX", "OUTBOX", "PROCESSED", "process_msg"],
+      "imports": [
+        "proc.Process", "proc.CPU0",
+        "proc.SEND_SIG", "proc.RECV_SIG",
+        "proc.SIG_DONE", "proc.consume_signal"
+      ],
+      "entity_types": [{"name": "Message"}],
+      "entity_type_extensions": [
+        {
+          "extend": "Process",
+          "add_scoped_containers": [
+            {"name": "INBOX",     "kind": "simple", "entity_type": "Message"},
+            {"name": "OUTBOX",    "kind": "simple", "entity_type": "Message"},
+            {"name": "PROCESSED", "kind": "simple", "entity_type": "Message"}
+          ]
+        }
+      ],
+      "containers": [],
+      "moves": [
+        {"name": "process_msg", "scoped_from": ["INBOX"], "scoped_to": ["PROCESSED"], "entity_type": "Message"}
+      ],
+      "tensions": [
+        {
+          "name": "do_send",
+          "priority": 15,
+          "match": [
+            {"bind": "sig",  "in": "SEND_SIG"},
+            {"bind": "proc", "in": "CPU0"},
+            {"bind": "msg",  "in": {"scope": "proc", "container": "OUTBOX"}, "select": "first"}
+          ],
+          "emit": [
+            {"send": "msg_pipe", "entity": "msg"},
+            {"move": "consume_signal", "entity": "sig", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "do_recv",
+          "priority": 12,
+          "match": [
+            {"bind": "sig",  "in": "RECV_SIG"},
+            {"bind": "proc", "in": "CPU0"},
+            {"bind": "msg",  "in": {"channel": "msg_pipe"}}
+          ],
+          "emit": [
+            {"receive": "msg_pipe", "entity": "msg", "to": {"scope": "proc", "container": "INBOX"}},
+            {"move": "consume_signal", "entity": "sig", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "react_to_msg",
+          "priority": 8,
+          "match": [
+            {"bind": "proc", "in": "CPU0"},
+            {"bind": "msg",  "in": {"scope": "proc", "container": "INBOX"}, "select": "first"}
+          ],
+          "emit": [
+            {"set": "proc", "property": "msgs_received",
+             "value": {"op": "+", "left": {"prop": "msgs_received", "of": "proc"}, "right": 1}},
+            {"move": "process_msg", "entity": "msg", "to": {"scope": "proc", "container": "PROCESSED"}}
+          ]
+        }
+      ]
+    },
+    {
+      "module": "display",
+      "exports": ["Surface", "DisplayCtl", "Legend", "HelpCmd", "VISIBLE", "HIDDEN", "SURFACE", "DISPLAY_STATE", "LEGEND", "HELP_TEXT", "show_surface", "hide_surface"],
+      "imports": [
+        "proc.Process", "proc.CPU0", "proc.READY", "proc.BLOCKED", "proc.TERMINATED",
+        "proc.CLICK_SIG", "proc.SIG_DONE", "proc.consume_signal",
+        "input.InputCtl", "input.INPUT_STATE"
+      ],
+      "entity_types": [{"name": "Surface"}, {"name": "DisplayCtl"}, {"name": "Legend"}, {"name": "HelpCmd"}],
+      "entity_type_extensions": [
+        {
+          "extend": "Process",
+          "add_scoped_containers": [
+            {"name": "SURFACE", "kind": "slot", "entity_type": "Surface"}
+          ]
+        }
+      ],
+      "containers": [
+        {"name": "VISIBLE",       "kind": "simple", "entity_type": "Surface"},
+        {"name": "HIDDEN",        "kind": "simple", "entity_type": "Surface"},
+        {"name": "DISPLAY_STATE", "kind": "slot",   "entity_type": "DisplayCtl"},
+        {"name": "LEGEND",        "kind": "simple", "entity_type": "Legend"},
+        {"name": "HELP_TEXT",    "kind": "simple", "entity_type": "HelpCmd"}
+      ],
+      "moves": [
+        {"name": "show_surface", "from": ["HIDDEN"], "to": ["VISIBLE"], "entity_type": "Surface"},
+        {"name": "hide_surface", "from": ["VISIBLE"], "to": ["HIDDEN"], "entity_type": "Surface"}
+      ],
+      "tensions": [
+        {
+          "name": "sync_running",
+          "priority": 5,
+          "match": [
+            {"bind": "proc", "in": "CPU0"},
+            {"bind": "surf", "in": {"scope": "proc", "container": "SURFACE"},
+             "where": {"op": "!=", "left": {"prop": "state", "of": "surf"}, "right": 1}}
+          ],
+          "emit": [
+            {"set": "surf", "property": "state", "value": 1},
+            {"set": "surf", "property": "border_color", "value": 52326},
+            {"set": "surf", "property": "fill_color", "value": 1060896}
+          ]
+        },
+        {
+          "name": "sync_ready",
+          "priority": 5,
+          "match": [
+            {"bind": "proc", "in": "READY", "select": "first"},
+            {"bind": "surf", "in": {"scope": "proc", "container": "SURFACE"},
+             "where": {"op": "!=", "left": {"prop": "state", "of": "surf"}, "right": 2}}
+          ],
+          "emit": [
+            {"set": "surf", "property": "state", "value": 2},
+            {"set": "surf", "property": "border_color", "value": 13412864},
+            {"set": "surf", "property": "fill_color", "value": 2629648}
+          ]
+        },
+        {
+          "name": "sync_blocked",
+          "priority": 5,
+          "match": [
+            {"bind": "proc", "in": "BLOCKED", "select": "first"},
+            {"bind": "surf", "in": {"scope": "proc", "container": "SURFACE"},
+             "where": {"op": "!=", "left": {"prop": "state", "of": "surf"}, "right": 3}}
+          ],
+          "emit": [
+            {"set": "surf", "property": "state", "value": 3},
+            {"set": "surf", "property": "border_color", "value": 13382451},
+            {"set": "surf", "property": "fill_color", "value": 2625552}
+          ]
+        },
+        {
+          "name": "sync_terminated",
+          "priority": 5,
+          "match": [
+            {"bind": "proc", "in": "TERMINATED", "select": "first"},
+            {"bind": "surf", "in": {"scope": "proc", "container": "SURFACE"},
+             "where": {"op": "!=", "left": {"prop": "state", "of": "surf"}, "right": 4}}
+          ],
+          "emit": [
+            {"set": "surf", "property": "state", "value": 4},
+            {"set": "surf", "property": "border_color", "value": 5592405},
+            {"set": "surf", "property": "fill_color", "value": 1579032}
+          ]
+        },
+        {
+          "name": "click_select_cpu0",
+          "priority": 4,
+          "match": [
+            {"bind": "click", "in": "CLICK_SIG", "select": "first"},
+            {"bind": "region", "in": "VISIBLE", "select": "first",
+             "where": {"op": "==", "left": {"prop": "region_id", "of": "region"}, "right": 0}},
+            {"bind": "proc", "in": "CPU0", "select": "first"},
+            {"guard": {"op": "and",
+              "left": {"op": "and",
+                "left": {"op": ">=", "left": {"prop": "click_x", "of": "click"}, "right": {"prop": "x", "of": "region"}},
+                "right": {"op": "<", "left": {"prop": "click_x", "of": "click"}, "right": {"op": "+", "left": {"prop": "x", "of": "region"}, "right": {"prop": "width", "of": "region"}}}},
+              "right": {"op": "and",
+                "left": {"op": ">=", "left": {"prop": "click_y", "of": "click"}, "right": {"prop": "y", "of": "region"}},
+                "right": {"op": "<", "left": {"prop": "click_y", "of": "click"}, "right": {"op": "+", "left": {"prop": "y", "of": "region"}, "right": {"prop": "height", "of": "region"}}}}
+            }}
+          ],
+          "emit": [
+            {"set": "proc", "property": "selected", "value": 1},
+            {"move": "consume_signal", "entity": "click", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "click_select_ready",
+          "priority": 4,
+          "match": [
+            {"bind": "click", "in": "CLICK_SIG", "select": "first"},
+            {"bind": "region", "in": "VISIBLE", "select": "first",
+             "where": {"op": "==", "left": {"prop": "region_id", "of": "region"}, "right": 1}},
+            {"bind": "proc", "in": "READY", "select": "first"},
+            {"guard": {"op": "and",
+              "left": {"op": "and",
+                "left": {"op": ">=", "left": {"prop": "click_x", "of": "click"}, "right": {"prop": "x", "of": "region"}},
+                "right": {"op": "<", "left": {"prop": "click_x", "of": "click"}, "right": {"op": "+", "left": {"prop": "x", "of": "region"}, "right": {"prop": "width", "of": "region"}}}},
+              "right": {"op": "and",
+                "left": {"op": ">=", "left": {"prop": "click_y", "of": "click"}, "right": {"prop": "y", "of": "region"}},
+                "right": {"op": "<", "left": {"prop": "click_y", "of": "click"}, "right": {"op": "+", "left": {"prop": "y", "of": "region"}, "right": {"prop": "height", "of": "region"}}}}
+            }}
+          ],
+          "emit": [
+            {"set": "proc", "property": "selected", "value": 1},
+            {"move": "consume_signal", "entity": "click", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "click_select_blocked",
+          "priority": 4,
+          "match": [
+            {"bind": "click", "in": "CLICK_SIG", "select": "first"},
+            {"bind": "region", "in": "VISIBLE", "select": "first",
+             "where": {"op": "==", "left": {"prop": "region_id", "of": "region"}, "right": 2}},
+            {"bind": "proc", "in": "BLOCKED", "select": "first"},
+            {"guard": {"op": "and",
+              "left": {"op": "and",
+                "left": {"op": ">=", "left": {"prop": "click_x", "of": "click"}, "right": {"prop": "x", "of": "region"}},
+                "right": {"op": "<", "left": {"prop": "click_x", "of": "click"}, "right": {"op": "+", "left": {"prop": "x", "of": "region"}, "right": {"prop": "width", "of": "region"}}}},
+              "right": {"op": "and",
+                "left": {"op": ">=", "left": {"prop": "click_y", "of": "click"}, "right": {"prop": "y", "of": "region"}},
+                "right": {"op": "<", "left": {"prop": "click_y", "of": "click"}, "right": {"op": "+", "left": {"prop": "y", "of": "region"}, "right": {"prop": "height", "of": "region"}}}}
+            }}
+          ],
+          "emit": [
+            {"set": "proc", "property": "selected", "value": 1},
+            {"move": "consume_signal", "entity": "click", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "click_select_terminated",
+          "priority": 4,
+          "match": [
+            {"bind": "click", "in": "CLICK_SIG", "select": "first"},
+            {"bind": "region", "in": "VISIBLE", "select": "first",
+             "where": {"op": "==", "left": {"prop": "region_id", "of": "region"}, "right": 3}},
+            {"bind": "proc", "in": "TERMINATED", "select": "first"},
+            {"guard": {"op": "and",
+              "left": {"op": "and",
+                "left": {"op": ">=", "left": {"prop": "click_x", "of": "click"}, "right": {"prop": "x", "of": "region"}},
+                "right": {"op": "<", "left": {"prop": "click_x", "of": "click"}, "right": {"op": "+", "left": {"prop": "x", "of": "region"}, "right": {"prop": "width", "of": "region"}}}},
+              "right": {"op": "and",
+                "left": {"op": ">=", "left": {"prop": "click_y", "of": "click"}, "right": {"prop": "y", "of": "region"}},
+                "right": {"op": "<", "left": {"prop": "click_y", "of": "click"}, "right": {"op": "+", "left": {"prop": "y", "of": "region"}, "right": {"prop": "height", "of": "region"}}}}
+            }}
+          ],
+          "emit": [
+            {"set": "proc", "property": "selected", "value": 1},
+            {"move": "consume_signal", "entity": "click", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "click_panel",
+          "priority": 5,
+          "match": [
+            {"bind": "click", "in": "CLICK_SIG", "select": "first"},
+            {"bind": "panel", "in": "VISIBLE", "select": "first",
+             "where": {"op": "==", "left": {"prop": "kind", "of": "panel"}, "right": 4}},
+            {"bind": "ctl", "in": "INPUT_STATE"},
+            {"guard": {"op": "and",
+              "left": {"op": "and",
+                "left": {"op": ">=", "left": {"prop": "click_x", "of": "click"}, "right": {"prop": "x", "of": "panel"}},
+                "right": {"op": "<", "left": {"prop": "click_x", "of": "click"}, "right": {"op": "+", "left": {"prop": "x", "of": "panel"}, "right": {"prop": "width", "of": "panel"}}}},
+              "right": {"op": "and",
+                "left": {"op": ">=", "left": {"prop": "click_y", "of": "click"}, "right": {"prop": "y", "of": "panel"}},
+                "right": {"op": "<", "left": {"prop": "click_y", "of": "click"}, "right": {"op": "+", "left": {"prop": "y", "of": "panel"}, "right": {"prop": "height", "of": "panel"}}}}
+            }}
+          ],
+          "emit": [
+            {"set": "ctl", "property": "panel_click", "value": 1},
+            {"move": "consume_signal", "entity": "click", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "click_miss",
+          "priority": 3,
+          "match": [
+            {"bind": "click", "in": "CLICK_SIG", "select": "first"}
+          ],
+          "emit": [
+            {"move": "consume_signal", "entity": "click", "to": "SIG_DONE"}
+          ]
+        }
+      ]
+    },
+    {
+      "module": "input",
+      "exports": ["Char", "InputCtl", "ShellCtl", "MechBind", "CHAR_POOL", "CMDLINE", "INPUT_STATE",
+                   "SHELL_STATE", "MECHBIND", "type_char", "erase_char"],
+      "imports": [
+        "proc.Signal", "proc.KEY_SIG", "proc.CMD_SIG", "proc.SIG_DONE", "proc.consume_signal"
+      ],
+      "entity_types": [
+        {"name": "Char"},
+        {"name": "InputCtl"},
+        {"name": "ShellCtl"},
+        {"name": "KeyBind"},
+        {"name": "TextCmd"},
+        {"name": "TextArg"},
+        {"name": "MechBind"}
+      ],
+      "containers": [
+        {"name": "CHAR_POOL",   "kind": "simple", "entity_type": "Char"},
+        {"name": "CMDLINE",     "kind": "simple", "entity_type": "Char"},
+        {"name": "INPUT_STATE", "kind": "slot",   "entity_type": "InputCtl"},
+        {"name": "SHELL_STATE", "kind": "slot",   "entity_type": "ShellCtl"},
+        {"name": "KEYBIND",     "kind": "simple", "entity_type": "KeyBind"},
+        {"name": "TEXTCMD",     "kind": "simple", "entity_type": "TextCmd"},
+        {"name": "TEXTARG",     "kind": "simple", "entity_type": "TextArg"},
+        {"name": "MECHBIND",   "kind": "simple", "entity_type": "MechBind"}
+      ],
+      "moves": [
+        {"name": "type_char",  "from": ["CHAR_POOL"], "to": ["CMDLINE"],   "entity_type": "Char"},
+        {"name": "erase_char", "from": ["CMDLINE"],   "to": ["CHAR_POOL"], "entity_type": "Char"}
+      ],
+      "tensions": [
+        {
+          "name": "enter_text",
+          "priority": 25,
+          "match": [
+            {"bind": "key", "in": "KEY_SIG", "select": "first",
+             "where": {"op": "==", "left": {"prop": "ascii", "of": "key"}, "right": 47}},
+            {"bind": "ctl", "in": "INPUT_STATE",
+             "where": {"op": "==", "left": {"prop": "mode", "of": "ctl"}, "right": 0}}
+          ],
+          "emit": [
+            {"set": "ctl", "property": "mode", "value": 1},
+            {"move": "consume_signal", "entity": "key", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "exit_text",
+          "priority": 25,
+          "match": [
+            {"bind": "key", "in": "KEY_SIG", "select": "first",
+             "where": {"op": "==", "left": {"prop": "ascii", "of": "key"}, "right": 27}},
+            {"bind": "ctl", "in": "INPUT_STATE",
+             "where": {"op": "==", "left": {"prop": "mode", "of": "ctl"}, "right": 1}}
+          ],
+          "emit": [
+            {"set": "ctl", "property": "mode", "value": 0},
+            {"set": "ctl", "property": "submitted", "value": 2},
+            {"move": "consume_signal", "entity": "key", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "do_submit",
+          "priority": 24,
+          "match": [
+            {"bind": "key", "in": "KEY_SIG", "select": "first",
+             "where": {"op": "==", "left": {"prop": "ascii", "of": "key"}, "right": 10}},
+            {"bind": "ctl", "in": "INPUT_STATE",
+             "where": {"op": "==", "left": {"prop": "mode", "of": "ctl"}, "right": 1}}
+          ],
+          "emit": [
+            {"set": "ctl", "property": "submitted", "value": 1},
+            {"set": "ctl", "property": "mode", "value": 0},
+            {"move": "consume_signal", "entity": "key", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "append_char",
+          "priority": 22,
+          "match": [
+            {"bind": "key", "in": "KEY_SIG", "select": "first",
+             "where": {"op": ">=", "left": {"prop": "ascii", "of": "key"}, "right": 32}},
+            {"bind": "ctl", "in": "INPUT_STATE",
+             "where": {"op": "==", "left": {"prop": "mode", "of": "ctl"}, "right": 1}},
+            {"bind": "ch", "in": "CHAR_POOL", "select": "first"}
+          ],
+          "emit": [
+            {"set": "ch", "property": "ascii", "value": {"prop": "ascii", "of": "key"}},
+            {"set": "ch", "property": "pos", "value": {"count": "CMDLINE"}},
+            {"move": "type_char", "entity": "ch", "to": "CMDLINE"},
+            {"move": "consume_signal", "entity": "key", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "delete_last",
+          "priority": 22,
+          "match": [
+            {"bind": "key", "in": "KEY_SIG", "select": "first",
+             "where": {"op": "==", "left": {"prop": "ascii", "of": "key"}, "right": 8}},
+            {"bind": "ctl", "in": "INPUT_STATE",
+             "where": {"op": "==", "left": {"prop": "mode", "of": "ctl"}, "right": 1}},
+            {"bind": "ch", "in": "CMDLINE", "select": "max_by", "key": "pos"}
+          ],
+          "emit": [
+            {"set": "ch", "property": "ascii", "value": 0},
+            {"set": "ch", "property": "pos", "value": 0},
+            {"move": "erase_char", "entity": "ch", "to": "CHAR_POOL"},
+            {"move": "consume_signal", "entity": "key", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "key_overflow",
+          "priority": 18,
+          "match": [
+            {"bind": "key", "in": "KEY_SIG", "select": "first"},
+            {"bind": "ctl", "in": "INPUT_STATE",
+             "where": {"op": "==", "left": {"prop": "mode", "of": "ctl"}, "right": 1}}
+          ],
+          "emit": [
+            {"move": "consume_signal", "entity": "key", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "clear_char",
+          "priority": 15,
+          "match": [
+            {"bind": "ctl", "in": "INPUT_STATE",
+             "where": {"op": "==", "left": {"prop": "submitted", "of": "ctl"}, "right": 2}},
+            {"bind": "ch", "in": "CMDLINE", "select": "first"}
+          ],
+          "emit": [
+            {"set": "ch", "property": "ascii", "value": 0},
+            {"set": "ch", "property": "pos", "value": 0},
+            {"move": "erase_char", "entity": "ch", "to": "CHAR_POOL"}
+          ]
+        },
+        {
+          "name": "clear_done",
+          "priority": 10,
+          "match": [
+            {"bind": "ctl", "in": "INPUT_STATE",
+             "where": {"op": "==", "left": {"prop": "submitted", "of": "ctl"}, "right": 2}},
+            {"guard": {"op": "==", "left": {"count": "CMDLINE"}, "right": 0}}
+          ],
+          "emit": [
+            {"set": "ctl", "property": "submitted", "value": 0}
+          ]
+        },
+        {
+          "name": "key_miss",
+          "priority": 2,
+          "match": [
+            {"bind": "key", "in": "KEY_SIG", "select": "first"}
+          ],
+          "emit": [
+            {"move": "consume_signal", "entity": "key", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "keybind_route",
+          "priority": 23,
+          "match": [
+            {"bind": "key", "in": "KEY_SIG", "select": "first",
+             "where": {"op": ">", "left": {"prop": "ascii", "of": "key"}, "right": 0}},
+            {"bind": "ctl", "in": "INPUT_STATE",
+             "where": {"op": "==", "left": {"prop": "mode", "of": "ctl"}, "right": 0}},
+            {"bind": "bind", "in": "KEYBIND", "select": "first",
+             "where": {"op": "==", "left": {"prop": "ascii", "of": "key"}, "right": {"prop": "key", "of": "bind"}}}
+          ],
+          "emit": [
+            {"set": "ctl", "property": "pending_cmd", "value": {"prop": "cmd_id", "of": "bind"}},
+            {"set": "ctl", "property": "pending_arg", "value": {"prop": "arg_id", "of": "bind"}},
+            {"move": "consume_signal", "entity": "key", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "mechbind_match",
+          "priority": 23,
+          "match": [
+            {"bind": "key", "in": "KEY_SIG", "select": "first",
+             "where": {"op": ">", "left": {"prop": "ascii", "of": "key"}, "right": 0}},
+            {"bind": "ctl", "in": "INPUT_STATE",
+             "where": {"op": "==", "left": {"prop": "mode", "of": "ctl"}, "right": 0}},
+            {"bind": "bind", "in": "MECHBIND", "select": "first",
+             "where": {"op": "==", "left": {"prop": "ascii", "of": "key"}, "right": {"prop": "key", "of": "bind"}}}
+          ],
+          "emit": [
+            {"set": "ctl", "property": "mech_action", "value": {"prop": "action", "of": "bind"}},
+            {"move": "consume_signal", "entity": "key", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "textcmd_match",
+          "priority": 22,
+          "match": [
+            {"bind": "cmd", "in": "CMD_SIG", "select": "first",
+             "where": {"op": ">", "left": {"prop": "text_key", "of": "cmd"}, "right": 0}},
+            {"bind": "tcmd", "in": "TEXTCMD", "select": "first",
+             "where": {"op": "==", "left": {"prop": "text_key", "of": "cmd"}, "right": {"prop": "text_key", "of": "tcmd"}}}
+          ],
+          "emit": [
+            {"set": "cmd", "property": "cmd_id", "value": {"prop": "cmd_id", "of": "tcmd"}}
+          ]
+        },
+        {
+          "name": "textarg_match",
+          "priority": 21,
+          "match": [
+            {"bind": "cmd", "in": "CMD_SIG", "select": "first",
+             "where": {"op": ">", "left": {"prop": "arg_key", "of": "cmd"}, "right": 0}},
+            {"bind": "targ", "in": "TEXTARG", "select": "first",
+             "where": {"op": "==", "left": {"prop": "arg_key", "of": "cmd"}, "right": {"prop": "text_key", "of": "targ"}}}
+          ],
+          "emit": [
+            {"set": "cmd", "property": "arg_id", "value": {"prop": "arg_id", "of": "targ"}}
+          ]
+        }
+      ]
+    },
+    {
+      "module": "spawn",
+      "exports": ["SpawnCtl", "SPAWN_STATE"],
+      "imports": [
+        "proc.Signal", "proc.SPAWN_SIG", "proc.SIG_DONE", "proc.consume_signal"
+      ],
+      "entity_types": [
+        {"name": "PriToken"},
+        {"name": "ProgToken"},
+        {"name": "SpawnCtl"}
+      ],
+      "containers": [
+        {"name": "PRI_POOL",    "kind": "simple", "entity_type": "PriToken"},
+        {"name": "PRI_USED",    "kind": "simple", "entity_type": "PriToken"},
+        {"name": "PROG_POOL",   "kind": "simple", "entity_type": "ProgToken"},
+        {"name": "PROG_USED",   "kind": "simple", "entity_type": "ProgToken"},
+        {"name": "SPAWN_STATE", "kind": "slot",   "entity_type": "SpawnCtl"}
+      ],
+      "moves": [
+        {"name": "assign_pri",  "from": ["PRI_POOL"],  "to": ["PRI_USED"],  "entity_type": "PriToken"},
+        {"name": "return_pri",  "from": ["PRI_USED"],  "to": ["PRI_POOL"],  "entity_type": "PriToken"},
+        {"name": "assign_prog", "from": ["PROG_POOL"], "to": ["PROG_USED"], "entity_type": "ProgToken"},
+        {"name": "return_prog", "from": ["PROG_USED"], "to": ["PROG_POOL"], "entity_type": "ProgToken"}
+      ],
+      "tensions": [
+        {
+          "name": "spawn_explicit",
+          "priority": 25,
+          "match": [
+            {"bind": "sig", "in": "SPAWN_SIG", "select": "first",
+             "where": {"op": ">", "left": {"prop": "requested_type", "of": "sig"}, "right": 0}},
+            {"bind": "ctl", "in": "SPAWN_STATE"},
+            {"bind": "pri", "in": "PRI_POOL", "select": "min_by", "key": "value"}
+          ],
+          "emit": [
+            {"set": "ctl", "property": "action", "value": 1},
+            {"set": "ctl", "property": "program_type", "value": {"prop": "requested_type", "of": "sig"}},
+            {"set": "ctl", "property": "next_priority", "value": {"prop": "value", "of": "pri"}},
+            {"move": "assign_pri", "entity": "pri", "to": "PRI_USED"},
+            {"move": "consume_signal", "entity": "sig", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "spawn_auto",
+          "priority": 24,
+          "match": [
+            {"bind": "sig", "in": "SPAWN_SIG", "select": "first",
+             "where": {"op": "==", "left": {"prop": "requested_type", "of": "sig"}, "right": 0}},
+            {"bind": "ctl", "in": "SPAWN_STATE"},
+            {"bind": "pri", "in": "PRI_POOL", "select": "min_by", "key": "value"},
+            {"bind": "prog", "in": "PROG_POOL", "select": "first"}
+          ],
+          "emit": [
+            {"set": "ctl", "property": "action", "value": 1},
+            {"set": "ctl", "property": "program_type", "value": {"prop": "type_id", "of": "prog"}},
+            {"set": "ctl", "property": "next_priority", "value": {"prop": "value", "of": "pri"}},
+            {"move": "assign_pri", "entity": "pri", "to": "PRI_USED"},
+            {"move": "assign_prog", "entity": "prog", "to": "PROG_USED"},
+            {"move": "consume_signal", "entity": "sig", "to": "SIG_DONE"}
+          ]
+        },
+        {
+          "name": "recycle_priorities",
+          "priority": 23,
+          "match": [
+            {"bind": "empty", "empty_in": ["PRI_POOL"]},
+            {"bind": "pri", "in": "PRI_USED", "select": "each"}
+          ],
+          "emit": [
+            {"move": "return_pri", "entity": "pri", "to": "PRI_POOL"}
+          ]
+        },
+        {
+          "name": "recycle_programs",
+          "priority": 22,
+          "match": [
+            {"bind": "empty", "empty_in": ["PROG_POOL"]},
+            {"bind": "prog", "in": "PROG_USED", "select": "each"}
+          ],
+          "emit": [
+            {"move": "return_prog", "entity": "prog", "to": "PROG_POOL"}
+          ]
+        }
+      ]
+    }
+  ],
+  "channels": [
+    {"name": "msg_pipe", "from": "server", "to": "client", "entity_type": "ipc.Message"}
+  ],
+  "max_nesting_depth": 3,
+  "entities": [
+    {"name": "server", "type": "proc.Process", "in": "proc.READY",
+     "properties": {"priority": 8, "time_slice": 3, "msgs_received": 0, "selected": 0, "protected": 0}},
+    {"name": "client", "type": "proc.Process", "in": "proc.READY",
+     "properties": {"priority": 5, "time_slice": 3, "msgs_received": 0, "selected": 0, "protected": 0}},
+
+    {"name": "page0_s", "type": "mem.Page", "in": {"scope": "server", "container": "MEM_FREE"}},
+    {"name": "page1_s", "type": "mem.Page", "in": {"scope": "server", "container": "MEM_FREE"}},
+    {"name": "page0_c", "type": "mem.Page", "in": {"scope": "client", "container": "MEM_FREE"}},
+    {"name": "page1_c", "type": "mem.Page", "in": {"scope": "client", "container": "MEM_FREE"}},
+
+    {"name": "fd0_s", "type": "fs.FileDescriptor", "in": {"scope": "server", "container": "FD_FREE"}},
+    {"name": "fd1_s", "type": "fs.FileDescriptor", "in": {"scope": "server", "container": "FD_FREE"}},
+    {"name": "fd0_c", "type": "fs.FileDescriptor", "in": {"scope": "client", "container": "FD_FREE"}},
+    {"name": "fd1_c", "type": "fs.FileDescriptor", "in": {"scope": "client", "container": "FD_FREE"}},
+
+    {"name": "surf_server", "type": "display.Surface",
+     "in": {"scope": "server", "container": "SURFACE"},
+     "properties": {"kind": 1, "state": 0, "border_color": 0, "fill_color": 0}},
+    {"name": "surf_client", "type": "display.Surface",
+     "in": {"scope": "client", "container": "SURFACE"},
+     "properties": {"kind": 1, "state": 0, "border_color": 0, "fill_color": 0}},
+
+    {"name": "cursor", "type": "display.Surface", "in": "display.VISIBLE",
+     "properties": {"kind": 2, "x": 400, "y": 300}},
+
+    {"name": "region_cpu0", "type": "display.Surface", "in": "display.VISIBLE",
+     "properties": {"kind": 0, "region_id": 0, "x": 8, "y": 76, "width": 262, "height": 190, "border_color": 52326, "fill_color": 1060896}},
+    {"name": "region_ready", "type": "display.Surface", "in": "display.VISIBLE",
+     "properties": {"kind": 0, "region_id": 1, "x": 278, "y": 76, "width": 262, "height": 190, "border_color": 13412864, "fill_color": 2629648}},
+    {"name": "region_blocked", "type": "display.Surface", "in": "display.VISIBLE",
+     "properties": {"kind": 0, "region_id": 2, "x": 8, "y": 274, "width": 262, "height": 190, "border_color": 13382451, "fill_color": 2625552}},
+    {"name": "region_term", "type": "display.Surface", "in": "display.VISIBLE",
+     "properties": {"kind": 0, "region_id": 3, "x": 278, "y": 274, "width": 262, "height": 190, "border_color": 5592405, "fill_color": 1579032}},
+
+    {"name": "region_panel", "type": "display.Surface", "in": "display.VISIBLE",
+     "properties": {"kind": 4, "region_id": 4, "x": 548, "y": 98, "width": 244, "height": 350}},
+
+    {"name": "display_ctl", "type": "display.DisplayCtl", "in": "display.DISPLAY_STATE",
+     "properties": {"max_terminated": 3, "max_procs_per_region": 12, "timer_interval": 300, "buffer_capacity": 20}},
+
+    {"name": "leg_new",   "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 1,  "key_text": "N",  "label_text": "ew"}},
+    {"name": "leg_kill",  "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 2,  "key_text": "K",  "label_text": "ill"}},
+    {"name": "leg_blk",   "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 3,  "key_text": "B",  "label_text": "lk"}},
+    {"name": "leg_unblk", "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 4,  "key_text": "U",  "label_text": "nblk"}},
+    {"name": "leg_tmr",   "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 5,  "key_text": "T",  "label_text": "mr"}},
+    {"name": "leg_alloc", "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 6,  "key_text": "A",  "label_text": "loc"}},
+    {"name": "leg_open",  "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 7,  "key_text": "O",  "label_text": "pen"}},
+    {"name": "leg_free",  "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 8,  "key_text": "F",  "label_text": "ree"}},
+    {"name": "leg_close", "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 9,  "key_text": "C",  "label_text": "lose"}},
+    {"name": "leg_msg",   "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 10, "key_text": "M",  "label_text": "sg"}},
+    {"name": "leg_sel",   "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 11, "key_text": "[]", "label_text": "sel"}},
+    {"name": "leg_dis",   "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 12, "key_text": "D",  "label_text": "is"}},
+    {"name": "leg_swap",  "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 13, "key_text": "S",  "label_text": "wap"}},
+    {"name": "leg_cmd",   "type": "display.Legend", "in": "display.LEGEND", "properties": {"order": 14, "key_text": "/",  "label_text": "Cmd"}},
+
+    {"name": "help_kill",    "type": "display.HelpCmd", "in": "display.HELP_TEXT", "properties": {"order": 1, "cmd_text": "kill"}},
+    {"name": "help_load",    "type": "display.HelpCmd", "in": "display.HELP_TEXT", "properties": {"order": 2, "cmd_text": "load <producer|consumer|worker|beacon>"}},
+    {"name": "help_swap",    "type": "display.HelpCmd", "in": "display.HELP_TEXT", "properties": {"order": 3, "cmd_text": "swap"}},
+    {"name": "help_list",    "type": "display.HelpCmd", "in": "display.HELP_TEXT", "properties": {"order": 4, "cmd_text": "list"}},
+    {"name": "help_help",    "type": "display.HelpCmd", "in": "display.HELP_TEXT", "properties": {"order": 5, "cmd_text": "help"}},
+    {"name": "help_block",   "type": "display.HelpCmd", "in": "display.HELP_TEXT", "properties": {"order": 6, "cmd_text": "block"}},
+    {"name": "help_unblock", "type": "display.HelpCmd", "in": "display.HELP_TEXT", "properties": {"order": 7, "cmd_text": "unblock"}},
+
+    {"name": "input_ctl", "type": "input.InputCtl", "in": "input.INPUT_STATE",
+     "properties": {"mode": 0, "submitted": 0, "pending_cmd": 0, "pending_arg": 0, "mech_action": 0, "panel_click": 0}},
+
+    {"name": "shell_ctl", "type": "input.ShellCtl", "in": "input.SHELL_STATE",
+     "properties": {"action": 0, "shell_protected": 1}},
+
+    {"name": "spawn_ctl", "type": "spawn.SpawnCtl", "in": "spawn.SPAWN_STATE",
+     "properties": {"action": 0, "program_type": 0, "next_priority": 0}},
+    {"name": "pri_2",  "type": "spawn.PriToken", "in": "spawn.PRI_POOL", "properties": {"value": 2}},
+    {"name": "pri_4",  "type": "spawn.PriToken", "in": "spawn.PRI_POOL", "properties": {"value": 4}},
+    {"name": "pri_6",  "type": "spawn.PriToken", "in": "spawn.PRI_POOL", "properties": {"value": 6}},
+    {"name": "pri_8",  "type": "spawn.PriToken", "in": "spawn.PRI_POOL", "properties": {"value": 8}},
+    {"name": "pri_10", "type": "spawn.PriToken", "in": "spawn.PRI_POOL", "properties": {"value": 10}},
+    {"name": "prog_1", "type": "spawn.ProgToken", "in": "spawn.PROG_POOL", "properties": {"type_id": 1}},
+    {"name": "prog_2", "type": "spawn.ProgToken", "in": "spawn.PROG_POOL", "properties": {"type_id": 2}},
+
+    {"name": "bind_k", "type": "input.KeyBind", "in": "input.KEYBIND",
+     "properties": {"key": 107, "cmd_id": 1, "arg_id": 0}},
+    {"name": "bind_b", "type": "input.KeyBind", "in": "input.KEYBIND",
+     "properties": {"key": 98, "cmd_id": 6, "arg_id": 0}},
+    {"name": "bind_u", "type": "input.KeyBind", "in": "input.KEYBIND",
+     "properties": {"key": 117, "cmd_id": 7, "arg_id": 0}},
+    {"name": "bind_s", "type": "input.KeyBind", "in": "input.KEYBIND",
+     "properties": {"key": 115, "cmd_id": 3, "arg_id": 0}},
+    {"name": "bind_n", "type": "input.KeyBind", "in": "input.KEYBIND",
+     "properties": {"key": 110, "cmd_id": 8, "arg_id": 0}},
+
+    {"name": "tcmd_kill", "type": "input.TextCmd", "in": "input.TEXTCMD",
+     "properties": {"text_key": 27497, "cmd_id": 1}},
+    {"name": "tcmd_load", "type": "input.TextCmd", "in": "input.TEXTCMD",
+     "properties": {"text_key": 27759, "cmd_id": 2}},
+    {"name": "tcmd_swap", "type": "input.TextCmd", "in": "input.TEXTCMD",
+     "properties": {"text_key": 29559, "cmd_id": 3}},
+    {"name": "tcmd_list", "type": "input.TextCmd", "in": "input.TEXTCMD",
+     "properties": {"text_key": 27753, "cmd_id": 4}},
+    {"name": "tcmd_help", "type": "input.TextCmd", "in": "input.TEXTCMD",
+     "properties": {"text_key": 26725, "cmd_id": 5}},
+    {"name": "tcmd_block", "type": "input.TextCmd", "in": "input.TEXTCMD",
+     "properties": {"text_key": 25196, "cmd_id": 6}},
+    {"name": "tcmd_unblock", "type": "input.TextCmd", "in": "input.TEXTCMD",
+     "properties": {"text_key": 30062, "cmd_id": 7}},
+
+    {"name": "targ_producer", "type": "input.TextArg", "in": "input.TEXTARG",
+     "properties": {"text_key": 28786, "arg_id": 1}},
+    {"name": "targ_consumer", "type": "input.TextArg", "in": "input.TEXTARG",
+     "properties": {"text_key": 25455, "arg_id": 2}},
+    {"name": "targ_worker", "type": "input.TextArg", "in": "input.TEXTARG",
+     "properties": {"text_key": 30319, "arg_id": 3}},
+    {"name": "targ_beacon", "type": "input.TextArg", "in": "input.TEXTARG",
+     "properties": {"text_key": 24933, "arg_id": 4}},
+
+    {"name": "mech_t",     "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 116, "action": 1}},
+    {"name": "mech_plus",  "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 43, "action": 2}},
+    {"name": "mech_eq",    "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 61, "action": 2}},
+    {"name": "mech_space", "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 32, "action": 3}},
+    {"name": "mech_a",     "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 97, "action": 4}},
+    {"name": "mech_o",     "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 111, "action": 5}},
+    {"name": "mech_f",     "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 102, "action": 6}},
+    {"name": "mech_c",     "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 99, "action": 7}},
+    {"name": "mech_m",     "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 109, "action": 8}},
+    {"name": "mech_lbr",   "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 91, "action": 9}},
+    {"name": "mech_rbr",   "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 93, "action": 10}},
+    {"name": "mech_d",     "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 100, "action": 11}},
+    {"name": "mech_h",     "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 104, "action": 12}},
+
+    {"name": "c00", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c01", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c02", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c03", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c04", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c05", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c06", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c07", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c08", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c09", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c10", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c11", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c12", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c13", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c14", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c15", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c16", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c17", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c18", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c19", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c20", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c21", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c22", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c23", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c24", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c25", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c26", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c27", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c28", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c29", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c30", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
+    {"name": "c31", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}}
+  ]
+}
