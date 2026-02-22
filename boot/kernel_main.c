@@ -239,10 +239,15 @@ extern void mouse_write(uint8_t data);
 extern uint8_t mouse_read(void);
 extern void mouse_init(void);
 
-/* HAM — HERB Abstract Machine (Phase 3, Sessions 64-65) */
+/* HAM — HERB Abstract Machine (Phase 3, Sessions 64-67) */
 extern int ham_run(uint8_t* bytecode_ptr, int bytecode_len);
-extern int ham_compile_system(uint8_t* buf, int buf_size, int* out_count);
+extern int ham_compile_all(uint8_t* buf, int buf_size, int* out_count);
+extern int ham_run_ham(int max_steps);
+extern void ham_mark_dirty(void);
+extern int ham_get_compiled_count(void);
+extern int ham_get_bytecode_len(void);
 extern int ham_intern(const char* s);
+extern int ham_dbg_thdr, ham_dbg_fail, ham_dbg_tend, ham_dbg_skip;
 
 static void serial_print_int(int val) {
     char buf[16];
@@ -1670,7 +1675,7 @@ static void cmd_timer(void) {
     char name[32];
     make_sig_name(name, sizeof(name), "t");
     herb_create(name, ET_SIGNAL, CN_TIMER_SIG);
-    int ops = herb_run(100);
+    int ops = ham_run_ham(100);
     total_ops += ops;
 
     herb_snprintf(last_action, sizeof(last_action),
@@ -1705,7 +1710,7 @@ static void cmd_spawn(int requested_type) {
     if (sig >= 0) {
         herb_set_prop_int(sig, "requested_type", requested_type);
     }
-    int spawn_ops = herb_run(100);
+    int spawn_ops = ham_run_ham(100);
 
     /* Read HERB's decisions from SpawnCtl */
     int action = (int)herb_entity_prop_int(spawn_ctl_eid, "action", 0);
@@ -1805,7 +1810,7 @@ static void cmd_spawn(int requested_type) {
     (void)loaded;
 
     /* Phase 3: Settle */
-    int ops = herb_run(100);
+    int ops = ham_run_ham(100);
     total_ops += spawn_ops + ops;
 
     /* Report */
@@ -1856,7 +1861,7 @@ static void cmd_new_process(void) {
     herb_set_prop_int(eid, "priority", pri);
     herb_set_prop_int(eid, "time_slice", 3);
 
-    int ops = herb_run(100);
+    int ops = ham_run_ham(100);
     total_ops += ops;
 
     herb_snprintf(last_action, sizeof(last_action),
@@ -1982,7 +1987,7 @@ static void dispatch_cmd_from_route(int cmd_id, int arg_id) {
     }
 
     /* Shell tensions dispatch based on cmd_id */
-    int ops = herb_run(100);
+    int ops = ham_run_ham(100);
     total_ops += ops;
 
     post_dispatch(sig_eid, ops, cpu0_name);
@@ -2061,7 +2066,7 @@ static void dispatch_text_command(int text_key, int arg_key, const char* buf) {
     }
 
     /* HERB textcmd_match/textarg_match fill cmd_id/arg_id, then shell tensions dispatch */
-    int ops = herb_run(100);
+    int ops = ham_run_ham(100);
     total_ops += ops;
 
     /* Check if HERB recognized the command */
@@ -2092,7 +2097,7 @@ static void cmd_boost(void) {
     char name[32];
     make_sig_name(name, sizeof(name), "bst");
     herb_create(name, ET_SIGNAL, CN_BOOST_SIG);
-    int ops = herb_run(100);
+    int ops = ham_run_ham(100);
     total_ops += ops;
 
     int eid = herb_container_entity(CN_CPU0, 0);
@@ -2130,7 +2135,7 @@ static void cmd_alloc_page(void) {
     char name[32];
     make_sig_name(name, sizeof(name), "alloc");
     herb_create(name, ET_SIGNAL, CN_ALLOC_SIG);
-    int ops = herb_run(100);
+    int ops = ham_run_ham(100);
     total_ops += ops;
 
     int mf = scoped_count(eid, "MEM_FREE");
@@ -2163,7 +2168,7 @@ static void cmd_open_fd(void) {
     char name[32];
     make_sig_name(name, sizeof(name), "open");
     herb_create(name, ET_SIGNAL, CN_OPEN_SIG);
-    int ops = herb_run(100);
+    int ops = ham_run_ham(100);
     total_ops += ops;
 
     int ff = scoped_count(eid, "FD_FREE");
@@ -2196,7 +2201,7 @@ static void cmd_free_page(void) {
     char name[32];
     make_sig_name(name, sizeof(name), "free");
     herb_create(name, ET_SIGNAL, CN_FREE_SIG);
-    int ops = herb_run(100);
+    int ops = ham_run_ham(100);
     total_ops += ops;
 
     int mf = scoped_count(eid, "MEM_FREE");
@@ -2229,7 +2234,7 @@ static void cmd_close_fd(void) {
     char name[32];
     make_sig_name(name, sizeof(name), "close");
     herb_create(name, ET_SIGNAL, CN_CLOSE_SIG);
-    int ops = herb_run(100);
+    int ops = ham_run_ham(100);
     total_ops += ops;
 
     int ff = scoped_count(eid, "FD_FREE");
@@ -2276,7 +2281,7 @@ static void cmd_send_msg(void) {
     char sname[32];
     make_sig_name(sname, sizeof(sname), "send");
     herb_create(sname, ET_SIGNAL, CN_SEND_SIG);
-    int ops = herb_run(100);
+    int ops = ham_run_ham(100);
     total_ops += ops;
 
     herb_snprintf(last_action, sizeof(last_action),
@@ -2309,7 +2314,7 @@ static void cmd_click(int cx, int cy) {
     herb_set_prop_int(click_eid, "click_x", cx);
     herb_set_prop_int(click_eid, "click_y", cy);
 
-    int ops = herb_run(100);
+    int ops = ham_run_ham(100);
     total_ops += ops;
 
     /* Scan processes to find which one was selected by HERB tensions */
@@ -2412,26 +2417,15 @@ static void cmd_tension_toggle(void) {
 }
 
 /* ============================================================
- * HAM TEST (Session 64 — Phase 3a)
+ * HAM DIAGNOSTIC (Sessions 64-67)
  *
- * Compile schedule_ready + timer_tick to HAM bytecode, run
- * through the assembly engine, report results via serial.
+ * Force recompile all tensions, run HAM, report diagnostics.
+ * Phase 3c: uses global buffer via ham_run_ham().
  * ============================================================ */
 
 static void cmd_ham_test(void) {
-    static uint8_t ham_bc[4096];
-    static int ham_bc_len = 0;
-    static int ham_tension_cnt = 0;
-
-    /* Compile bytecode on first invocation */
-    if (ham_bc_len == 0) {
-        ham_bc_len = ham_compile_system(ham_bc, sizeof(ham_bc), &ham_tension_cnt);
-        serial_print("[HAM] Compiled ");
-        serial_print_int(ham_tension_cnt);
-        serial_print(" tensions, ");
-        serial_print_int(ham_bc_len);
-        serial_print(" bytes of bytecode\n");
-    }
+    /* Phase 3c: force recompile to show fresh stats */
+    ham_mark_dirty();
 
     /* Create a TIMER_SIG so timer_tick can fire */
     herb_create("ham_timer", ET_SIGNAL, CN_TIMER_SIG);
@@ -2447,8 +2441,11 @@ static void cmd_ham_test(void) {
         pre_ts = herb_entity_prop_int(cpu0_eid, "time_slice", -1);
     }
 
-    /* Run HAM */
-    int ops = ham_run(ham_bc, ham_bc_len);
+    /* Run HAM (ensures compilation via ham_run_ham) */
+    int ops = ham_run_ham(100);
+
+    int ham_tension_cnt = ham_get_compiled_count();
+    int ham_bc_len = ham_get_bytecode_len();
 
     /* Record post-state */
     int post_ready = herb_container_count(CN_READY);
@@ -2461,10 +2458,12 @@ static void cmd_ham_test(void) {
     }
 
     /* Report to serial */
-    serial_print("[HAM] ops=");
-    serial_print_int(ops);
-    serial_print(" tensions=");
+    serial_print("[HAM] tensions=");
     serial_print_int(ham_tension_cnt);
+    serial_print(" bytes=");
+    serial_print_int(ham_bc_len);
+    serial_print(" ops=");
+    serial_print_int(ops);
     serial_print(" ready=");
     serial_print_int(pre_ready);
     serial_print("->");
@@ -2477,12 +2476,20 @@ static void cmd_ham_test(void) {
     serial_print_int((int)pre_ts);
     serial_print("->");
     serial_print_int((int)post_ts);
+    serial_print(" thdr=");
+    serial_print_int(ham_dbg_thdr);
+    serial_print(" fail=");
+    serial_print_int(ham_dbg_fail);
+    serial_print(" tend=");
+    serial_print_int(ham_dbg_tend);
+    serial_print(" skip=");
+    serial_print_int(ham_dbg_skip);
     serial_print("\n");
 
     /* Update last_action for display */
     herb_snprintf(last_action, sizeof(last_action),
-        "HAM: %d tensions %d ops, ready %d->%d, cpu0 %d->%d",
-        ham_tension_cnt, ops, pre_ready, post_ready, pre_cpu0, post_cpu0);
+        "HAM: %d tensions %d bytes %d ops, ready %d->%d, cpu0 %d->%d",
+        ham_tension_cnt, ham_bc_len, ops, pre_ready, post_ready, pre_cpu0, post_cpu0);
 }
 
 /* ============================================================
@@ -2538,7 +2545,7 @@ static void cmd_swap_policy(void) {
     }
 
     /* Run to let the system settle under new policy */
-    int ops = herb_run(100);
+    int ops = ham_run_ham(100);
     total_ops += ops;
 
     herb_snprintf(last_action, sizeof(last_action),
@@ -2737,7 +2744,7 @@ static void handle_submission(void) {
 
     /* Set submitted=2 to trigger HERB recycling tensions */
     herb_set_prop_int(input_ctl_eid, "submitted", 2);
-    int ops = herb_run(100);
+    int ops = ham_run_ham(100);
     total_ops += ops;
 
     /* Compute text_key/arg_key from command text — pure mechanism.
@@ -2798,7 +2805,7 @@ static void handle_key(uint8_t scancode) {
 
         /* ALWAYS create KEY_SIG — HERB decides what it means */
         create_key_signal(ch);
-        int ops = herb_run(100);
+        int ops = ham_run_ham(100);
         total_ops += ops;
 
         /* Read HERB's routing decisions from InputCtl */
@@ -2953,7 +2960,7 @@ void kernel_main(void) {
 
     /* ---- Boot: resolve initial tensions ---- */
     vga_print("  Resolving initial tensions...\n");
-    int boot_ops = herb_run(100);
+    int boot_ops = ham_run_ham(100);
     total_ops = boot_ops;
     vga_print("  Equilibrium reached (");
     vga_print_int(boot_ops);
@@ -3054,7 +3061,7 @@ void kernel_main(void) {
             serial_print(")\n");
 
             /* Run to settle display tensions for shell */
-            int settle_ops = herb_run(100);
+            int settle_ops = ham_run_ham(100);
             total_ops += settle_ops;
         }
     }

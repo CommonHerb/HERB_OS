@@ -6,6 +6,8 @@
 ;
 ; Session 64 — Phase 3a: Core engine + 19 instruction handlers
 ; Session 65 — Phase 3b Part 1: +7 expression instructions (26 total)
+; Session 66 — Phase 3b Part 2: +6 instructions, 41/41 system tensions
+; Session 67 — Phase 3c: THDR owner scheduling, all tensions on HAM
 ;
 ; Register allocation (persistent across C calls via MS x64 ABI):
 ;   RBX = bytecode start pointer (for fixpoint loop reset)
@@ -54,6 +56,7 @@ global ham_dbg_action
 global ham_dbg_scan_nz
 global ham_dbg_require
 global ham_dbg_guard
+global ham_dbg_skip
 
 ; ============================================================
 ; BSS — Static data for HAM execution
@@ -82,6 +85,8 @@ each_buf:        resd 64       ; copy of scan_buf at SEL_EACH time
 each_total:      resd 1        ; total entities in each_buf
 each_idx:        resd 1        ; current iteration index
 each_bind:       resd 1        ; which binding register (0-3) to update
+thdr_owner:      resd 1        ; saved owner entity index from THDR (Phase 3c)
+thdr_run_ctnr:   resd 1        ; saved run_container from THDR (Phase 3c)
 ; Debug counters (read by C after ham_run returns)
 ham_dbg_thdr:    resd 1        ; number of THDR entries
 ham_dbg_fail:    resd 1        ; number of FAILs
@@ -90,6 +95,7 @@ ham_dbg_action:  resd 1        ; number of actions attempted
 ham_dbg_scan_nz: resd 1        ; number of SCANs returning >0 entities
 ham_dbg_require: resd 1        ; number of REQUIREs reached
 ham_dbg_guard:   resd 1        ; number of GUARDs reached
+ham_dbg_skip:    resd 1        ; number of THDR owner-check skips (Phase 3c)
 
 ; ============================================================
 ; TEXT — HAM engine code
@@ -249,6 +255,7 @@ ham_run:
     mov  dword [ham_dbg_scan_nz], 0
     mov  dword [ham_dbg_require], 0
     mov  dword [ham_dbg_guard], 0
+    mov  dword [ham_dbg_skip], 0
 
     ; Begin dispatch: fetch first opcode
     cmp  rsi, [bytecode_end_p]
@@ -294,32 +301,53 @@ ham_invalid:
 ; Format: THDR pri(1) owner(2) run_ctnr(2) tension_len(2) = 7 bytes after opcode
 ; Sets up tension_end, resets expression stack and action buffer.
 ; For Phase 3a: only system tensions (owner == -1) are executed.
+; THDR (0x40): Tension header
+; Format: THDR pri(1) owner(2) run_ctnr(2) tension_len(2) = 7 bytes after opcode
+; Phase 3c: owner scheduling — system/daemon/process three-way check
 ham_op_thdr:
     inc  dword [ham_dbg_thdr]
-    movzx eax, byte [rsi]          ; pri (1 byte) — not used in dispatch yet
+    movzx eax, byte [rsi]          ; pri (1 byte)
     inc  rsi
 
     movzx eax, word [rsi]          ; owner (2 bytes, u16)
     add  rsi, 2
+    mov  [thdr_owner], eax          ; save to BSS
 
-    ; Skip run_container (2 bytes)
+    movzx eax, word [rsi]          ; run_container (2 bytes, u16)
+    add  rsi, 2
+    mov  [thdr_run_ctnr], eax       ; save to BSS
+
+    movzx ecx, word [rsi]          ; tension_len (2 bytes)
     add  rsi, 2
 
-    ; Read tension_len (2 bytes, u16)
-    movzx ecx, word [rsi]
-    add  rsi, 2
-
-    ; Compute tension_end = tension_start + tension_len
-    ; tension_start is the THDR opcode position = RSI - 8 (opcode + 7 operand bytes)
+    ; Compute tension_end = THDR_opcode_pos + tension_len
     mov  rdx, rsi
     sub  rdx, 8                     ; back to THDR opcode
     add  rdx, rcx                   ; + tension_len
     mov  [tension_end_p], rdx
 
-    ; Check owner: 0xFFFF means system (-1). Skip non-system for Phase 3a.
-    cmp  ax, 0xFFFF
-    jne  ham_op_fail                ; skip non-system tensions
+    ; === Owner scheduling decision ===
+    cmp  word [thdr_owner], 0xFFFF
+    je   .thdr_proceed              ; system tension (owner == -1) → always run
 
+    ; Owned tension: check run_container
+    cmp  word [thdr_run_ctnr], 0xFFFF
+    je   .thdr_proceed              ; daemon (run_container == -1) → always run
+
+    ; Process tension: verify owner is in run_container
+    push rsi                        ; save PC (volatile across call)
+    movzx ecx, word [thdr_owner]    ; arg1: entity_idx = owner
+    call ham_entity_loc              ; returns container_idx in EAX
+    pop  rsi                        ; restore PC
+    cmp  eax, [thdr_run_ctnr]
+    jne  .thdr_skip                  ; not in run container → skip
+    jmp  .thdr_proceed
+
+.thdr_skip:
+    inc  dword [ham_dbg_skip]
+    jmp  ham_op_fail                 ; skip this tension
+
+.thdr_proceed:
     ; Reset expression stack
     lea  rdi, [expr_stack]
 

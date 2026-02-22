@@ -2887,6 +2887,9 @@ int herb_tension_owner(int idx) {
     return g_graph.tensions[idx].owner;
 }
 
+/* Forward declaration — Phase 3c dirty flag (defined after HAM compiler) */
+void ham_mark_dirty(void);
+
 /* ============================================================
  * RUNTIME TENSION CREATION API
  *
@@ -2924,6 +2927,7 @@ int herb_tension_create(const char* name, int priority, int owner_entity,
         t->emits[i].recv_to_scope_bind_id = -1;
         t->emits[i].dup_in_scope_bind_id = -1;
     }
+    ham_mark_dirty();  /* Phase 3c: recompile HAM bytecode */
     return ti;
 }
 
@@ -3039,6 +3043,7 @@ int herb_remove_owner_tensions(int owner_entity) {
         write++;
     }
     g_graph.tension_count = write;
+    if (removed > 0) ham_mark_dirty();  /* Phase 3c: recompile HAM bytecode */
     return removed;
 }
 
@@ -3058,6 +3063,7 @@ int herb_remove_tension_by_name(const char* name) {
         write++;
     }
     g_graph.tension_count = write;
+    if (removed > 0) ham_mark_dirty();  /* Phase 3c: recompile HAM bytecode */
     return removed;
 }
 
@@ -3307,6 +3313,7 @@ int herb_load_program(const uint8_t* data, herb_size_t len,
         }
     }
 
+    if (loaded > 0) ham_mark_dirty();  /* Phase 3c: recompile HAM bytecode */
     return loaded;
 }
 
@@ -3484,7 +3491,7 @@ static int ham_expr_compilable(Expr* e) {
 /* ---- Tension compilability check ---- */
 static int ham_tension_compilable(Tension* t) {
     if (!t->enabled) return 0;
-    if (t->owner >= 0) return 0;  /* Only system tensions (Phase 3a) */
+    /* Phase 3c: owner gate removed — all tensions compilable regardless of ownership */
 
     for (int i = 0; i < t->match_count; i++) {
         MatchClause* mc = &t->matches[i];
@@ -3835,14 +3842,16 @@ static int ham_compile_tension(Tension* t, uint8_t* buf, int* pos,
 }
 
 /* ============================================================
- * ham_compile_system — Compile all system tensions to bytecode
+ * ham_compile_all — Compile ALL tensions to bytecode
  *
+ * Phase 3c: compiles system, shell, and process tensions.
  * Walks g_graph.tensions[], sorts by priority (descending),
  * compiles each compilable tension. Returns total bytes written.
  * *out_count is set to the number of tensions compiled.
+ * Warns on serial if any tension is skipped.
  * ============================================================ */
 
-int ham_compile_system(uint8_t* buf, int buf_size, int* out_count) {
+int ham_compile_all(uint8_t* buf, int buf_size, int* out_count) {
     ham_init_op_ids();
 
     /* Build priority-sorted order (descending) */
@@ -3874,3 +3883,37 @@ int ham_compile_system(uint8_t* buf, int buf_size, int* out_count) {
     if (out_count) *out_count = compiled;
     return pos;
 }
+
+/* ============================================================
+ * Phase 3c: Global HAM bytecode buffer + lazy recompilation
+ *
+ * All tension resolution goes through ham_run_ham(). The global
+ * bytecode buffer is recompiled only when tensions change
+ * (dirty flag set by mutation functions).
+ * ============================================================ */
+
+#define HAM_BYTECODE_SIZE 8192
+static uint8_t g_ham_bytecode[HAM_BYTECODE_SIZE];
+static int g_ham_bytecode_len = 0;
+static int g_ham_compiled_count = 0;
+static int g_ham_dirty = 1;  /* start dirty — must compile before first run */
+
+void ham_mark_dirty(void) { g_ham_dirty = 1; }
+
+static void ham_ensure_compiled(void) {
+    if (!g_ham_dirty) return;
+    g_ham_bytecode_len = ham_compile_all(g_ham_bytecode, HAM_BYTECODE_SIZE, &g_ham_compiled_count);
+    g_ham_dirty = 0;
+}
+
+/* ham_run is in herb_ham.asm */
+extern int ham_run(uint8_t* bytecode_ptr, int bytecode_len);
+
+int ham_run_ham(int max_steps) {
+    ham_ensure_compiled();
+    if (g_ham_bytecode_len <= 0) return herb_run(max_steps);  /* fallback */
+    return ham_run(g_ham_bytecode, g_ham_bytecode_len);
+}
+
+int ham_get_compiled_count(void) { return g_ham_compiled_count; }
+int ham_get_bytecode_len(void) { return g_ham_bytecode_len; }
