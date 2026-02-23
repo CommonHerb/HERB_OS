@@ -4,6 +4,10 @@
 ; Replaces the C runtime's hot path (herb_step) for compiled
 ; tension programs. Pre-sorted bytecode eliminates O(n²) sorting.
 ;
+; Session 64 — Phase 3a: Core engine + 19 instruction handlers
+; Session 65 — Phase 3b Part 1: +7 expression instructions (26 total)
+; Session 66 — Phase 3b Part 2: +6 instructions, 41/41 system tensions
+; Session 67 — Phase 3c: THDR owner scheduling, all tensions on HAM
 ;
 ; Register allocation (persistent across C calls via MS x64 ABI):
 ;   RBX = bytecode start pointer (for fixpoint loop reset)
@@ -14,7 +18,7 @@
 ;   R14 = binding register B2
 ;   R15 = binding register B3
 ;   RBP = stack frame base
-;   [changed_flag] = fixpoint changed flag (BSS, was R15 originally)
+;   [changed_flag] = fixpoint changed flag (BSS, was R15 before Session 66)
 ;
 ; Dispatch: comparison chain. Avoids 256-entry relocation table
 ; that crashes the PE linker.
@@ -53,6 +57,7 @@ global ham_dbg_scan_nz
 global ham_dbg_require
 global ham_dbg_guard
 global ham_dbg_skip
+global fixpoint_iters
 
 ; ============================================================
 ; BSS — Static data for HAM execution
@@ -81,8 +86,8 @@ each_buf:        resd 64       ; copy of scan_buf at SEL_EACH time
 each_total:      resd 1        ; total entities in each_buf
 each_idx:        resd 1        ; current iteration index
 each_bind:       resd 1        ; which binding register (0-3) to update
-thdr_owner:      resd 1        ; saved owner entity index from THDR
-thdr_run_ctnr:   resd 1        ; saved run_container from THDR
+thdr_owner:      resd 1        ; saved owner entity index from THDR (Phase 3c)
+thdr_run_ctnr:   resd 1        ; saved run_container from THDR (Phase 3c)
 ; Debug counters (read by C after ham_run returns)
 ham_dbg_thdr:    resd 1        ; number of THDR entries
 ham_dbg_fail:    resd 1        ; number of FAILs
@@ -91,7 +96,8 @@ ham_dbg_action:  resd 1        ; number of actions attempted
 ham_dbg_scan_nz: resd 1        ; number of SCANs returning >0 entities
 ham_dbg_require: resd 1        ; number of REQUIREs reached
 ham_dbg_guard:   resd 1        ; number of GUARDs reached
-ham_dbg_skip:    resd 1        ; number of THDR owner-check skips
+ham_dbg_skip:    resd 1        ; number of THDR owner-check skips (Phase 3c)
+ham_dbg_emov:    resd 1        ; number of EMOV instructions executed
 
 ; ============================================================
 ; TEXT — HAM engine code
@@ -296,10 +302,10 @@ ham_invalid:
 ; THDR (0x40): Tension header
 ; Format: THDR pri(1) owner(2) run_ctnr(2) tension_len(2) = 7 bytes after opcode
 ; Sets up tension_end, resets expression stack and action buffer.
-; For only system tensions (owner == -1) are executed.
+; For Phase 3a: only system tensions (owner == -1) are executed.
 ; THDR (0x40): Tension header
 ; Format: THDR pri(1) owner(2) run_ctnr(2) tension_len(2) = 7 bytes after opcode
-; owner scheduling — system/daemon/process three-way check
+; Phase 3c: owner scheduling — system/daemon/process three-way check
 ham_op_thdr:
     inc  dword [ham_dbg_thdr]
     movzx eax, byte [rsi]          ; pri (1 byte)
@@ -384,16 +390,17 @@ ham_op_tend:
 .do_move:
     ; Action MOVE: field1=mt_idx, field2=entity_idx, field3(lo32)=to_container
     ; Call ham_try_move(mt_idx, entity_idx, to_container_idx)
-    ; Save volatile state
     inc  dword [ham_dbg_action]
     push r8
     push r9
+    sub  rsp, 32                    ; shadow space (MS x64 ABI)
 
     mov  ecx, [r8 + 4]             ; mt_idx
     mov  edx, [r8 + 8]             ; entity_idx
     mov  r8d, [r8 + 16]            ; to_container (from field3, low 32 bits)
     call ham_try_move
 
+    add  rsp, 32
     pop  r9
     pop  r8
 
@@ -410,12 +417,14 @@ ham_op_tend:
     inc  dword [ham_dbg_action]
     push r8
     push r9
+    sub  rsp, 32                    ; shadow space (MS x64 ABI)
 
     mov  ecx, [r8 + 4]             ; entity_idx
     mov  edx, [r8 + 8]             ; prop_id
     mov  r8, [r8 + 16]             ; value (i64)
     call ham_eset
 
+    add  rsp, 32
     pop  r9
     pop  r8
 
@@ -432,11 +441,13 @@ ham_op_tend:
     inc  dword [ham_dbg_action]
     push r8
     push r9
+    sub  rsp, 32                    ; shadow space (MS x64 ABI)
 
     mov  ecx, [r8 + 4]             ; channel_idx
     mov  edx, [r8 + 8]             ; entity_idx
     call ham_try_channel_send
 
+    add  rsp, 32
     pop  r9
     pop  r8
 
@@ -453,12 +464,14 @@ ham_op_tend:
     inc  dword [ham_dbg_action]
     push r8
     push r9
+    sub  rsp, 32                    ; shadow space (MS x64 ABI)
 
     mov  ecx, [r8 + 4]             ; channel_idx
     mov  edx, [r8 + 8]             ; entity_idx
     mov  r8d, [r8 + 16]            ; to_container_idx (from field3, low 32 bits)
     call ham_try_channel_recv
 
+    add  rsp, 32
     pop  r9
     pop  r8
 
@@ -539,10 +552,54 @@ ham_op_tend:
     DISPATCH
 
 ; FAIL (0x42): Tension failed — clear actions, skip to tension_end
+; Discovery 51 fix: in each-mode, advance to next entity instead of aborting.
+; Only abort the entire tension when all each entities are exhausted.
 ham_op_fail:
     inc  dword [ham_dbg_fail]
     mov  dword [action_count], 0
-    mov  dword [each_mode], 0       ; exit each-mode on fail
+
+    ; If in each-mode, advance to next entity instead of aborting
+    cmp  dword [each_mode], 0
+    je   .fail_abort
+
+    ; --- Each-mode advance (mirrors TEND each-advance at lines 498-529) ---
+    inc  dword [each_idx]
+    mov  ecx, [each_idx]
+    cmp  ecx, [each_total]
+    jge  .fail_each_done
+
+    ; Set B[each_bind] = each_buf[each_idx]
+    lea  rdx, [each_buf]
+    mov  edx, [rdx + rcx*4]        ; entity_idx = each_buf[each_idx]
+    mov  eax, [each_bind]
+    cmp  al, 0
+    je   .fail_sb0
+    cmp  al, 1
+    je   .fail_sb1
+    cmp  al, 2
+    je   .fail_sb2
+    mov  r15d, edx                  ; B3
+    jmp  .fail_continue
+.fail_sb0:
+    mov  r12d, edx
+    jmp  .fail_continue
+.fail_sb1:
+    mov  r13d, edx
+    jmp  .fail_continue
+.fail_sb2:
+    mov  r14d, edx
+
+.fail_continue:
+    ; Reset expression stack and jump back to each_start
+    lea  rdi, [expr_stack]
+    mov  rsi, [each_start]
+    DISPATCH
+
+.fail_each_done:
+    ; All each entities exhausted — exit each-mode, fall through to abort
+    mov  dword [each_mode], 0
+
+.fail_abort:
     mov  rsi, [tension_end_p]
 
     ; Check if we've passed the end
@@ -965,9 +1022,20 @@ ham_op_where:
     DISPATCH
 
 .where_empty:
-    ; Set scan_count to 0, skip to ENDWHERE by scanning for opcode 0x11
-    ; But we can just set orig_cnt=0 and fall through — ENDWHERE will see
-    ; read_idx >= orig_cnt immediately
+    ; scan_count=0: skip WHERE body entirely by scanning forward for ENDWHERE (0x11)
+    ; Bug fix (Session 72c): previously fell through to WHERE body, which evaluated
+    ; expressions on stale B0 and could write truthy result, causing ENDWHERE to
+    ; set scan_count=1 for an empty container — infinite fixpoint oscillation.
+    mov  dword [scan_count], 0
+.where_skip_loop:
+    cmp  rsi, [bytecode_end_p]
+    jge  .where_skip_done
+    movzx eax, byte [rsi]
+    inc  rsi
+    cmp  al, 0x11              ; ENDWHERE opcode
+    jne  .where_skip_loop
+.where_skip_done:
+    ; RSI now points past the ENDWHERE opcode. scan_count stays 0.
     DISPATCH
 
 ; ENDWHERE (0x11): End of WHERE filter body
@@ -1269,6 +1337,7 @@ ham_op_not:
 ; EMOV (0x30): Buffer a MOVE action
 ; Format: EMOV mt(2) bind(1) to(2) = 5 bytes after opcode
 ham_op_emov:
+    inc  dword [ham_dbg_emov]
     movzx r10d, word [rsi]         ; mt_idx
     add  rsi, 2
     movzx eax, byte [rsi]          ; bind register index

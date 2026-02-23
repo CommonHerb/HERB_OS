@@ -27,8 +27,9 @@ global mouse_isr_stub
 global volatile_timer_fired
 global volatile_key_scancode
 global volatile_key_pressed
-global volatile_mouse_byte
-global volatile_mouse_ready
+global mouse_ring
+global mouse_ring_head
+global mouse_ring_tail
 
 ; ============================================================
 ; ENTRY POINT
@@ -114,24 +115,34 @@ keyboard_isr_stub:
 
 ; ---- Mouse interrupt (IRQ12 -> IDT entry 44) ----
 ; IRQ12 is on the slave PIC, so EOI goes to both slave and master.
+; Uses a 64-byte ring buffer to avoid lost bytes during long main-loop work.
 mouse_isr_stub:
     push rax
     push rdi
+    push rcx
 
     ; Read data byte from PS/2 controller
     in al, 0x60
-    lea rdi, [volatile_mouse_byte]
-    mov byte [rdi], al
+    mov cl, al                              ; save byte in cl
 
-    ; Set mouse_ready flag
-    lea rdi, [volatile_mouse_ready]
-    mov byte [rdi], 1
+    ; Store in ring buffer: mouse_ring[head] = byte
+    lea rdi, [mouse_ring_head]
+    movzx eax, byte [rdi]                  ; eax = current head index
+    lea rdi, [mouse_ring]
+    mov byte [rdi + rax], cl               ; ring[head] = byte
+
+    ; Advance head: head = (head + 1) & 0x3F
+    inc al
+    and al, 0x3F
+    lea rdi, [mouse_ring_head]
+    mov byte [rdi], al
 
     ; Send EOI to slave PIC (port 0xA0) then master PIC (port 0x20)
     mov al, 0x20
     out 0xA0, al
     out 0x20, al
 
+    pop rcx
     pop rdi
     pop rax
     iretq
@@ -145,8 +156,9 @@ section .bss
 volatile_timer_fired:   resb 1
 volatile_key_scancode:  resb 1
 volatile_key_pressed:   resb 1
-volatile_mouse_byte:    resb 1
-volatile_mouse_ready:   resb 1
+mouse_ring:         resb 64     ; 64-byte circular buffer for mouse bytes
+mouse_ring_head:    resb 1      ; write index (ISR increments)
+mouse_ring_tail:    resb 1      ; read index (main loop increments)
 
 ; Alignment padding
 alignb 16

@@ -161,7 +161,7 @@ static void create_key_signal(int ascii_code);
 static int read_cmdline(char* buf, int bufsz);
 static void handle_submission(void);
 
-/* Forward declarations — mechanism functions */
+/* Forward declarations — mechanism functions (Session 54) */
 static void cmd_timer(void);
 static void cmd_boost(void);
 static void cmd_step(void);
@@ -177,7 +177,7 @@ static void cmd_tension_toggle(void);
 static void cmd_ham_test(void);
 #endif
 
-/* Forward declarations — HERB-based command dispatch */
+/* Forward declarations — HERB-based command dispatch (Session 53-54) */
 #ifdef KERNEL_MODE
 static void dispatch_cmd_from_route(int cmd_id, int arg_id);
 static void dispatch_mech_action(int action);
@@ -200,19 +200,20 @@ extern void mouse_isr_stub(void);
 extern volatile uint8_t volatile_timer_fired;
 extern volatile uint8_t volatile_key_scancode;
 extern volatile uint8_t volatile_key_pressed;
-extern volatile uint8_t volatile_mouse_byte;
-extern volatile uint8_t volatile_mouse_ready;
+extern volatile uint8_t mouse_ring[64];
+extern volatile uint8_t mouse_ring_head;
+extern volatile uint8_t mouse_ring_tail;
 
 /* ============================================================
  * PORT I/O
  * ============================================================ */
 
-/* Port I/O — implemented in herb_hw.asm */
+/* Port I/O — implemented in herb_hw.asm (Phase 2) */
 extern void outb(uint16_t port, uint8_t val);
 extern uint8_t inb(uint16_t port);
 extern void io_wait(void);
 
-/* Privileged CPU ops — implemented in herb_hw.asm */
+/* Privileged CPU ops — implemented in herb_hw.asm (Phase 2, Session 59) */
 extern void hw_lidt(void* idt_descriptor);
 extern void hw_sti(void);
 extern void hw_hlt(void);
@@ -221,23 +222,23 @@ extern void hw_hlt(void);
  * SERIAL PORT (COM1: 0x3F8)
  * ============================================================ */
 
-/* Serial port — implemented in herb_hw.asm */
+/* Serial port — implemented in herb_hw.asm (Phase 2, Session 60) */
 extern void serial_init(void);
 extern void serial_putchar(char c);
 extern void serial_print(const char* s);
 
-/* PIC/PIT — implemented in herb_hw.asm */
+/* PIC/PIT — implemented in herb_hw.asm (Phase 2, Session 61) */
 extern void pic_remap(void);
 extern void pit_init(int hz);
 
-/* PS/2 mouse — implemented in herb_hw.asm */
+/* PS/2 mouse — implemented in herb_hw.asm (Phase 2, Session 62) */
 extern void ps2_wait_input(void);
 extern void ps2_wait_output(void);
 extern void mouse_write(uint8_t data);
 extern uint8_t mouse_read(void);
 extern void mouse_init(void);
 
-/* HAM — HERB Abstract Machine */
+/* HAM — HERB Abstract Machine (Phase 3, Sessions 64-67) */
 extern int ham_run(uint8_t* bytecode_ptr, int bytecode_len);
 extern int ham_compile_all(uint8_t* buf, int buf_size, int* out_count);
 extern int ham_run_ham(int max_steps);
@@ -246,6 +247,7 @@ extern int ham_get_compiled_count(void);
 extern int ham_get_bytecode_len(void);
 extern int ham_intern(const char* s);
 extern int ham_dbg_thdr, ham_dbg_fail, ham_dbg_tend, ham_dbg_skip;
+extern int ham_dbg_action, ham_dbg_scan_nz, ham_dbg_require, ham_dbg_guard;
 
 static void serial_print_int(int val) {
     char buf[16];
@@ -543,30 +545,30 @@ static int buffer_eid = -1;       /* Shared buffer entity for producer/consumer 
 static char last_action[80] = "";
 static char last_key_name[16] = "";
 
-/* Hot-swappable scheduling policy */
+/* Hot-swappable scheduling policy (Session 48) */
 #ifdef KERNEL_MODE
 static int scheduling_policy = 0;       /* 0 = priority, 1 = round-robin */
 static const char* sched_tension_name = "proc.schedule_ready";  /* name of current scheduling tension */
 static const char* sched_policy_label = "PRIORITY";             /* display label */
 #endif
 
-/* Text input state */
+/* Text input state (Session 49) */
 #ifdef KERNEL_MODE
 static int input_ctl_eid = -1;  /* InputCtl entity ID (tracks mode, submitted) */
 #endif
 
-/* Shell process state */
+/* Shell process state (Session 50) */
 #ifdef KERNEL_MODE
 static int shell_ctl_eid = -1;  /* ShellCtl entity ID (tracks action) */
 static int shell_eid = -1;      /* Shell process entity ID */
 #endif
 
-/* Spawn control state */
+/* Spawn control state (Session 52) */
 #ifdef KERNEL_MODE
 static int spawn_ctl_eid = -1;  /* SpawnCtl entity ID (tracks spawn decisions) */
 #endif
 
-/* Display control state */
+/* Display control state (Session 55) */
 #ifdef KERNEL_MODE
 static int display_ctl_eid = -1;  /* DisplayCtl entity ID (max_terminated, max_procs_per_region, timer_interval, buffer_capacity) */
 static int timer_interval = 300;  /* Auto-timer interval in ticks (read from DisplayCtl at boot) */
@@ -644,7 +646,7 @@ static void draw_stats(void) {
 static void draw_legend(void) {
     vga_clear_row(ROW_LEGEND);
 #ifdef KERNEL_MODE
-    /* Legend derived from HERB LEGEND entities */
+    /* Legend derived from HERB LEGEND entities (Session 56) */
     int n = herb_container_count(CN_LEGEND);
     if (n <= 0) return;
     /* Sort by order: collect entity IDs and sort by order property */
@@ -1039,7 +1041,7 @@ static void draw_log(void) {
 #endif
 
 /* ============================================================
- * SURFACE STATE → COLORS (colors as HERB entity properties)
+ * SURFACE STATE → COLORS (Session 55: colors as HERB entity properties)
  *
  * Display tensions set surface.state AND border_color/fill_color directly.
  * C reads border_color and fill_color from HERB entities — no lookup table.
@@ -1048,7 +1050,7 @@ static void draw_log(void) {
  * HERB is policy (color decisions). C is mechanism (pixels).
  * ============================================================ */
 
-/* Color lookup arrays removed.
+/* Color lookup arrays removed (Session 55).
  * Colors now live on HERB entities: border_color/fill_color on region Surfaces
  * and process Surfaces. Sync tensions set them. C reads directly. */
 
@@ -1094,7 +1096,7 @@ static void gfx_draw_procs_in_region(int rx, int ry, int rw, int rh,
         int64_t ts = herb_entity_prop_int(eid, "time_slice", 0);
 
         /* In KERNEL_MODE, read border_color/fill_color directly from HERB
-         * Surface entity — sync tensions set actual pixel colors.
+         * Surface entity — sync tensions set actual pixel colors (Session 55).
          * In flat mode, use fallback colors from the container region. */
         uint32_t border_col = fallback_border;
         uint32_t fill_col = fallback_fill;
@@ -1311,7 +1313,7 @@ static void gfx_draw_full(void) {
         }
     }
 
-    /* ---- Key legend (derived from HERB LEGEND entities) ---- */
+    /* ---- Key legend (derived from HERB LEGEND entities, Session 56) ---- */
     fb_fill_rect(0, GFX_LEGEND_Y, FB_WIDTH, GFX_LEGEND_H, COL_LEGEND_BG);
     {
         int x = 12;
@@ -1397,7 +1399,7 @@ static void gfx_draw_full(void) {
             int rw = (int)herb_entity_prop_int(sid, "width", 100);
             int rh = (int)herb_entity_prop_int(sid, "height", 100);
 
-            /* Read border_color/fill_color from HERB region entity */
+            /* Read border_color/fill_color from HERB region entity (Session 55) */
             int bc = (int)herb_entity_prop_int(sid, "border_color", COL_TEXT_DIM);
             int fc = (int)herb_entity_prop_int(sid, "fill_color", COL_BG);
 
@@ -1522,7 +1524,7 @@ static void gfx_draw_full(void) {
     }
 #endif
 
-    /* ---- Command line ---- */
+    /* ---- Command line (Session 49) ---- */
 #ifdef KERNEL_MODE
     {
         int input_mode = 0;
@@ -1605,7 +1607,7 @@ static void draw_full(void) {
     draw_summary();
     draw_log();
 
-    /* Command line (VGA text mode) */
+    /* Command line (VGA text mode, Session 49) */
 #ifdef KERNEL_MODE
     if (input_ctl_eid >= 0) {
         int mode = (int)herb_entity_prop_int(input_ctl_eid, "mode", 0);
@@ -1638,7 +1640,7 @@ static void make_sig_name(char* buf, int bufsz, const char* prefix) {
 }
 
 /* ============================================================
- * PROGRAMS AS DATA
+ * PROGRAMS AS DATA (Session 47)
  *
  * A process IS its tensions. Loading a program means loading
  * a .herb binary and injecting its tensions into the runtime.
@@ -1651,7 +1653,7 @@ static void make_sig_name(char* buf, int bufsz, const char* prefix) {
  * Additional: worker, beacon (available as .herb files).
  * ============================================================ */
 
-/* buffer_capacity removed now read from DisplayCtl.buffer_capacity */
+/* buffer_capacity removed Session 56 — now read from DisplayCtl.buffer_capacity */
 
 /* Report buffer state to serial (called after any herb_run) */
 static void report_buffer_state(void) {
@@ -1672,22 +1674,38 @@ static void report_buffer_state(void) {
 static void cmd_timer(void) {
     char name[32];
     make_sig_name(name, sizeof(name), "t");
+
+    /* Who's in CPU0 before timer? */
+    int cpu0_eid = (herb_container_count(CN_CPU0) > 0) ? herb_container_entity(CN_CPU0, 0) : -1;
+    const char* before_name = (cpu0_eid >= 0) ? herb_entity_name(cpu0_eid) : "EMPTY";
+
     herb_create(name, ET_SIGNAL, CN_TIMER_SIG);
     int ops = ham_run_ham(100);
     total_ops += ops;
 
-    herb_snprintf(last_action, sizeof(last_action),
-        "Timer signal %s -> %d ops", name, ops);
+    /* Who's in CPU0 after timer? */
+    int cpu0_eid2 = (herb_container_count(CN_CPU0) > 0) ? herb_container_entity(CN_CPU0, 0) : -1;
+    const char* after_name = (cpu0_eid2 >= 0) ? herb_entity_name(cpu0_eid2) : "EMPTY";
+
+    /* [TIMER] t3 ops=11 [server]->[client] */
     serial_print("[TIMER] ");
     serial_print(name);
     serial_print(" ops=");
     serial_print_int(ops);
-    serial_print("\n");
+    serial_print(" [");
+    serial_print(before_name);
+    serial_print("]->[");
+    serial_print(after_name);
+    serial_print("]\n");
+
     report_buffer_state();
+
+    herb_snprintf(last_action, sizeof(last_action),
+        "Timer signal %s -> %d ops", name, ops);
 }
 
 /* ============================================================
- * PROCESS CREATION VIA HERB POLICY
+ * PROCESS CREATION VIA HERB POLICY (Session 52)
  *
  * Process creation is HERB policy. C creates a SPAWN_SIG entity
  * with requested_type. HERB spawn tensions decide priority
@@ -1701,7 +1719,7 @@ static void cmd_timer(void) {
 
 #ifdef KERNEL_MODE
 static void cmd_spawn(int requested_type) {
-    /* HERB decides priority + program type */
+    /* Phase 1: HERB decides priority + program type */
     char sig_name[32];
     make_sig_name(sig_name, sizeof(sig_name), "spawn");
     int sig = herb_create(sig_name, ET_SIGNAL, CN_SPAWN_SIG);
@@ -1722,7 +1740,7 @@ static void cmd_spawn(int requested_type) {
     int prog_type = (int)herb_entity_prop_int(spawn_ctl_eid, "program_type", 1);
     herb_set_prop_int(spawn_ctl_eid, "action", 0);  /* reset */
 
-    /* C creates process (mechanism) */
+    /* Phase 2: C creates process (mechanism) */
     process_counter++;
     char name[32];
     herb_snprintf(name, sizeof(name), "p%d", process_counter);
@@ -1807,7 +1825,7 @@ static void cmd_spawn(int requested_type) {
     serial_print("\n");
     (void)loaded;
 
-    /* Settle */
+    /* Phase 3: Settle */
     int ops = ham_run_ham(100);
     total_ops += spawn_ops + ops;
 
@@ -1875,9 +1893,9 @@ static void cmd_new_process(void) {
 #endif
 
 /* ============================================================
- * HERB-BASED COMMAND DISPATCH
+ * HERB-BASED COMMAND DISPATCH (Session 53)
  *
- * Input routing is HERB policy. Every keystroke
+ * Input routing is HERB policy (Session 54). Every keystroke
  * becomes KEY_SIG → HERB decides what it means → C reads
  * InputCtl decisions and performs mechanism.
  *
@@ -1952,7 +1970,7 @@ static void post_dispatch(int sig_eid, int ops, const char* cpu0_name) {
     report_buffer_state();
 }
 
-/* Dispatch command from HERB routing: cmd_id/arg_id already known */
+/* Dispatch command from HERB routing: cmd_id/arg_id already known (Session 54) */
 static void dispatch_cmd_from_route(int cmd_id, int arg_id) {
     /* Capture pre-dispatch state for serial output */
     const char* cpu0_name = 0;
@@ -1991,7 +2009,7 @@ static void dispatch_cmd_from_route(int cmd_id, int arg_id) {
     post_dispatch(sig_eid, ops, cpu0_name);
 }
 
-/* Dispatch mechanism action from HERB routing */
+/* Dispatch mechanism action from HERB routing (Session 54) */
 static void dispatch_mech_action(int action) {
     switch (action) {
         case 1:  cmd_timer();          break;
@@ -2415,14 +2433,14 @@ static void cmd_tension_toggle(void) {
 }
 
 /* ============================================================
- * HAM DIAGNOSTIC
+ * HAM DIAGNOSTIC (Sessions 64-67)
  *
  * Force recompile all tensions, run HAM, report diagnostics.
- * uses global buffer via ham_run_ham().
+ * Phase 3c: uses global buffer via ham_run_ham().
  * ============================================================ */
 
 static void cmd_ham_test(void) {
-    /* force recompile to show fresh stats */
+    /* Phase 3c: force recompile to show fresh stats */
     ham_mark_dirty();
 
     /* Create a TIMER_SIG so timer_tick can fire */
@@ -2491,7 +2509,7 @@ static void cmd_ham_test(void) {
 }
 
 /* ============================================================
- * HOT-SWAPPABLE SCHEDULING POLICY
+ * HOT-SWAPPABLE SCHEDULING POLICY (Session 48)
  *
  * Replace the active scheduling tension at runtime with a
  * different behavioral rule loaded from .herb binary data.
@@ -2558,7 +2576,7 @@ static void cmd_swap_policy(void) {
 #endif /* KERNEL_MODE */
 
 /* ============================================================
- * TEXT INPUT — KEY SIGNAL CREATION
+ * TEXT INPUT — KEY SIGNAL CREATION (Session 49)
  *
  * C handles exactly one thing: reading the scancode from port 0x60
  * and creating a HERB signal entity with a keycode property.
@@ -2602,7 +2620,7 @@ static int read_cmdline(char* buf, int bufsz) {
     return max_pos;
 }
 
-/* Command parsing moved to HERB.
+/* Command parsing moved to HERB (Session 53).
  * C computes text_key/arg_key (pure mechanism), HERB tensions
  * match against KeyBind/TextCmd/TextArg entities (policy).
  * Command IDs: 0=none, 1=kill, 2=load, 3=swap, 4=list,
@@ -2681,7 +2699,7 @@ static void handle_shell_action(void) {
         serial_print("\n");
         herb_snprintf(last_action, sizeof(last_action), "Shell: list (see serial)");
     } else if (action == 30) {
-        /* Help — iterate HERB HelpCmd entities */
+        /* Help — iterate HERB HelpCmd entities (Session 57) */
         serial_print("[SHELL] help\n");
         serial_print("[HELP] Commands: ");
 #ifdef KERNEL_MODE
@@ -2727,7 +2745,7 @@ static void handle_shell_action(void) {
     }
 }
 
-/* Handle submission: compute text_key/arg_key, dispatch via HERB lookup */
+/* Handle submission: compute text_key/arg_key, dispatch via HERB lookup (Session 53) */
 static void handle_submission(void) {
     char cmdbuf[64];
     int len = read_cmdline(cmdbuf, sizeof(cmdbuf));
@@ -2792,7 +2810,7 @@ static void handle_key(uint8_t scancode) {
         herb_snprintf(last_key_name, sizeof(last_key_name), "x%d", scancode);
     }
 
-    /* ---- Input routing as HERB policy ----
+    /* ---- Input routing as HERB policy (Session 54) ----
      * Every keystroke becomes KEY_SIG. HERB tensions decide what it
      * means: text input, command dispatch, mechanism action, or mode
      * switch. C reads InputCtl decisions and performs mechanism. */
@@ -2813,20 +2831,20 @@ static void handle_key(uint8_t scancode) {
         int submitted   = (int)herb_entity_prop_int(input_ctl_eid, "submitted", 0);
         int cur_mode    = (int)herb_entity_prop_int(input_ctl_eid, "mode", 0);
 
-        /* Command dispatch (keybind_route matched) */
+        /* Phase 2a: Command dispatch (keybind_route matched) */
         if (pending_cmd > 0) {
             herb_set_prop_int(input_ctl_eid, "pending_cmd", 0);
             herb_set_prop_int(input_ctl_eid, "pending_arg", 0);
             dispatch_cmd_from_route(pending_cmd, pending_arg);
         }
 
-        /* Mechanism dispatch (mechbind_match matched) */
+        /* Phase 2b: Mechanism dispatch (mechbind_match matched) */
         if (mech_action > 0) {
             herb_set_prop_int(input_ctl_eid, "mech_action", 0);
             dispatch_mech_action(mech_action);
         }
 
-        /* Text submission (Enter in text mode) */
+        /* Phase 2c: Text submission (Enter in text mode) */
         if (submitted == 1) {
             handle_submission();
         }
@@ -2956,6 +2974,28 @@ void kernel_main(void) {
     vga_print("  Program loaded\n");
     serial_print("  Program loaded\n");
 
+    /* DIAGNOSTIC: Check SPAWN_SIG vs SPAWN_STATE containers */
+    {
+        int n_sig = herb_container_count("proc.SPAWN_SIG");
+        int n_state = herb_container_count("spawn.SPAWN_STATE");
+        serial_print("  [DIAG] proc.SPAWN_SIG count=");
+        serial_print_int(n_sig);
+        serial_print(", spawn.SPAWN_STATE count=");
+        serial_print_int(n_state);
+        serial_print("\n");
+        /* Also check what index they resolve to */
+        extern int graph_find_container_by_name(int name_id);
+        int sig_id = ham_intern("proc.SPAWN_SIG");
+        int state_id = ham_intern("spawn.SPAWN_STATE");
+        int sig_cidx = graph_find_container_by_name(sig_id);
+        int state_cidx = graph_find_container_by_name(state_id);
+        serial_print("  [DIAG] SPAWN_SIG cidx=");
+        serial_print_int(sig_cidx);
+        serial_print(", SPAWN_STATE cidx=");
+        serial_print_int(state_cidx);
+        serial_print("\n");
+    }
+
     /* ---- Boot: resolve initial tensions ---- */
     vga_print("  Resolving initial tensions...\n");
     int boot_ops = ham_run_ham(100);
@@ -2983,7 +3023,7 @@ void kernel_main(void) {
         }
     }
 
-    /* Find the InputCtl entity in input.INPUT_STATE */
+    /* Find the InputCtl entity in input.INPUT_STATE (Session 49) */
     {
         int ns = herb_container_count(CN_INPUT_STATE);
         for (int i = 0; i < ns; i++) {
@@ -3011,7 +3051,7 @@ void kernel_main(void) {
         }
     }
 
-    /* ---- Shell process ----
+    /* ---- Shell process (Session 50) ----
      * The shell is a HERB process whose tensions transform CMD_SIG
      * entities into system actions. Loaded from .herb binary data.
      * No run_container = tensions fire regardless of scheduling.
@@ -3023,7 +3063,7 @@ void kernel_main(void) {
             herb_set_prop_int(shell_eid, "time_slice", 3);
             herb_set_prop_int(shell_eid, "msgs_received", 0);
             herb_set_prop_int(shell_eid, "selected", 0);
-            /* protected value set after shell_ctl discovery */
+            /* protected value set after shell_ctl discovery (Session 56) */
 
             /* Create scoped resources (minimal — shell doesn't need them) */
             char cname[64], rname[64];
@@ -3074,7 +3114,7 @@ void kernel_main(void) {
                 serial_print("  Shell control entity found (id=");
                 serial_print_int(sid);
                 serial_print(")\n");
-                /* Set shell protection from HERB state */
+                /* Set shell protection from HERB state (Session 56) */
                 if (shell_eid >= 0) {
                     int prot = (int)herb_entity_prop_int(sid, "shell_protected", 1);
                     herb_set_prop_int(shell_eid, "protected", prot);
@@ -3084,7 +3124,7 @@ void kernel_main(void) {
         }
     }
 
-    /* Find the SpawnCtl entity in spawn.SPAWN_STATE */
+    /* Find the SpawnCtl entity in spawn.SPAWN_STATE (Session 52) */
     {
         int ns = herb_container_count(CN_SPAWN_STATE);
         for (int i = 0; i < ns; i++) {
@@ -3099,7 +3139,7 @@ void kernel_main(void) {
         }
     }
 
-    /* Find the DisplayCtl entity in display.DISPLAY_STATE */
+    /* Find the DisplayCtl entity in display.DISPLAY_STATE (Session 55) */
     {
         int ns = herb_container_count(CN_DISPLAY_STATE);
         for (int i = 0; i < ns; i++) {
@@ -3109,7 +3149,7 @@ void kernel_main(void) {
                 serial_print("  Display control entity found (id=");
                 serial_print_int(sid);
                 serial_print(")\n");
-                /* Cache system parameters from HERB */
+                /* Cache system parameters from HERB (Session 56) */
                 timer_interval = (int)herb_entity_prop_int(sid, "timer_interval", 300);
                 buffer_capacity = (int)herb_entity_prop_int(sid, "buffer_capacity", 20);
                 serial_print("  timer_interval=");
@@ -3161,7 +3201,7 @@ void kernel_main(void) {
             volatile_timer_fired = 0;
             timer_count++;
 
-            /* Auto-timer at HERB-configured interval */
+            /* Auto-timer at HERB-configured interval (Session 56) */
             if (timer_interval > 0 && timer_count % timer_interval == 0) {
                 cmd_timer();
                 draw_full();
@@ -3187,69 +3227,75 @@ void kernel_main(void) {
             handle_key(volatile_key_scancode);
         }
 
-        /* ---- Mouse interrupt: assemble 3-byte packets ---- */
-        if (volatile_mouse_ready) {
-            volatile_mouse_ready = 0;
-            uint8_t byte = volatile_mouse_byte;
+        /* ---- Mouse ring buffer: drain all accumulated bytes ---- */
+        {
+            int mouse_packets_processed = 0;
+            while (mouse_ring_tail != mouse_ring_head) {
+                uint8_t byte = mouse_ring[mouse_ring_tail];
+                mouse_ring_tail = (mouse_ring_tail + 1) & 0x3F;
 
-            /* Byte 0 must have bit 3 set (always-1 in PS/2 protocol).
-             * If not, re-sync by waiting for a valid first byte. */
-            if (mouse_cycle == 0 && !(byte & 0x08)) {
-                /* Discard: not a valid first byte */
-            } else {
-                mouse_packet[mouse_cycle] = byte;
-                mouse_cycle++;
-                if (mouse_cycle >= 3) {
-                    mouse_cycle = 0;
-                    mouse_handle_packet();
+                /* Byte 0 must have bit 3 set (always-1 in PS/2 protocol).
+                 * If not, re-sync by waiting for a valid first byte. */
+                if (mouse_cycle == 0 && !(byte & 0x08)) {
+                    /* Discard: not a valid first byte */
+                } else {
+                    mouse_packet[mouse_cycle] = byte;
+                    mouse_cycle++;
+                    if (mouse_cycle >= 3) {
+                        mouse_cycle = 0;
+                        mouse_handle_packet();
+                        mouse_packets_processed++;
+                    }
+                }
+            }
 
+            if (mouse_packets_processed > 0) {
 #ifdef GRAPHICS_MODE
-                    /* Update cursor position for rendering */
-                    if (fb_active) {
-                        cursor_x = mouse_x;
-                        cursor_y = mouse_y;
-                    }
+                /* Update cursor position for rendering */
+                if (fb_active) {
+                    cursor_x = mouse_x;
+                    cursor_y = mouse_y;
+                }
 
-                    /* Update cursor entity position in HERB state */
+                /* Update cursor entity position in HERB state */
 #ifdef KERNEL_MODE
-                    if (cursor_eid >= 0) {
-                        herb_set_prop_int(cursor_eid, "x", mouse_x);
-                        herb_set_prop_int(cursor_eid, "y", mouse_y);
-                    }
+                if (cursor_eid >= 0) {
+                    herb_set_prop_int(cursor_eid, "x", mouse_x);
+                    herb_set_prop_int(cursor_eid, "y", mouse_y);
+                }
 #endif
 
-                    /* Handle left click (all clicks → HERB) */
-                    if (mouse_left_clicked) {
-                        mouse_left_clicked = 0;
+                /* Handle left click (Session 54: all clicks → HERB) */
+                if (mouse_left_clicked) {
+                    mouse_left_clicked = 0;
 #ifdef KERNEL_MODE
-                        /* ALL clicks go to HERB — click_panel or click_select tensions decide */
-                        cmd_click(mouse_x, mouse_y);
+                    /* ALL clicks go to HERB — click_panel or click_select tensions decide */
+                    cmd_click(mouse_x, mouse_y);
 
-                        /* Check if HERB detected a panel click */
-                        if (input_ctl_eid >= 0) {
-                            int panel_click = (int)herb_entity_prop_int(input_ctl_eid, "panel_click", 0);
-                            if (panel_click) {
-                                herb_set_prop_int(input_ctl_eid, "panel_click", 0);
-                                /* C computes row (mechanism — requires division) */
-                                int row = (mouse_y - (GFX_TENS_Y + 22)) / GFX_TENS_ROW_H;
-                                if (row >= 0 && row < herb_tension_count()) {
-                                    selected_tension_idx = row;
-                                    cmd_tension_toggle();
-                                }
+                    /* Check if HERB detected a panel click */
+                    if (input_ctl_eid >= 0) {
+                        int panel_click = (int)herb_entity_prop_int(input_ctl_eid, "panel_click", 0);
+                        if (panel_click) {
+                            herb_set_prop_int(input_ctl_eid, "panel_click", 0);
+                            /* C computes row (mechanism — requires division) */
+                            int row = (mouse_y - (GFX_TENS_Y + 22)) / GFX_TENS_ROW_H;
+                            if (row >= 0 && row < herb_tension_count()) {
+                                selected_tension_idx = row;
+                                cmd_tension_toggle();
                             }
                         }
+                    }
 #endif
-                        draw_full();
-                    }
-
-                    /* Update cursor on screen (direct MMIO, no full redraw) */
-                    if (mouse_moved && fb_active) {
-                        mouse_moved = 0;
-                        fb_cursor_erase();
-                        fb_cursor_draw();
-                    }
-#endif /* GRAPHICS_MODE */
+                    draw_full();
                 }
+
+                /* Update cursor on screen (direct MMIO, no full redraw) */
+                if (mouse_moved && fb_active) {
+                    mouse_moved = 0;
+                    fb_cursor_erase();
+                    fb_cursor_draw();
+                }
+#endif /* GRAPHICS_MODE */
             }
         }
     }

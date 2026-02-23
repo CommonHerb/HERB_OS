@@ -1,9 +1,13 @@
-; boot/herb_hw.asm — HERB hardware interface
+; boot/herb_hw.asm — HERB hardware interface (Phase 2 assembly)
 ;
 ; x86-64 hardware primitives. Called from C via Microsoft x64 ABI.
 ; Replaces inline asm wrappers in kernel_main.c and framebuffer.h.
 ;
+; Session 58: outb, inb (port I/O bytes)
+; Session 59: outw, inw, outl, inl, io_wait (port I/O words/dwords)
 ;             hw_lidt, hw_sti, hw_hlt, hw_flush_tlb (privileged CPU ops)
+; Session 60: serial_init, serial_putchar, serial_print (serial port)
+; Session 61: pic_remap, pit_init (interrupt infrastructure)
 ;
 ; Assembled with: nasm -f win64 herb_hw.asm -o herb_hw.o
 

@@ -84,7 +84,7 @@
 #define COL_TENS_SEL    0x00FFFFFF   /* selected tension highlight */
 
 /* ============================================================
- * PORT I/O — implemented in herb_hw.asm
+ * PORT I/O — implemented in herb_hw.asm (Phase 2, Session 59)
  * ============================================================ */
 
 extern void outw(uint16_t port, uint16_t val);
@@ -92,7 +92,7 @@ extern uint16_t inw(uint16_t port);
 extern void outl(uint16_t port, uint32_t val);
 extern uint32_t inl(uint16_t port);
 
-/* Privileged CPU ops — implemented in herb_hw.asm */
+/* Privileged CPU ops — implemented in herb_hw.asm (Phase 2, Session 59) */
 extern void hw_flush_tlb(void);
 
 /* ============================================================

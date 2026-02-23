@@ -1,6 +1,6 @@
 ; boot/herb_graph_layout.inc — HERB Graph Struct Layout for Assembly
 ;
-; Machine-verified offsets from offsetof() (GCC 15.2.0, x86-64).
+; Machine-verified offsets from offsetof() (Session 70, GCC 15.2.0, x86-64).
 ; Every future assembly file that touches graph data includes this file.
 ;
 ; DO NOT EDIT BY HAND. Regenerate with boot/verify_offsets.c if structs change.
