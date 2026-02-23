@@ -200,8 +200,9 @@ extern void mouse_isr_stub(void);
 extern volatile uint8_t volatile_timer_fired;
 extern volatile uint8_t volatile_key_scancode;
 extern volatile uint8_t volatile_key_pressed;
-extern volatile uint8_t volatile_mouse_byte;
-extern volatile uint8_t volatile_mouse_ready;
+extern volatile uint8_t mouse_ring[64];
+extern volatile uint8_t mouse_ring_head;
+extern volatile uint8_t mouse_ring_tail;
 
 /* ============================================================
  * PORT I/O
@@ -246,6 +247,7 @@ extern int ham_get_compiled_count(void);
 extern int ham_get_bytecode_len(void);
 extern int ham_intern(const char* s);
 extern int ham_dbg_thdr, ham_dbg_fail, ham_dbg_tend, ham_dbg_skip;
+extern int ham_dbg_action, ham_dbg_scan_nz, ham_dbg_require, ham_dbg_guard;
 
 static void serial_print_int(int val) {
     char buf[16];
@@ -1672,18 +1674,34 @@ static void report_buffer_state(void) {
 static void cmd_timer(void) {
     char name[32];
     make_sig_name(name, sizeof(name), "t");
+
+    /* Who's in CPU0 before timer? */
+    int cpu0_eid = (herb_container_count(CN_CPU0) > 0) ? herb_container_entity(CN_CPU0, 0) : -1;
+    const char* before_name = (cpu0_eid >= 0) ? herb_entity_name(cpu0_eid) : "EMPTY";
+
     herb_create(name, ET_SIGNAL, CN_TIMER_SIG);
     int ops = ham_run_ham(100);
     total_ops += ops;
 
-    herb_snprintf(last_action, sizeof(last_action),
-        "Timer signal %s -> %d ops", name, ops);
+    /* Who's in CPU0 after timer? */
+    int cpu0_eid2 = (herb_container_count(CN_CPU0) > 0) ? herb_container_entity(CN_CPU0, 0) : -1;
+    const char* after_name = (cpu0_eid2 >= 0) ? herb_entity_name(cpu0_eid2) : "EMPTY";
+
+    /* [TIMER] t3 ops=11 [server]->[client] */
     serial_print("[TIMER] ");
     serial_print(name);
     serial_print(" ops=");
     serial_print_int(ops);
-    serial_print("\n");
+    serial_print(" [");
+    serial_print(before_name);
+    serial_print("]->[");
+    serial_print(after_name);
+    serial_print("]\n");
+
     report_buffer_state();
+
+    herb_snprintf(last_action, sizeof(last_action),
+        "Timer signal %s -> %d ops", name, ops);
 }
 
 /* ============================================================
@@ -2956,6 +2974,28 @@ void kernel_main(void) {
     vga_print("  Program loaded\n");
     serial_print("  Program loaded\n");
 
+    /* DIAGNOSTIC: Check SPAWN_SIG vs SPAWN_STATE containers */
+    {
+        int n_sig = herb_container_count("proc.SPAWN_SIG");
+        int n_state = herb_container_count("spawn.SPAWN_STATE");
+        serial_print("  [DIAG] proc.SPAWN_SIG count=");
+        serial_print_int(n_sig);
+        serial_print(", spawn.SPAWN_STATE count=");
+        serial_print_int(n_state);
+        serial_print("\n");
+        /* Also check what index they resolve to */
+        extern int graph_find_container_by_name(int name_id);
+        int sig_id = ham_intern("proc.SPAWN_SIG");
+        int state_id = ham_intern("spawn.SPAWN_STATE");
+        int sig_cidx = graph_find_container_by_name(sig_id);
+        int state_cidx = graph_find_container_by_name(state_id);
+        serial_print("  [DIAG] SPAWN_SIG cidx=");
+        serial_print_int(sig_cidx);
+        serial_print(", SPAWN_STATE cidx=");
+        serial_print_int(state_cidx);
+        serial_print("\n");
+    }
+
     /* ---- Boot: resolve initial tensions ---- */
     vga_print("  Resolving initial tensions...\n");
     int boot_ops = ham_run_ham(100);
@@ -3187,69 +3227,75 @@ void kernel_main(void) {
             handle_key(volatile_key_scancode);
         }
 
-        /* ---- Mouse interrupt: assemble 3-byte packets ---- */
-        if (volatile_mouse_ready) {
-            volatile_mouse_ready = 0;
-            uint8_t byte = volatile_mouse_byte;
+        /* ---- Mouse ring buffer: drain all accumulated bytes ---- */
+        {
+            int mouse_packets_processed = 0;
+            while (mouse_ring_tail != mouse_ring_head) {
+                uint8_t byte = mouse_ring[mouse_ring_tail];
+                mouse_ring_tail = (mouse_ring_tail + 1) & 0x3F;
 
-            /* Byte 0 must have bit 3 set (always-1 in PS/2 protocol).
-             * If not, re-sync by waiting for a valid first byte. */
-            if (mouse_cycle == 0 && !(byte & 0x08)) {
-                /* Discard: not a valid first byte */
-            } else {
-                mouse_packet[mouse_cycle] = byte;
-                mouse_cycle++;
-                if (mouse_cycle >= 3) {
-                    mouse_cycle = 0;
-                    mouse_handle_packet();
+                /* Byte 0 must have bit 3 set (always-1 in PS/2 protocol).
+                 * If not, re-sync by waiting for a valid first byte. */
+                if (mouse_cycle == 0 && !(byte & 0x08)) {
+                    /* Discard: not a valid first byte */
+                } else {
+                    mouse_packet[mouse_cycle] = byte;
+                    mouse_cycle++;
+                    if (mouse_cycle >= 3) {
+                        mouse_cycle = 0;
+                        mouse_handle_packet();
+                        mouse_packets_processed++;
+                    }
+                }
+            }
 
+            if (mouse_packets_processed > 0) {
 #ifdef GRAPHICS_MODE
-                    /* Update cursor position for rendering */
-                    if (fb_active) {
-                        cursor_x = mouse_x;
-                        cursor_y = mouse_y;
-                    }
+                /* Update cursor position for rendering */
+                if (fb_active) {
+                    cursor_x = mouse_x;
+                    cursor_y = mouse_y;
+                }
 
-                    /* Update cursor entity position in HERB state */
+                /* Update cursor entity position in HERB state */
 #ifdef KERNEL_MODE
-                    if (cursor_eid >= 0) {
-                        herb_set_prop_int(cursor_eid, "x", mouse_x);
-                        herb_set_prop_int(cursor_eid, "y", mouse_y);
-                    }
+                if (cursor_eid >= 0) {
+                    herb_set_prop_int(cursor_eid, "x", mouse_x);
+                    herb_set_prop_int(cursor_eid, "y", mouse_y);
+                }
 #endif
 
-                    /* Handle left click (Session 54: all clicks → HERB) */
-                    if (mouse_left_clicked) {
-                        mouse_left_clicked = 0;
+                /* Handle left click (Session 54: all clicks → HERB) */
+                if (mouse_left_clicked) {
+                    mouse_left_clicked = 0;
 #ifdef KERNEL_MODE
-                        /* ALL clicks go to HERB — click_panel or click_select tensions decide */
-                        cmd_click(mouse_x, mouse_y);
+                    /* ALL clicks go to HERB — click_panel or click_select tensions decide */
+                    cmd_click(mouse_x, mouse_y);
 
-                        /* Check if HERB detected a panel click */
-                        if (input_ctl_eid >= 0) {
-                            int panel_click = (int)herb_entity_prop_int(input_ctl_eid, "panel_click", 0);
-                            if (panel_click) {
-                                herb_set_prop_int(input_ctl_eid, "panel_click", 0);
-                                /* C computes row (mechanism — requires division) */
-                                int row = (mouse_y - (GFX_TENS_Y + 22)) / GFX_TENS_ROW_H;
-                                if (row >= 0 && row < herb_tension_count()) {
-                                    selected_tension_idx = row;
-                                    cmd_tension_toggle();
-                                }
+                    /* Check if HERB detected a panel click */
+                    if (input_ctl_eid >= 0) {
+                        int panel_click = (int)herb_entity_prop_int(input_ctl_eid, "panel_click", 0);
+                        if (panel_click) {
+                            herb_set_prop_int(input_ctl_eid, "panel_click", 0);
+                            /* C computes row (mechanism — requires division) */
+                            int row = (mouse_y - (GFX_TENS_Y + 22)) / GFX_TENS_ROW_H;
+                            if (row >= 0 && row < herb_tension_count()) {
+                                selected_tension_idx = row;
+                                cmd_tension_toggle();
                             }
                         }
+                    }
 #endif
-                        draw_full();
-                    }
-
-                    /* Update cursor on screen (direct MMIO, no full redraw) */
-                    if (mouse_moved && fb_active) {
-                        mouse_moved = 0;
-                        fb_cursor_erase();
-                        fb_cursor_draw();
-                    }
-#endif /* GRAPHICS_MODE */
+                    draw_full();
                 }
+
+                /* Update cursor on screen (direct MMIO, no full redraw) */
+                if (mouse_moved && fb_active) {
+                    mouse_moved = 0;
+                    fb_cursor_erase();
+                    fb_cursor_draw();
+                }
+#endif /* GRAPHICS_MODE */
             }
         }
     }

@@ -90,7 +90,7 @@
           ],
           "emit": [
             {"move": "preempt", "entity": "proc", "to": "READY"},
-            {"set": "proc", "property": "time_slice", "value": 3}
+            {"set": "proc", "property": "time_slice", "value": 1}
           ]
         },
         {
@@ -360,7 +360,7 @@
           "name": "sync_ready",
           "priority": 5,
           "match": [
-            {"bind": "proc", "in": "READY", "select": "first"},
+            {"bind": "proc", "in": "READY", "select": "each"},
             {"bind": "surf", "in": {"scope": "proc", "container": "SURFACE"},
              "where": {"op": "!=", "left": {"prop": "state", "of": "surf"}, "right": 2}}
           ],
@@ -374,7 +374,7 @@
           "name": "sync_blocked",
           "priority": 5,
           "match": [
-            {"bind": "proc", "in": "BLOCKED", "select": "first"},
+            {"bind": "proc", "in": "BLOCKED", "select": "each"},
             {"bind": "surf", "in": {"scope": "proc", "container": "SURFACE"},
              "where": {"op": "!=", "left": {"prop": "state", "of": "surf"}, "right": 3}}
           ],
@@ -388,7 +388,7 @@
           "name": "sync_terminated",
           "priority": 5,
           "match": [
-            {"bind": "proc", "in": "TERMINATED", "select": "first"},
+            {"bind": "proc", "in": "TERMINATED", "select": "each"},
             {"bind": "surf", "in": {"scope": "proc", "container": "SURFACE"},
              "where": {"op": "!=", "left": {"prop": "state", "of": "surf"}, "right": 4}}
           ],
@@ -830,9 +830,9 @@
   "max_nesting_depth": 3,
   "entities": [
     {"name": "server", "type": "proc.Process", "in": "proc.READY",
-     "properties": {"priority": 8, "time_slice": 3, "msgs_received": 0, "selected": 0, "protected": 0}},
+     "properties": {"priority": 5, "time_slice": 1, "msgs_received": 0, "selected": 0, "protected": 0}},
     {"name": "client", "type": "proc.Process", "in": "proc.READY",
-     "properties": {"priority": 5, "time_slice": 3, "msgs_received": 0, "selected": 0, "protected": 0}},
+     "properties": {"priority": 5, "time_slice": 1, "msgs_received": 0, "selected": 0, "protected": 0}},
 
     {"name": "page0_s", "type": "mem.Page", "in": {"scope": "server", "container": "MEM_FREE"}},
     {"name": "page1_s", "type": "mem.Page", "in": {"scope": "server", "container": "MEM_FREE"}},

@@ -82,6 +82,13 @@ extern int intern(const char* s);
 extern const char* str_of(int id);
 extern void container_add(int ci, int ei);
 extern void container_remove(int ci, int ei);
+/* Phase 4b Part 2 */
+extern int graph_find_container_by_name(int name_id);
+extern int graph_find_entity_by_name(int name_id);
+extern int get_scoped_container(int entity_idx, int scope_name_id);
+/* try_move: deferred — Discovery 48 (GCC tail-call interaction, same pattern as Discovery 47) */
+extern int do_channel_send(int ch_idx, int entity_idx);
+extern int do_channel_receive(int ch_idx, int entity_idx, int to_container_idx);
 #else
 static int intern(const char* s) {
     for (int i = 0; i < g_string_count; i++) {
@@ -482,6 +489,7 @@ Graph g_graph;
  * GRAPH OPERATIONS
  * ============================================================ */
 
+#ifndef HERB_BINARY_ONLY
 static int graph_find_container_by_name(int name_id) {
     for (int i = 0; i < g_graph.container_count; i++) {
         if (g_graph.containers[i].name_id == name_id) return i;
@@ -495,6 +503,7 @@ static int graph_find_entity_by_name(int name_id) {
     }
     return -1;
 }
+#endif
 
 static int graph_find_move_type_by_name(int name_id) {
     for (int i = 0; i < g_graph.move_type_count; i++) {
@@ -561,6 +570,7 @@ static void entity_set_prop(int ei, int prop_id, PropVal val) {
 }
 #endif
 
+#ifndef HERB_BINARY_ONLY
 /* Get scoped container for an entity by scope name */
 static int get_scoped_container(int entity_idx, int scope_name_id) {
     if (entity_idx < 0 || entity_idx >= g_graph.entity_count) return -1;
@@ -570,6 +580,7 @@ static int get_scoped_container(int entity_idx, int scope_name_id) {
     }
     return -1;
 }
+#endif
 
 /* Get scope templates for an entity type */
 static int get_type_scope_idx(int type_name_id) {
@@ -725,6 +736,7 @@ static int try_move(int mt_idx, int entity_idx, int to_container_idx) {
     return 1;
 }
 
+#ifndef HERB_BINARY_ONLY
 /* Channel send: move entity from sender's scope to channel buffer */
 static int do_channel_send(int ch_idx, int entity_idx) {
     Channel* ch = &g_graph.channels[ch_idx];
@@ -772,6 +784,7 @@ static int do_channel_receive(int ch_idx, int entity_idx, int to_container_idx) 
     g_graph.op_count++;
     return 1;
 }
+#endif /* do_channel_send, do_channel_receive guard */
 
 #ifndef HERB_BINARY_ONLY
 /* Quantity transfer */
@@ -3886,6 +3899,10 @@ static int ham_compile_tension(Tension* t, uint8_t* buf, int* pos,
  * Warns on serial if any tension is skipped.
  * ============================================================ */
 
+#ifdef KERNEL_MODE
+extern void serial_print(const char* s);
+#endif
+
 int ham_compile_all(uint8_t* buf, int buf_size, int* out_count) {
     ham_init_op_ids();
 
@@ -3907,10 +3924,50 @@ int ham_compile_all(uint8_t* buf, int buf_size, int* out_count) {
         Tension* t = &g_graph.tensions[order[i]];
         if (!ham_tension_compilable(t)) continue;
 
+#ifdef KERNEL_MODE
+        /* DIAGNOSTIC: Print spawn tension container indices */
+        {
+            const char* tname = str_of(t->name_id);
+            if (tname[0] == 's' && tname[1] == 'p' && tname[2] == 'a') {
+                serial_print("  [HAM] Compiling ");
+                serial_print(tname);
+                for (int j = 0; j < t->match_count; j++) {
+                    MatchClause* mc = &t->matches[j];
+                    if (mc->kind == MC_ENTITY_IN && mc->container_idx >= 0) {
+                        serial_print(" mc[");
+                        char nb[8]; herb_snprintf(nb, sizeof(nb), "%d", j);
+                        serial_print(nb);
+                        serial_print("]=cidx ");
+                        herb_snprintf(nb, sizeof(nb), "%d", mc->container_idx);
+                        serial_print(nb);
+                        serial_print("(");
+                        serial_print(str_of(g_graph.containers[mc->container_idx].name_id));
+                        serial_print(")");
+                    }
+                }
+                serial_print("\n");
+            }
+        }
+#endif
+
         int save_pos = pos;
+#ifdef KERNEL_MODE
+        serial_print("  [COMP] ");
+        serial_print(str_of(t->name_id));
+#endif
         if (ham_compile_tension(t, buf, &pos, buf_size)) {
             compiled++;
+#ifdef KERNEL_MODE
+            {
+                char db[16];
+                herb_snprintf(db, sizeof(db), " OK len=%d\n", pos - save_pos);
+                serial_print(db);
+            }
+#endif
         } else {
+#ifdef KERNEL_MODE
+            serial_print(" FAIL\n");
+#endif
             pos = save_pos; /* Rollback on failure */
         }
     }

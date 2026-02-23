@@ -105,24 +105,23 @@ kernel.pe: $(OBJS)
 
 kernel.bin: kernel.pe
 	$(OBJCOPY) -O binary -j .text -j .data -j .rdata $< $@
-	@echo "Kernel binary: $$(wc -c < kernel.bin) bytes"
+	@$(PYTHON) -c "import os; print('Kernel binary: ' + str(os.path.getsize('kernel.bin')) + ' bytes')"
 
 # ---- Step 4: Assemble bootloader (needs kernel size) ----
 boot.bin: boot.asm kernel.bin
-	$(eval KSECTORS := $(shell $(PYTHON) -c "import math; print(math.ceil($$(wc -c < kernel.bin) / 512))"))
+	$(eval KSECTORS := $(shell $(PYTHON) -c "import math,os; print(math.ceil(os.path.getsize('kernel.bin') / 512))"))
 	@echo "Kernel sectors: $(KSECTORS)"
 	$(NASM) -f bin -DKERNEL_SECTORS=$(KSECTORS) $< -o $@
 
 # ---- Step 5: Assemble final disk image ----
 herb_os.img: boot.bin kernel.bin
-	cat boot.bin kernel.bin > $@
-	@# Pad to 512-byte boundary
+	$(PYTHON) -c "open('$@','wb').write(open('boot.bin','rb').read()+open('kernel.bin','rb').read())"
 	$(PYTHON) -c "import os; s=os.path.getsize('$@'); pad=((s+511)//512)*512-s; open('$@','ab').write(b'\x00'*pad) if pad else None"
 	@echo ""
 	@echo "=== HERB OS Image Built ==="
 	@echo "  Program:  $(PROGRAM)"
 	@echo "  Graphics: $(GRAPHICS)"
-	@echo "  File: $@  ($$(wc -c < $@) bytes)"
+	@$(PYTHON) -c "import os; print('  File: $@  (' + str(os.path.getsize('$@')) + ' bytes)')"
 	@echo "  Run:  make run"
 
 # ---- Run in QEMU (graphics mode, default) ----
@@ -144,11 +143,8 @@ test-bare-metal:
 
 # ---- Clean ----
 clean:
-	rm -f *.o kernel.pe kernel.bin boot.bin herb_os.img program_data.h process_programs.h
-	rm -f interactive_kernel.herb interactive_os.herb
-	rm -f producer.herb consumer.herb worker.herb beacon.herb
-	rm -f schedule_priority.herb schedule_roundrobin.herb shell.herb
-	rm -f test_serial.log
+	$(PYTHON) -c "import glob,os;\
+	[os.remove(f) for p in ['*.o','kernel.pe','kernel.bin','boot.bin','herb_os.img','program_data.h','process_programs.h','interactive_kernel.herb','interactive_os.herb','producer.herb','consumer.herb','worker.herb','beacon.herb','schedule_priority.herb','schedule_roundrobin.herb','shell.herb','test_serial.log'] for f in glob.glob(p) if os.path.isfile(f)]"
 
 # ---- Help ----
 help:

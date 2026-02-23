@@ -1391,12 +1391,19 @@ def run_tests(image_path):
                              post_cpu0 == 1 and post_ready == pre_ready - 1,
                              f"ready {pre_ready}->{post_ready}, cpu0 {pre_cpu0}->{post_cpu0}")
 
-                # Verify timer_tick: with one TIMER_SIG, timer_tick fires
-                # once, decrementing time_slice by 1
+                # Verify timer_tick: with one TIMER_SIG, timer_tick fires.
+                # If READY has entities, full preemption cycle completes:
+                # ts-=1 → preempt (ts reset to 1) → schedule. So post_ts=1.
+                # If no READY entities, only decrement: post_ts = pre_ts - 1.
                 if post_cpu0 > 0 and pre_ts > 0:
-                    t.check("HAM timer_tick: time_slice decremented",
-                             post_ts == pre_ts - 1,
-                             f"ts {pre_ts}->{post_ts}")
+                    if pre_ready > 0:
+                        t.check("HAM timer_tick: full preemption cycle",
+                                 post_ts == 1,
+                                 f"ts {pre_ts}->{post_ts}")
+                    else:
+                        t.check("HAM timer_tick: time_slice decremented",
+                                 post_ts == pre_ts - 1,
+                                 f"ts {pre_ts}->{post_ts}")
 
             # ---- TEST: HAM Idempotent (second run) ----
             print("\n--- Test: HAM Idempotent ---")
