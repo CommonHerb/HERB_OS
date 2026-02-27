@@ -36,16 +36,17 @@
 [bits 64]
 default rel
 
-; C bridge function imports
+; C bridge function imports (Category B/C — ported to assembly in Phase 4d)
 extern ham_scan
 extern ham_eprop
 extern ham_ecnt
 extern ham_entity_loc
-extern ham_try_move
 extern ham_eset
-extern ham_resolve_scope
-extern ham_try_channel_send
-extern ham_try_channel_recv
+; Category A — rewired to assembly functions directly (Phase 4d)
+extern try_move
+extern get_scoped_container
+extern do_channel_send
+extern do_channel_receive
 
 ; Export entry point and debug counters
 global ham_run
@@ -398,7 +399,7 @@ ham_op_tend:
     mov  ecx, [r8 + 4]             ; mt_idx
     mov  edx, [r8 + 8]             ; entity_idx
     mov  r8d, [r8 + 16]            ; to_container (from field3, low 32 bits)
-    call ham_try_move
+    call try_move
 
     add  rsp, 32
     pop  r9
@@ -445,7 +446,7 @@ ham_op_tend:
 
     mov  ecx, [r8 + 4]             ; channel_idx
     mov  edx, [r8 + 8]             ; entity_idx
-    call ham_try_channel_send
+    call do_channel_send
 
     add  rsp, 32
     pop  r9
@@ -469,7 +470,7 @@ ham_op_tend:
     mov  ecx, [r8 + 4]             ; channel_idx
     mov  edx, [r8 + 8]             ; entity_idx
     mov  r8d, [r8 + 16]            ; to_container_idx (from field3, low 32 bits)
-    call ham_try_channel_recv
+    call do_channel_receive
 
     add  rsp, 32
     pop  r9
@@ -663,7 +664,7 @@ ham_op_scan_scoped:
     ; Call ham_resolve_scope(entity_idx, scope_name_id)
     ; RCX = entity_idx (set above), RDX = scope_name_id
     mov  edx, r10d
-    call ham_resolve_scope
+    call get_scoped_container
 
     ; EAX = container_idx (-1 if not found)
     test eax, eax
@@ -1445,7 +1446,7 @@ ham_op_emov_s:
     ; Call ham_resolve_scope(owner_entity, scope_name_id)
     ; RCX = owner_entity (set above), RDX = scope_name_id
     mov  edx, r11d
-    call ham_resolve_scope
+    call get_scoped_container
 
     pop  rsi                        ; restore PC
     pop  r10                        ; restore mt_idx
@@ -1638,7 +1639,7 @@ ham_op_erecv_s:
 
     ; Call ham_resolve_scope(owner_entity, scope_name_id)
     mov  edx, r11d
-    call ham_resolve_scope
+    call get_scoped_container
 
     pop  rsi                        ; restore PC
     pop  r10                        ; restore channel_idx

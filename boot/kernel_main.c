@@ -245,7 +245,7 @@ extern int ham_run_ham(int max_steps);
 extern void ham_mark_dirty(void);
 extern int ham_get_compiled_count(void);
 extern int ham_get_bytecode_len(void);
-extern int ham_intern(const char* s);
+extern int intern(const char* s);
 extern int ham_dbg_thdr, ham_dbg_fail, ham_dbg_tend, ham_dbg_skip;
 extern int ham_dbg_action, ham_dbg_scan_nz, ham_dbg_require, ham_dbg_guard;
 
@@ -2985,8 +2985,8 @@ void kernel_main(void) {
         serial_print("\n");
         /* Also check what index they resolve to */
         extern int graph_find_container_by_name(int name_id);
-        int sig_id = ham_intern("proc.SPAWN_SIG");
-        int state_id = ham_intern("spawn.SPAWN_STATE");
+        int sig_id = intern("proc.SPAWN_SIG");
+        int state_id = intern("spawn.SPAWN_STATE");
         int sig_cidx = graph_find_container_by_name(sig_id);
         int state_cidx = graph_find_container_by_name(state_id);
         serial_print("  [DIAG] SPAWN_SIG cidx=");
