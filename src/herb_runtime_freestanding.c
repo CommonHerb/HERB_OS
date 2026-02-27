@@ -263,10 +263,10 @@ typedef struct Expr {
     };
 } Expr;
 
-static Expr g_expr_pool[MAX_EXPR_POOL];
-static int g_expr_count = 0;
+Expr g_expr_pool[MAX_EXPR_POOL];
+int g_expr_count = 0;
 
-static Expr* alloc_expr(void) {
+Expr* alloc_expr(void) {
     if (g_expr_count >= MAX_EXPR_POOL) {
         herb_error(HERB_ERR_FATAL, "expr pool full");
         return HERB_NULL;
@@ -553,6 +553,7 @@ static void container_remove(int ci, int ei) {
 }
 #endif /* container_add/remove guard */
 
+#ifndef HERB_BINARY_ONLY
 static PropVal entity_get_prop(int ei, int prop_id) {
     Entity* e = &g_graph.entities[ei];
     for (int i = 0; i < e->prop_count; i++) {
@@ -560,6 +561,7 @@ static PropVal entity_get_prop(int ei, int prop_id) {
     }
     return pv_none();
 }
+#endif
 
 #ifndef HERB_BINARY_ONLY
 static void entity_set_prop(int ei, int prop_id, PropVal val) {
@@ -600,8 +602,9 @@ static int get_type_scope_idx(int type_name_id) {
 }
 #endif
 
+#ifndef HERB_BINARY_ONLY
 /* Create entity with auto-scoped container creation */
-static int create_entity(int type_name_id, int name_id, int container_idx) {
+int create_entity(int type_name_id, int name_id, int container_idx) {
     int ei = g_graph.entity_count++;
     Entity* e = &g_graph.entities[ei];
     e->id = ei;
@@ -643,6 +646,9 @@ static int create_entity(int type_name_id, int name_id, int container_idx) {
 
     return ei;
 }
+#else
+extern int create_entity(int type_name_id, int name_id, int container_idx);
+#endif
 
 #ifndef HERB_BINARY_ONLY
 /* Check if a property is conserved (in a pool) */
@@ -654,6 +660,7 @@ static int is_property_pooled(int prop_id) {
 }
 #endif
 
+#ifndef HERB_BINARY_ONLY
 /* Regular move: returns 1 if executed */
 static int try_move(int mt_idx, int entity_idx, int to_container_idx) {
     MoveType* mt = &g_graph.move_types[mt_idx];
@@ -747,6 +754,7 @@ static int try_move(int mt_idx, int entity_idx, int to_container_idx) {
     g_graph.op_count++;
     return 1;
 }
+#endif
 
 #ifndef HERB_BINARY_ONLY
 /* Channel send: move entity from sender's scope to channel buffer */
@@ -2807,6 +2815,7 @@ int herb_load(const char* buf, herb_size_t len) {
 #endif
 }
 
+#ifndef HERB_BINARY_ONLY
 /* Create a runtime entity (for delivering signals).
  * Returns entity index, or -1 on error. */
 int herb_create(const char* name, const char* type, const char* container) {
@@ -2814,6 +2823,7 @@ int herb_create(const char* name, const char* type, const char* container) {
     if (ci < 0) return -1;
     return create_entity(intern(type), intern(name), ci);
 }
+#endif
 
 #ifndef HERB_BINARY_ONLY
 /* Set an integer property on an entity.
@@ -2956,6 +2966,7 @@ void ham_mark_dirty(void);
 static inline void ham_mark_dirty(void) {}
 #endif
 
+#ifndef HERB_BINARY_ONLY
 /* ============================================================
  * RUNTIME TENSION CREATION API
  *
@@ -3132,6 +3143,7 @@ int herb_remove_tension_by_name(const char* name) {
     if (removed > 0) ham_mark_dirty();  /* Phase 3c: recompile HAM bytecode */
     return removed;
 }
+#endif /* Phase 4f tension creation + expr + remove guard */
 
 /* ============================================================
  * RUNTIME CONTAINER CREATION API
@@ -4029,28 +4041,16 @@ int ham_compile_all(uint8_t* buf, int buf_size, int* out_count) {
  * ============================================================ */
 
 #define HAM_BYTECODE_SIZE 8192
-static uint8_t g_ham_bytecode[HAM_BYTECODE_SIZE];
-static int g_ham_bytecode_len = 0;
-static int g_ham_compiled_count = 0;
-static int g_ham_dirty = 1;  /* start dirty — must compile before first run */
+uint8_t g_ham_bytecode[HAM_BYTECODE_SIZE];
+int g_ham_bytecode_len = 0;
+int g_ham_compiled_count = 0;
+int g_ham_dirty = 1;  /* start dirty — must compile before first run */
 
-void ham_mark_dirty(void) { g_ham_dirty = 1; }
-
-static void ham_ensure_compiled(void) {
-    if (!g_ham_dirty) return;
-    g_ham_bytecode_len = ham_compile_all(g_ham_bytecode, HAM_BYTECODE_SIZE, &g_ham_compiled_count);
-    g_ham_dirty = 0;
-}
-
-/* ham_run is in herb_ham.asm */
-extern int ham_run(uint8_t* bytecode_ptr, int bytecode_len);
-
-int ham_run_ham(int max_steps) {
-    ham_ensure_compiled();
-    if (g_ham_bytecode_len <= 0) return 0;  /* no bytecode = no ops */
-    return ham_run(g_ham_bytecode, g_ham_bytecode_len);
-}
-
-int ham_get_compiled_count(void) { return g_ham_compiled_count; }
-int ham_get_bytecode_len(void) { return g_ham_bytecode_len; }
+/* Phase 4f: ham_mark_dirty, ham_ensure_compiled, ham_run_ham,
+ * ham_get_compiled_count, ham_get_bytecode_len now in herb_graph.asm */
+extern void ham_mark_dirty(void);
+extern void ham_ensure_compiled(void);
+extern int ham_run_ham(int max_steps);
+extern int ham_get_compiled_count(void);
+extern int ham_get_bytecode_len(void);
 #endif /* HERB_BINARY_ONLY */
