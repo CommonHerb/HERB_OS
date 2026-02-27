@@ -11,6 +11,14 @@
 ; Phase 4d: HAM bridge functions ported from C to assembly:
 ;   ham_ecnt, ham_entity_loc, ham_scan, ham_eprop, ham_eset
 ;
+; Phase 4f: Tension API + Entity Creation + HAM Glue:
+;   ham_mark_dirty, ham_ensure_compiled, ham_run_ham, ham_get_compiled_count, ham_get_bytecode_len
+;   create_entity, herb_create
+;   herb_remove_owner_tensions, herb_remove_tension_by_name
+;   herb_tension_create, herb_tension_match_in, herb_tension_match_in_where
+;   herb_tension_emit_set, herb_tension_emit_move
+;   herb_expr_int, herb_expr_prop, herb_expr_binary
+;
 ; Register convention: MS x64 ABI
 ;   Args:    RCX, RDX, R8, R9 (integer/pointer)
 ;   Return:  RAX (integer/pointer)
@@ -31,11 +39,22 @@ extern herb_strcmp
 extern herb_strncpy
 extern herb_error
 extern herb_snprintf
+extern herb_memset      ; Phase 4f
+extern herb_memcpy      ; Phase 4f
+extern ham_compile_all  ; Phase 4f — int ham_compile_all(uint8_t* buf, int buf_size, int* out_count)
+extern ham_run          ; Phase 4f — int ham_run(uint8_t* bytecode_ptr, int bytecode_len)
+extern alloc_expr       ; Phase 4f — Expr* alloc_expr(void)
 
 ; External C data we access
 extern g_strings        ; char[2048][128]
 extern g_string_count   ; int
 extern g_graph          ; Graph (720568 bytes)
+extern g_expr_pool      ; Expr[4096]
+extern g_expr_count     ; int
+extern g_ham_bytecode   ; uint8_t[8192]
+extern g_ham_bytecode_len   ; int
+extern g_ham_compiled_count ; int
+extern g_ham_dirty      ; int
 
 ; Export our functions — Phase 4b Part 1
 global intern
@@ -82,6 +101,28 @@ global herb_set_prop_int
 global herb_create_container
 global herb_state
 global is_property_pooled
+; Phase 4f — HAM runtime glue
+global ham_mark_dirty
+global ham_ensure_compiled
+global ham_run_ham
+global ham_get_compiled_count
+global ham_get_bytecode_len
+; Phase 4f — Entity creation
+global create_entity
+global herb_create
+; Phase 4f — Tension remove functions
+global herb_remove_owner_tensions
+global herb_remove_tension_by_name
+; Phase 4f — Tension creation API
+global herb_tension_create
+global herb_tension_match_in
+global herb_tension_match_in_where
+global herb_tension_emit_set
+global herb_tension_emit_move
+; Phase 4f — Expression builders
+global herb_expr_int
+global herb_expr_prop
+global herb_expr_binary
 
 section .rdata
     str_question:   db "?", 0
@@ -98,6 +139,9 @@ section .rdata
     str_loc_mid:    db '": {"location": "', 0
     str_prop_pre:   db ', "', 0
     str_prop_mid:   db '": ', 0
+    ; Phase 4f — format strings
+    str_scope_fmt:  db "%s::%s", 0      ; for create_entity scoped container names
+    str_expr_full:  db "expr pool full", 0
 
 section .text
 
@@ -2302,4 +2346,1013 @@ herb_state:
     jmp     .hs_es_loop
 .hs_es_done:
     pop     r15
+    ret
+
+; ============================================================
+; PHASE 4f: HAM RUNTIME GLUE
+; ============================================================
+
+; ============================================================
+; ham_mark_dirty() -> void
+; Sets g_ham_dirty = 1
+; ============================================================
+ham_mark_dirty:
+    lea     rax, [g_ham_dirty]
+    mov     dword [rax], 1
+    ret
+
+; ============================================================
+; ham_ensure_compiled() -> void
+; If g_ham_dirty, call ham_compile_all(g_ham_bytecode, HAM_BYTECODE_SIZE, &g_ham_compiled_count)
+; Then clear g_ham_dirty.
+; ============================================================
+ham_ensure_compiled:
+    lea     rax, [g_ham_dirty]
+    cmp     dword [rax], 0
+    je      .hec_done
+    ; dirty — need to compile
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 32                ; shadow space
+    lea     rcx, [g_ham_bytecode]
+    mov     edx, HAM_BYTECODE_SIZE
+    lea     r8, [g_ham_compiled_count]
+    call    ham_compile_all
+    lea     rcx, [g_ham_bytecode_len]
+    mov     [rcx], eax             ; g_ham_bytecode_len = result
+    lea     rcx, [g_ham_dirty]
+    mov     dword [rcx], 0         ; g_ham_dirty = 0
+    add     rsp, 32
+    pop     rbp
+.hec_done:
+    ret
+
+; ============================================================
+; ham_run_ham(int max_steps) -> int ops
+; RCX = max_steps (unused — ham_run doesn't take it)
+; Ensure compiled, then run if bytecode_len > 0
+; ============================================================
+ham_run_ham:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 32                ; shadow space
+    call    ham_ensure_compiled
+    lea     rax, [g_ham_bytecode_len]
+    mov     edx, [rax]
+    test    edx, edx
+    jle     .hrh_zero
+    lea     rcx, [g_ham_bytecode]
+    ; EDX already has bytecode_len
+    call    ham_run
+    jmp     .hrh_done
+.hrh_zero:
+    xor     eax, eax
+.hrh_done:
+    add     rsp, 32
+    pop     rbp
+    ret
+
+; ============================================================
+; ham_get_compiled_count() -> int
+; ============================================================
+ham_get_compiled_count:
+    lea     rax, [g_ham_compiled_count]
+    mov     eax, [rax]
+    ret
+
+; ============================================================
+; ham_get_bytecode_len() -> int
+; ============================================================
+ham_get_bytecode_len:
+    lea     rax, [g_ham_bytecode_len]
+    mov     eax, [rax]
+    ret
+
+; ============================================================
+; PHASE 4f: ENTITY CREATION
+; ============================================================
+
+; ============================================================
+; create_entity(int type_name_id, int name_id, int container_idx) -> int ei
+;
+; RCX = type_name_id, RDX = name_id, R8D = container_idx
+; Returns EAX = entity index
+;
+; Allocates entity, sets fields, calls container_add if container >= 0,
+; then auto-creates scoped containers via get_type_scope_idx + snprintf loop.
+;
+; Stack: 296 bytes (32 shadow + 8 arg5 + 256 cname buffer)
+; Callee-saved: RBX=ei, ESI=type_name_id→ci, EDI=name_id→st_ptr,
+;               R12=container_idx→template_base, R13D=count, R14=ent_name, R15D=loop_i
+; ============================================================
+create_entity:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 296           ; 32 shadow + 8 (5th arg) + 256 (cname) = 296
+
+    ; Save args to callee-saved regs
+    mov     esi, ecx           ; ESI = type_name_id
+    mov     edi, edx           ; EDI = name_id
+    mov     r12d, r8d          ; R12D = container_idx
+
+    ; ei = g_graph.entity_count++
+    lea     rax, [g_graph + GRAPH_ENTITY_COUNT]
+    mov     ebx, [rax]         ; EBX = ei
+    lea     ecx, [ebx + 1]
+    mov     [rax], ecx         ; entity_count++
+
+    ; Entity setup: e = &g_graph.entities[ei]
+    movsxd  rax, ebx
+    imul    rax, SIZEOF_ENTITY
+    lea     r13, [g_graph + rax]  ; R13 = &entities[ei] (temp use)
+    mov     [r13 + ENT_ID], ebx
+    mov     [r13 + ENT_TYPE_ID], esi
+    mov     [r13 + ENT_NAME_ID], edi
+    mov     dword [r13 + ENT_PROP_COUNT], 0
+
+    ; g_graph.entity_location[ei] = container_idx
+    movsxd  rcx, ebx
+    lea     rax, [g_graph + GRAPH_ENTITY_LOCATION]
+    mov     [rax + rcx*4], r12d
+
+    ; g_graph.entity_scope_count[ei] = 0
+    lea     rax, [g_graph + GRAPH_ENTITY_SCOPE_COUNT]
+    mov     dword [rax + rcx*4], 0
+
+    ; if (container_idx >= 0) container_add(container_idx, ei)
+    test    r12d, r12d
+    js      .ce_no_add
+    mov     ecx, r12d
+    mov     edx, ebx
+    call    container_add
+.ce_no_add:
+
+    ; tsi = get_type_scope_idx(type_name_id)
+    mov     ecx, esi
+    call    get_type_scope_idx
+    test    eax, eax
+    js      .ce_done           ; tsi < 0, no scoped containers
+
+    ; Compute template base: &g_graph.type_scope_templates[tsi][0]
+    ; Each type has 16 ScopeTemplates * 12 bytes = 192 bytes
+    movsxd  rcx, eax
+    imul    rcx, 192
+    lea     r12, [g_graph + GRAPH_TYPE_SCOPE_TEMPLATES]
+    add     r12, rcx           ; R12 = template base
+
+    ; count = g_graph.type_scope_counts[tsi]
+    movsxd  rcx, eax
+    lea     rdx, [g_graph + GRAPH_TYPE_SCOPE_COUNTS]
+    mov     r13d, [rdx + rcx*4] ; R13D = count
+
+    ; ent_name = str_of(name_id)
+    mov     ecx, edi
+    call    str_of
+    mov     r14, rax           ; R14 = ent_name
+
+    ; Loop: i = 0..count-1
+    xor     r15d, r15d
+
+.ce_scope_loop:
+    cmp     r15d, r13d
+    jge     .ce_done
+
+    ; st = &template_base[i] = R12 + i * SIZEOF_SCOPETEMPLATE
+    movsxd  rax, r15d
+    imul    rax, SIZEOF_SCOPETEMPLATE
+    lea     rdi, [r12 + rax]   ; RDI = st pointer (callee-saved)
+
+    ; str_of(st->name_id) for scope name
+    mov     ecx, [rdi + ST_NAME_ID]
+    call    str_of             ; RAX = scope name string
+
+    ; herb_snprintf(cname, 256, "%s::%s", ent_name, scope_name)
+    mov     [rsp + 32], rax    ; 5th arg = scope name
+    lea     rcx, [rsp + 40]    ; buf = cname (at rsp+40)
+    mov     edx, 256
+    lea     r8, [str_scope_fmt]
+    mov     r9, r14            ; ent_name
+    call    herb_snprintf
+
+    ; ci = g_graph.container_count++
+    lea     rax, [g_graph + GRAPH_CONTAINER_COUNT]
+    mov     esi, [rax]         ; ESI = ci (callee-saved)
+    lea     ecx, [esi + 1]
+    mov     [rax], ecx
+
+    ; intern(cname) → container name_id
+    lea     rcx, [rsp + 40]
+    call    intern             ; EAX = interned name_id
+
+    ; c = &g_graph.containers[ci]
+    movsxd  rdx, esi
+    imul    rdx, SIZEOF_CONTAINER
+    lea     rcx, [g_graph + GRAPH_CONTAINERS + rdx]
+
+    ; Set container fields
+    mov     [rcx + CNT_ID], esi
+    mov     [rcx + CNT_NAME_ID], eax       ; intern result
+    mov     eax, [rdi + ST_KIND]           ; st->kind
+    mov     [rcx + CNT_KIND], eax
+    mov     eax, [rdi + ST_ENTITY_TYPE]    ; st->entity_type
+    mov     [rcx + CNT_ENTITY_TYPE], eax
+    mov     dword [rcx + CNT_ENTITY_COUNT], 0
+    mov     [rcx + CNT_OWNER], ebx         ; ei
+
+    ; Track scope: si = entity_scope_count[ei]++
+    movsxd  rax, ebx
+    lea     rdx, [g_graph + GRAPH_ENTITY_SCOPE_COUNT]
+    mov     ecx, [rdx + rax*4]            ; ECX = si
+    lea     r8d, [ecx + 1]
+    mov     [rdx + rax*4], r8d            ; scope_count++
+
+    ; entity_scope_names[ei][si] = st->name_id
+    movsxd  r8, ebx
+    shl     r8, 6                          ; ei * 64 (16 ints * 4 bytes)
+    lea     rdx, [g_graph + GRAPH_ENTITY_SCOPE_NAMES]
+    add     rdx, r8
+    movsxd  r8, ecx
+    mov     eax, [rdi + ST_NAME_ID]
+    mov     [rdx + r8*4], eax
+
+    ; entity_scope_cids[ei][si] = ci
+    movsxd  r8, ebx
+    shl     r8, 6
+    lea     rdx, [g_graph + GRAPH_ENTITY_SCOPE_CIDS]
+    add     rdx, r8
+    movsxd  r8, ecx
+    mov     [rdx + r8*4], esi
+
+    inc     r15d
+    jmp     .ce_scope_loop
+
+.ce_done:
+    mov     eax, ebx           ; return ei
+    add     rsp, 296
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+; ============================================================
+; herb_create(const char* name, const char* type, const char* container) -> int
+;
+; RCX = name, RDX = type, R8 = container
+; Returns EAX = entity index, or -1 on error
+; ============================================================
+herb_create:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    sub     rsp, 32            ; shadow space
+
+    mov     rsi, rcx           ; RSI = name
+    mov     rdi, rdx           ; RDI = type
+    mov     r12, r8            ; R12 = container
+
+    ; intern(container) → find container by name
+    mov     rcx, r12
+    call    intern
+    mov     ecx, eax
+    call    graph_find_container_by_name
+    test    eax, eax
+    js      .hcr_fail
+    mov     ebx, eax           ; EBX = ci
+
+    ; intern(type)
+    mov     rcx, rdi
+    call    intern
+    mov     r12d, eax          ; R12D = interned type
+
+    ; intern(name)
+    mov     rcx, rsi
+    call    intern
+
+    ; create_entity(intern_type, intern_name, ci)
+    mov     ecx, r12d          ; type_name_id
+    mov     edx, eax           ; name_id
+    mov     r8d, ebx           ; container_idx
+    call    create_entity
+    jmp     .hcr_done
+
+.hcr_fail:
+    mov     eax, -1
+.hcr_done:
+    add     rsp, 32
+    pop     r12
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+; ============================================================
+; PHASE 4f: TENSION REMOVE FUNCTIONS
+; ============================================================
+
+; ============================================================
+; herb_remove_owner_tensions(int owner_entity) -> int removed
+;
+; RCX = owner_entity
+; Compact loop: skip tensions with matching owner, copy rest with herb_memcpy.
+; Returns count removed. Calls ham_mark_dirty if any removed.
+; ============================================================
+herb_remove_owner_tensions:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    push    r13
+    sub     rsp, 40            ; 32 shadow + 8 align
+
+    mov     ebx, ecx           ; EBX = owner_entity
+    xor     esi, esi           ; ESI = write = 0
+    xor     edi, edi           ; EDI = read = 0
+    xor     r12d, r12d         ; R12D = removed = 0
+    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    mov     r13d, [rax]        ; R13D = tension_count
+
+.hrot_loop:
+    cmp     edi, r13d
+    jge     .hrot_done
+
+    ; Check tensions[read].owner == owner_entity
+    movsxd  rax, edi
+    imul    rax, SIZEOF_TENSION
+    cmp     dword [g_graph + GRAPH_TENSIONS + rax + TEN_OWNER], ebx
+    jne     .hrot_keep
+
+    ; Match — skip
+    inc     r12d
+    jmp     .hrot_next
+
+.hrot_keep:
+    cmp     esi, edi
+    je      .hrot_no_copy
+
+    ; memcpy(&tensions[write], &tensions[read], SIZEOF_TENSION)
+    movsxd  rax, esi
+    imul    rax, SIZEOF_TENSION
+    lea     rcx, [g_graph + GRAPH_TENSIONS + rax]
+    movsxd  rax, edi
+    imul    rax, SIZEOF_TENSION
+    lea     rdx, [g_graph + GRAPH_TENSIONS + rax]
+    mov     r8, SIZEOF_TENSION
+    call    herb_memcpy
+
+.hrot_no_copy:
+    inc     esi
+
+.hrot_next:
+    inc     edi
+    jmp     .hrot_loop
+
+.hrot_done:
+    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    mov     [rax], esi
+    test    r12d, r12d
+    jz      .hrot_return
+    call    ham_mark_dirty
+
+.hrot_return:
+    mov     eax, r12d
+    add     rsp, 40
+    pop     r13
+    pop     r12
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+; ============================================================
+; herb_remove_tension_by_name(const char* name) -> int (0 or 1)
+;
+; RCX = name string
+; Same compact loop, matches by name_id. Removes first match only.
+; ============================================================
+herb_remove_tension_by_name:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    push    r13
+    sub     rsp, 40
+
+    ; intern(name) → name_id
+    call    intern
+    mov     ebx, eax           ; EBX = name_id
+    xor     esi, esi           ; ESI = write = 0
+    xor     edi, edi           ; EDI = read = 0
+    xor     r12d, r12d         ; R12D = removed = 0
+    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    mov     r13d, [rax]        ; R13D = tension_count
+
+.hrtn_loop:
+    cmp     edi, r13d
+    jge     .hrtn_done
+
+    movsxd  rax, edi
+    imul    rax, SIZEOF_TENSION
+    cmp     dword [g_graph + GRAPH_TENSIONS + rax + TEN_NAME_ID], ebx
+    jne     .hrtn_keep
+    test    r12d, r12d
+    jnz     .hrtn_keep         ; already removed one
+
+    ; First match — skip
+    mov     r12d, 1
+    jmp     .hrtn_next
+
+.hrtn_keep:
+    cmp     esi, edi
+    je      .hrtn_no_copy
+
+    movsxd  rax, esi
+    imul    rax, SIZEOF_TENSION
+    lea     rcx, [g_graph + GRAPH_TENSIONS + rax]
+    movsxd  rax, edi
+    imul    rax, SIZEOF_TENSION
+    lea     rdx, [g_graph + GRAPH_TENSIONS + rax]
+    mov     r8, SIZEOF_TENSION
+    call    herb_memcpy
+
+.hrtn_no_copy:
+    inc     esi
+
+.hrtn_next:
+    inc     edi
+    jmp     .hrtn_loop
+
+.hrtn_done:
+    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    mov     [rax], esi
+    test    r12d, r12d
+    jz      .hrtn_return
+    call    ham_mark_dirty
+
+.hrtn_return:
+    mov     eax, r12d
+    add     rsp, 40
+    pop     r13
+    pop     r12
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+; ============================================================
+; PHASE 4f: TENSION CREATION API
+; ============================================================
+
+; ============================================================
+; herb_tension_create(name, priority, owner_entity, run_container_name) -> int tidx
+;
+; RCX = name, EDX = priority, R8D = owner_entity, R9 = run_container_name
+; Returns tension index, or -1 if full.
+; ============================================================
+herb_tension_create:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 32
+
+    ; Save args
+    mov     rbx, rcx           ; RBX = name
+    mov     esi, edx           ; ESI = priority
+    mov     edi, r8d           ; EDI = owner_entity
+    mov     r12, r9            ; R12 = run_container_name
+
+    ; Check capacity
+    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    mov     r13d, [rax]        ; R13D = ti
+    cmp     r13d, MAX_TENSIONS
+    jge     .htc_fail
+    lea     ecx, [r13d + 1]
+    mov     [rax], ecx         ; tension_count++
+
+    ; t = &g_graph.tensions[ti]
+    movsxd  rax, r13d
+    imul    rax, SIZEOF_TENSION
+    lea     r14, [g_graph + GRAPH_TENSIONS + rax]  ; R14 = t
+
+    ; herb_memset(t, 0, sizeof(Tension))
+    mov     rcx, r14
+    xor     edx, edx
+    mov     r8, SIZEOF_TENSION
+    call    herb_memset
+
+    ; t->name_id = intern(name)
+    mov     rcx, rbx
+    call    intern
+    mov     [r14 + TEN_NAME_ID], eax
+
+    ; t->priority, enabled, owner
+    mov     [r14 + TEN_PRIORITY], esi
+    mov     dword [r14 + TEN_ENABLED], 1
+    mov     [r14 + TEN_OWNER], edi
+
+    ; Handle run_container_name
+    test    r12, r12
+    jz      .htc_no_run
+    cmp     byte [r12], 0
+    je      .htc_no_run
+    mov     rcx, r12
+    call    intern
+    mov     ecx, eax
+    call    graph_find_container_by_name
+    mov     [r14 + TEN_OWNER_RUN_CNT], eax
+    jmp     .htc_init_matches
+
+.htc_no_run:
+    mov     dword [r14 + TEN_OWNER_RUN_CNT], -1
+
+.htc_init_matches:
+    ; matches[i]: scope_bind_id=-1, channel_idx=-1, container_idx=-1
+    xor     ecx, ecx
+.htc_match_loop:
+    cmp     ecx, MAX_MATCH_CLAUSES
+    jge     .htc_init_emits
+    movsxd  rax, ecx
+    imul    rax, SIZEOF_MATCHCLAUSE
+    mov     dword [r14 + TEN_MATCHES + rax + MC_SCOPE_BIND_ID], -1
+    mov     dword [r14 + TEN_MATCHES + rax + MC_CHANNEL_IDX], -1
+    mov     dword [r14 + TEN_MATCHES + rax + MC_CONTAINER_IDX], -1
+    inc     ecx
+    jmp     .htc_match_loop
+
+.htc_init_emits:
+    ; emits[i]: 6 fields = -1
+    xor     ecx, ecx
+.htc_emit_loop:
+    cmp     ecx, MAX_EMIT_CLAUSES
+    jge     .htc_dirty
+    movsxd  rax, ecx
+    imul    rax, SIZEOF_EMITCLAUSE
+    mov     dword [r14 + TEN_EMITS + rax + EC_TO_REF], -1
+    mov     dword [r14 + TEN_EMITS + rax + EC_TO_SCOPE_BIND_ID], -1
+    mov     dword [r14 + TEN_EMITS + rax + EC_SEND_CHANNEL_IDX], -1
+    mov     dword [r14 + TEN_EMITS + rax + EC_RECV_CHANNEL_IDX], -1
+    mov     dword [r14 + TEN_EMITS + rax + EC_RECV_TO_SCOPE_BIND_ID], -1
+    mov     dword [r14 + TEN_EMITS + rax + EC_DUP_IN_SCOPE_BIND_ID], -1
+    inc     ecx
+    jmp     .htc_emit_loop
+
+.htc_dirty:
+    call    ham_mark_dirty
+    mov     eax, r13d          ; return ti
+    jmp     .htc_done
+
+.htc_fail:
+    mov     eax, -1
+.htc_done:
+    add     rsp, 32
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+; ============================================================
+; herb_tension_match_in(tidx, bind_name, container, select_mode) -> int
+;
+; RCX = tidx, RDX = bind_name, R8 = container, R9D = select_mode
+; Returns 0 on success, -1 on error.
+; ============================================================
+herb_tension_match_in:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    push    r13
+    sub     rsp, 40
+
+    ; Save args
+    mov     rbx, rdx           ; RBX = bind_name
+    mov     rdi, r8            ; RDI = container
+    mov     esi, r9d           ; ESI = select_mode
+
+    ; Validate tidx
+    test    ecx, ecx
+    js      .htmi_fail
+    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    cmp     ecx, [rax]
+    jge     .htmi_fail
+
+    ; t = &g_graph.tensions[tidx]
+    movsxd  rax, ecx
+    imul    rax, SIZEOF_TENSION
+    lea     r12, [g_graph + GRAPH_TENSIONS + rax]
+
+    ; Check & increment match_count
+    mov     eax, [r12 + TEN_MATCH_COUNT]
+    cmp     eax, MAX_MATCH_CLAUSES
+    jge     .htmi_fail
+    lea     ecx, [eax + 1]
+    mov     [r12 + TEN_MATCH_COUNT], ecx
+
+    ; mc = &t->matches[old_match_count]
+    movsxd  rcx, eax
+    imul    rcx, SIZEOF_MATCHCLAUSE
+    lea     r13, [r12 + TEN_MATCHES + rcx]  ; R13 = mc
+
+    ; herb_memset(mc, 0, sizeof(MatchClause))
+    mov     rcx, r13
+    xor     edx, edx
+    mov     r8, SIZEOF_MATCHCLAUSE
+    call    herb_memset
+
+    ; mc->kind = MC_ENTITY_IN (0)
+    mov     dword [r13 + MC_KIND], MC_ENTITY_IN_V
+
+    ; mc->bind_id = intern(bind_name)
+    mov     rcx, rbx
+    call    intern
+    mov     [r13 + MC_BIND_ID], eax
+
+    ; mc->container_idx = graph_find_container_by_name(intern(container))
+    mov     rcx, rdi
+    call    intern
+    mov     ecx, eax
+    call    graph_find_container_by_name
+    mov     [r13 + MC_CONTAINER_IDX], eax
+
+    ; mc->select, required, scope_bind_id, channel_idx
+    mov     [r13 + MC_SELECT], esi
+    mov     dword [r13 + MC_REQUIRED], 1
+    mov     dword [r13 + MC_SCOPE_BIND_ID], -1
+    mov     dword [r13 + MC_CHANNEL_IDX], -1
+
+    xor     eax, eax
+    jmp     .htmi_done
+
+.htmi_fail:
+    mov     eax, -1
+.htmi_done:
+    add     rsp, 40
+    pop     r13
+    pop     r12
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+; ============================================================
+; herb_tension_match_in_where(tidx, bind_name, container, select_mode, where_expr) -> int
+;
+; RCX = tidx, RDX = bind_name, R8 = container, R9D = select_mode
+; 5th arg: where_expr at [RBP + 48]
+; Calls herb_tension_match_in, then sets where_expr on last match.
+; ============================================================
+herb_tension_match_in_where:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    sub     rsp, 40            ; 32 shadow + 8 align
+
+    mov     ebx, ecx           ; save tidx
+    mov     rsi, [rbp + 48]    ; RSI = where_expr (5th arg)
+
+    ; Call herb_tension_match_in(tidx, bind_name, container, select_mode)
+    ; RCX = tidx, RDX/R8/R9 still intact from caller
+    mov     ecx, ebx
+    call    herb_tension_match_in
+    test    eax, eax
+    js      .htmiw_done        ; rc < 0, return it
+
+    ; t->matches[match_count - 1].where_expr = where_expr
+    movsxd  rax, ebx
+    imul    rax, SIZEOF_TENSION
+    lea     rcx, [g_graph + GRAPH_TENSIONS + rax]
+    mov     eax, [rcx + TEN_MATCH_COUNT]
+    dec     eax
+    movsxd  rax, eax
+    imul    rax, SIZEOF_MATCHCLAUSE
+    mov     [rcx + TEN_MATCHES + rax + MC_WHERE_EXPR], rsi
+
+    xor     eax, eax
+.htmiw_done:
+    add     rsp, 40
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+; ============================================================
+; herb_tension_emit_set(tidx, entity_bind, property, value_expr) -> int
+;
+; RCX = tidx, RDX = entity_bind, R8 = property, R9 = value_expr
+; Returns 0 on success, -1 on error.
+; ============================================================
+herb_tension_emit_set:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    sub     rsp, 32
+
+    mov     rbx, rdx           ; RBX = entity_bind
+    mov     rsi, r8            ; RSI = property
+    mov     rdi, r9            ; RDI = value_expr
+
+    ; Validate tidx
+    test    ecx, ecx
+    js      .htes_fail
+    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    cmp     ecx, [rax]
+    jge     .htes_fail
+
+    movsxd  rax, ecx
+    imul    rax, SIZEOF_TENSION
+    lea     r12, [g_graph + GRAPH_TENSIONS + rax]
+
+    ; Check emit_count
+    mov     eax, [r12 + TEN_EMIT_COUNT]
+    cmp     eax, MAX_EMIT_CLAUSES
+    jge     .htes_fail
+    lea     ecx, [eax + 1]
+    mov     [r12 + TEN_EMIT_COUNT], ecx
+
+    ; ec = &t->emits[emit_count]
+    movsxd  rcx, eax
+    imul    rcx, SIZEOF_EMITCLAUSE
+    lea     r12, [r12 + TEN_EMITS + rcx]  ; R12 = ec
+
+    ; herb_memset(ec, 0, sizeof(EmitClause))
+    mov     rcx, r12
+    xor     edx, edx
+    mov     r8, SIZEOF_EMITCLAUSE
+    call    herb_memset
+
+    ; ec->kind = EC_SET
+    mov     dword [r12 + EC_KIND], EC_SET_V
+
+    ; ec->set_entity_ref = intern(entity_bind)
+    mov     rcx, rbx
+    call    intern
+    mov     [r12 + EC_SET_ENTITY_REF], eax
+
+    ; ec->set_prop_id = intern(property)
+    mov     rcx, rsi
+    call    intern
+    mov     [r12 + EC_SET_PROP_ID], eax
+
+    ; ec->value_expr = value_expr
+    mov     [r12 + EC_VALUE_EXPR], rdi
+
+    ; Defaults = -1
+    mov     dword [r12 + EC_TO_REF], -1
+    mov     dword [r12 + EC_TO_SCOPE_BIND_ID], -1
+    mov     dword [r12 + EC_SEND_CHANNEL_IDX], -1
+    mov     dword [r12 + EC_RECV_CHANNEL_IDX], -1
+    mov     dword [r12 + EC_RECV_TO_SCOPE_BIND_ID], -1
+    mov     dword [r12 + EC_DUP_IN_SCOPE_BIND_ID], -1
+
+    xor     eax, eax
+    jmp     .htes_done
+
+.htes_fail:
+    mov     eax, -1
+.htes_done:
+    add     rsp, 32
+    pop     r12
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+; ============================================================
+; herb_tension_emit_move(tidx, move_type, entity_bind, to_container) -> int
+;
+; RCX = tidx, RDX = move_type, R8 = entity_bind, R9 = to_container
+; Returns 0 on success, -1 on error.
+; ============================================================
+herb_tension_emit_move:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    sub     rsp, 32
+
+    mov     rbx, rdx           ; RBX = move_type
+    mov     rsi, r8            ; RSI = entity_bind
+    mov     rdi, r9            ; RDI = to_container
+
+    ; Validate tidx
+    test    ecx, ecx
+    js      .htem_fail
+    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    cmp     ecx, [rax]
+    jge     .htem_fail
+
+    movsxd  rax, ecx
+    imul    rax, SIZEOF_TENSION
+    lea     r12, [g_graph + GRAPH_TENSIONS + rax]
+
+    mov     eax, [r12 + TEN_EMIT_COUNT]
+    cmp     eax, MAX_EMIT_CLAUSES
+    jge     .htem_fail
+    lea     ecx, [eax + 1]
+    mov     [r12 + TEN_EMIT_COUNT], ecx
+
+    movsxd  rcx, eax
+    imul    rcx, SIZEOF_EMITCLAUSE
+    lea     r12, [r12 + TEN_EMITS + rcx]  ; R12 = ec
+
+    mov     rcx, r12
+    xor     edx, edx
+    mov     r8, SIZEOF_EMITCLAUSE
+    call    herb_memset
+
+    ; ec->kind = EC_MOVE
+    mov     dword [r12 + EC_KIND], EC_MOVE_V
+
+    ; ec->move_type_idx = graph_find_move_type_by_name(intern(move_type))
+    mov     rcx, rbx
+    call    intern
+    mov     ecx, eax
+    call    graph_find_move_type_by_name
+    mov     [r12 + EC_MOVE_TYPE_IDX], eax
+
+    ; ec->entity_ref = intern(entity_bind)
+    mov     rcx, rsi
+    call    intern
+    mov     [r12 + EC_ENTITY_REF], eax
+
+    ; ec->to_ref = graph_find_container_by_name(intern(to_container))
+    mov     rcx, rdi
+    call    intern
+    mov     ecx, eax
+    call    graph_find_container_by_name
+    mov     [r12 + EC_TO_REF], eax
+
+    ; Defaults = -1
+    mov     dword [r12 + EC_TO_SCOPE_BIND_ID], -1
+    mov     dword [r12 + EC_SEND_CHANNEL_IDX], -1
+    mov     dword [r12 + EC_RECV_CHANNEL_IDX], -1
+    mov     dword [r12 + EC_RECV_TO_SCOPE_BIND_ID], -1
+    mov     dword [r12 + EC_DUP_IN_SCOPE_BIND_ID], -1
+
+    xor     eax, eax
+    jmp     .htem_done
+
+.htem_fail:
+    mov     eax, -1
+.htem_done:
+    add     rsp, 32
+    pop     r12
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+; ============================================================
+; PHASE 4f: EXPRESSION BUILDERS
+; ============================================================
+
+; ============================================================
+; herb_expr_int(int64_t val) -> void* (Expr*)
+;
+; RCX = val (int64_t)
+; Allocates from expr pool, sets kind=EX_INT, int_val=val.
+; Returns Expr* or NULL.
+; ============================================================
+herb_expr_int:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 40            ; shadow + align
+
+    mov     rbx, rcx           ; RBX = val
+    call    alloc_expr
+    test    rax, rax
+    jz      .hei_done
+    mov     dword [rax + EX_KIND], EX_INT_T
+    mov     [rax + EX_INT_VAL], rbx
+
+.hei_done:
+    add     rsp, 40
+    pop     rbx
+    pop     rbp
+    ret
+
+; ============================================================
+; herb_expr_prop(const char* prop_name, const char* of_bind) -> void*
+;
+; RCX = prop_name, RDX = of_bind
+; Allocates expr, sets kind=EX_PROP, interns both strings.
+; ============================================================
+herb_expr_prop:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    sub     rsp, 40
+
+    mov     rbx, rcx           ; RBX = prop_name
+    mov     rsi, rdx           ; RSI = of_bind
+    call    alloc_expr
+    test    rax, rax
+    jz      .hep_done
+    mov     rdi, rax           ; RDI = e pointer
+    mov     dword [rdi + EX_KIND], EX_PROP_T
+
+    ; intern(prop_name)
+    mov     rcx, rbx
+    call    intern
+    mov     [rdi + EX_PROP_ID], eax
+
+    ; intern(of_bind)
+    mov     rcx, rsi
+    call    intern
+    mov     [rdi + EX_OF_ID], eax
+
+    mov     rax, rdi           ; return e
+
+.hep_done:
+    add     rsp, 40
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+; ============================================================
+; herb_expr_binary(const char* op, void* left, void* right) -> void*
+;
+; RCX = op, RDX = left, R8 = right
+; Allocates expr, sets kind=EX_BINARY, interns op, stores left/right pointers.
+; ============================================================
+herb_expr_binary:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    sub     rsp, 32
+
+    mov     rbx, rcx           ; RBX = op
+    mov     rsi, rdx           ; RSI = left
+    mov     rdi, r8            ; RDI = right
+    call    alloc_expr
+    test    rax, rax
+    jz      .heb_done
+    mov     r12, rax           ; R12 = e
+    mov     dword [r12 + EX_KIND], EX_BINARY_T
+
+    ; intern(op)
+    mov     rcx, rbx
+    call    intern
+    mov     [r12 + EX_BINARY_OP_ID], eax
+    mov     [r12 + EX_BINARY_LEFT], rsi
+    mov     [r12 + EX_BINARY_RIGHT], rdi
+
+    mov     rax, r12           ; return e
+
+.heb_done:
+    add     rsp, 32
+    pop     r12
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
     ret

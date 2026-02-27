@@ -138,7 +138,35 @@
 %define EC_KIND                 0       ; EmitKind enum
 %define EC_VALUE_EXPR           32      ; Expr*
 %define EC_TRANSFER_AMOUNT_EXPR 80      ; Expr*
+; EmitClause field offsets (full struct)
+%define EC_MOVE_TYPE_IDX         4
+%define EC_ENTITY_REF            8
+%define EC_TO_REF                12
+%define EC_TO_SCOPE_BIND_ID      16
+%define EC_TO_SCOPE_CNAME_ID     20
+%define EC_SET_ENTITY_REF        24
+%define EC_SET_PROP_ID           28
+; EC_VALUE_EXPR at 32 (already defined above)
+%define EC_SEND_CHANNEL_IDX      40
+%define EC_SEND_ENTITY_REF       44
+%define EC_RECV_CHANNEL_IDX      48
+%define EC_RECV_ENTITY_REF       52
+%define EC_RECV_TO_REF           56
+%define EC_RECV_TO_SCOPE_BIND_ID 60
+%define EC_RECV_TO_SCOPE_CNAME_ID 64
+%define EC_TRANSFER_TYPE_IDX     68
+%define EC_TRANSFER_FROM_REF     72
+%define EC_TRANSFER_TO_REF       76
+; EC_TRANSFER_AMOUNT_EXPR at 80 (already defined above)
+%define EC_DUP_ENTITY_REF        88
+%define EC_DUP_IN_REF            92
+%define EC_DUP_IN_SCOPE_BIND_ID  96
+%define EC_DUP_IN_SCOPE_CNAME_ID 100
 %define SIZEOF_EMITCLAUSE       104
+
+; EmitKind enum values
+%define EC_MOVE_V   0
+%define EC_SET_V    1
 
 ; ============================================================
 ; ScopeTemplate (12 bytes, 4-byte aligned)
@@ -198,3 +226,38 @@
 %define GRAPH_DUP_COUNTER           720556      ; int
 %define GRAPH_OP_COUNT              720560      ; int
 %define SIZEOF_GRAPH                720568
+
+; ============================================================
+; Expr (32 bytes, 8-byte aligned)
+; ============================================================
+
+%define EX_KIND          0       ; ExprKind enum (4 bytes) + 4 pad
+%define EX_VALUE         8       ; union start (24 bytes)
+%define EX_INT_VAL       8       ; int_val (int64_t at union+0)
+%define EX_PROP_ID       8       ; prop.prop_id (int at union+0)
+%define EX_OF_ID         12      ; prop.of_id (int at union+4)
+%define EX_BINARY_OP_ID  8       ; binary.op_id (int at union+0)
+%define EX_BINARY_LEFT   16      ; binary.left (Expr* at union+8)
+%define EX_BINARY_RIGHT  24      ; binary.right (Expr* at union+16)
+%define SIZEOF_EXPR      32
+
+; ExprKind enum values
+%define EX_INT_T    0
+%define EX_PROP_T   4
+%define EX_BINARY_T 6
+
+; ============================================================
+; Additional constants
+; ============================================================
+
+%define MAX_EXPR_POOL     4096
+%define MAX_MATCH_CLAUSES 8
+%define MAX_EMIT_CLAUSES  8
+%define HAM_BYTECODE_SIZE 8192
+
+; MatchKind enum values
+%define MC_ENTITY_IN_V  0
+
+; SelectMode enum values (for MatchClause.select)
+%define SEL_FIRST_V  0
+%define SEL_EACH_V   1
