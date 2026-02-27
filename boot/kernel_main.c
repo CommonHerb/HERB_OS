@@ -185,6 +185,7 @@ static void dispatch_text_command(int text_key, int arg_key, const char* buf);
 static void post_dispatch(int sig_eid, int ops, const char* cpu0_name);
 static void cleanup_terminated(void);
 static void handle_shell_action(void);
+static void cmd_swap_policy_from_herb(int which);
 static void cmd_spawn(int requested_type);
 #endif
 
@@ -545,12 +546,7 @@ static int buffer_eid = -1;       /* Shared buffer entity for producer/consumer 
 static char last_action[80] = "";
 static char last_key_name[16] = "";
 
-/* Hot-swappable scheduling policy (Session 48) */
-#ifdef KERNEL_MODE
-static int scheduling_policy = 0;       /* 0 = priority, 1 = round-robin */
-static const char* sched_tension_name = "proc.schedule_ready";  /* name of current scheduling tension */
-static const char* sched_policy_label = "PRIORITY";             /* display label */
-#endif
+/* Scheduling policy label — derived from HERB ShellCtl.current_policy (Phase 5c) */
 
 /* Text input state (Session 49) */
 #ifdef KERNEL_MODE
@@ -630,7 +626,10 @@ static void draw_stats(void) {
 
 #ifdef KERNEL_MODE
     vga_print("  Sched:");
-    vga_print(sched_policy_label);
+    {
+        int cp = (shell_ctl_eid >= 0) ? (int)herb_entity_prop_int(shell_ctl_eid, "current_policy", 0) : 0;
+        vga_print(cp == 0 ? "PRIORITY" : "ROUND-ROBIN");
+    }
 #endif
 
     if (last_key_name[0]) {
@@ -1300,10 +1299,13 @@ static void gfx_draw_full(void) {
         x = fb_draw_int(x, GFX_STATS_Y + 3, n_proc < 0 ? 0 : n_proc, COL_TEXT_VAL, COL_STATS_BG);
 
 #ifdef KERNEL_MODE
-        /* Policy indicator */
-        x = fb_draw_string(x + 12, GFX_STATS_Y + 3, "Sched:", COL_TEXT_DIM, COL_STATS_BG);
-        x = fb_draw_string(x, GFX_STATS_Y + 3, sched_policy_label,
-                           scheduling_policy == 0 ? COL_RUNNING : 0x00FF9900, COL_STATS_BG);
+        /* Policy indicator — read from HERB ShellCtl.current_policy */
+        {
+            int cp = (shell_ctl_eid >= 0) ? (int)herb_entity_prop_int(shell_ctl_eid, "current_policy", 0) : 0;
+            x = fb_draw_string(x + 12, GFX_STATS_Y + 3, "Sched:", COL_TEXT_DIM, COL_STATS_BG);
+            x = fb_draw_string(x, GFX_STATS_Y + 3, cp == 0 ? "PRIORITY" : "ROUND-ROBIN",
+                               cp == 0 ? COL_RUNNING : 0x00FF9900, COL_STATS_BG);
+        }
 #endif
 
         if (last_key_name[0]) {
@@ -1578,9 +1580,12 @@ static void gfx_draw_stats_only(void) {
         x = fb_draw_string(x + 12, GFX_STATS_Y + 3, "Procs:", COL_TEXT_DIM, COL_STATS_BG);
         x = fb_draw_int(x, GFX_STATS_Y + 3, n_proc < 0 ? 0 : n_proc, COL_TEXT_VAL, COL_STATS_BG);
 #ifdef KERNEL_MODE
-        x = fb_draw_string(x + 12, GFX_STATS_Y + 3, "Sched:", COL_TEXT_DIM, COL_STATS_BG);
-        fb_draw_string(x, GFX_STATS_Y + 3, sched_policy_label,
-                       scheduling_policy == 0 ? COL_RUNNING : 0x00FF9900, COL_STATS_BG);
+        {
+            int cp = (shell_ctl_eid >= 0) ? (int)herb_entity_prop_int(shell_ctl_eid, "current_policy", 0) : 0;
+            x = fb_draw_string(x + 12, GFX_STATS_Y + 3, "Sched:", COL_TEXT_DIM, COL_STATS_BG);
+            fb_draw_string(x, GFX_STATS_Y + 3, cp == 0 ? "PRIORITY" : "ROUND-ROBIN",
+                           cp == 0 ? COL_RUNNING : 0x00FF9900, COL_STATS_BG);
+        }
 #endif
     }
     fb_flip();
@@ -1926,8 +1931,14 @@ static void post_dispatch(int sig_eid, int ops, const char* cpu0_name) {
     }
     serial_print("\n");
 
-    /* Clean up terminated processes (shell.do_kill directly MOVEs) */
-    cleanup_terminated();
+    /* Clean up terminated processes — HERB cleanup_detect tension sets flag */
+    if (shell_ctl_eid >= 0) {
+        int pending = (int)herb_entity_prop_int(shell_ctl_eid, "cleanup_pending", 0);
+        if (pending) {
+            herb_set_prop_int(shell_ctl_eid, "cleanup_pending", 0);
+            cleanup_terminated();
+        }
+    }
 
     /* Handle delegated actions (load, swap, list, help, spawn) */
     handle_shell_action();
@@ -2523,33 +2534,45 @@ static void cmd_ham_test(void) {
  * or any other system behavioral rule the same way.
  * ============================================================ */
 
-static void cmd_swap_policy(void) {
-    /* Remove the current scheduling tension by name */
-    int removed = herb_remove_tension_by_name(sched_tension_name);
+static void cmd_swap_policy_from_herb(int which) {
+    /* which: 1 = load round-robin, 2 = load priority
+     * HERB tensions (swap_to_rr/swap_to_pri) already toggled current_policy.
+     * C just removes the old tension and loads the new binary. */
+
+    /* Remove the old scheduling tension.
+     * When switching to RR (which==1): initial state has proc.schedule_ready,
+     * subsequent swaps have proc.schedule_pri — try both.
+     * When switching to PRI (which==2): always proc.schedule_rr. */
+    const char* old_name;
+    int removed;
+    if (which == 1) {
+        removed = herb_remove_tension_by_name("proc.schedule_ready");
+        if (removed > 0) {
+            old_name = "proc.schedule_ready";
+        } else {
+            removed = herb_remove_tension_by_name("proc.schedule_pri");
+            old_name = "proc.schedule_pri";
+        }
+    } else {
+        old_name = "proc.schedule_rr";
+        removed = herb_remove_tension_by_name(old_name);
+    }
     serial_print("[POLICY] Removed ");
-    serial_print(sched_tension_name);
+    serial_print(old_name);
     serial_print(" (");
     serial_print_int(removed);
     serial_print(")\n");
 
-    /* Toggle policy */
-    if (scheduling_policy == 0) {
-        /* Switch to round-robin */
-        scheduling_policy = 1;
+    /* Load the requested policy */
+    if (which == 1) {
         int loaded = herb_load_program(program_schedule_roundrobin, program_schedule_roundrobin_len,
                                         -1, "");
-        sched_tension_name = "proc.schedule_rr";
-        sched_policy_label = "ROUND-ROBIN";
         serial_print("[POLICY] Loaded round-robin (");
         serial_print_int(loaded);
         serial_print(" tensions)\n");
     } else {
-        /* Switch to priority */
-        scheduling_policy = 0;
         int loaded = herb_load_program(program_schedule_priority, program_schedule_priority_len,
                                         -1, "");
-        sched_tension_name = "proc.schedule_pri";
-        sched_policy_label = "PRIORITY";
         serial_print("[POLICY] Loaded priority (");
         serial_print_int(loaded);
         serial_print(" tensions)\n");
@@ -2564,10 +2587,11 @@ static void cmd_swap_policy(void) {
     int ops = ham_run_ham(100);
     total_ops += ops;
 
+    const char* label = (which == 1) ? "ROUND-ROBIN" : "PRIORITY";
     herb_snprintf(last_action, sizeof(last_action),
-        "Policy: %s (%d ops)", sched_policy_label, ops);
+        "Policy: %s (%d ops)", label, ops);
     serial_print("[POLICY] Settled: ");
-    serial_print(sched_policy_label);
+    serial_print(label);
     serial_print(" ops=");
     serial_print_int(ops);
     serial_print("\n");
@@ -2659,8 +2683,8 @@ static void cleanup_terminated(void) {
 static void handle_shell_action(void) {
     if (shell_ctl_eid < 0) return;
     int action = (int)herb_entity_prop_int(shell_ctl_eid, "action", 0);
-    if (action == 0) return;
 
+    if (action != 0) {
     /* Reset action immediately */
     herb_set_prop_int(shell_ctl_eid, "action", 0);
 
@@ -2673,10 +2697,6 @@ static void handle_shell_action(void) {
 
         /* Create a new process with explicit program type via HERB spawn policy */
         cmd_spawn(action);
-    } else if (action == 10) {
-        /* Swap scheduling policy */
-        serial_print("[SHELL] swap policy\n");
-        cmd_swap_policy();
     } else if (action == 20) {
         /* List processes */
         serial_print("[SHELL] list\n");
@@ -2742,6 +2762,17 @@ static void handle_shell_action(void) {
         /* Unknown command */
         serial_print("[SHELL] unknown command\n");
         herb_snprintf(last_action, sizeof(last_action), "Shell: unknown command");
+    }
+    } /* end if (action != 0) */
+
+    /* Check if HERB tensions requested a policy swap (Phase 5b) */
+    {
+        int load_pol = (int)herb_entity_prop_int(shell_ctl_eid, "load_policy", 0);
+        if (load_pol > 0) {
+            herb_set_prop_int(shell_ctl_eid, "load_policy", 0);
+            serial_print("[SHELL] swap policy\n");
+            cmd_swap_policy_from_herb(load_pol);
+        }
     }
 }
 

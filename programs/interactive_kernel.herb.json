@@ -525,7 +525,8 @@
       "exports": ["Char", "InputCtl", "ShellCtl", "MechBind", "CHAR_POOL", "CMDLINE", "INPUT_STATE",
                    "SHELL_STATE", "MECHBIND", "type_char", "erase_char"],
       "imports": [
-        "proc.Signal", "proc.KEY_SIG", "proc.CMD_SIG", "proc.SIG_DONE", "proc.consume_signal"
+        "proc.Signal", "proc.Process", "proc.KEY_SIG", "proc.CMD_SIG", "proc.SIG_DONE",
+        "proc.TERMINATED", "proc.consume_signal"
       ],
       "entity_types": [
         {"name": "Char"},
@@ -735,6 +736,48 @@
           "emit": [
             {"set": "cmd", "property": "arg_id", "value": {"prop": "arg_id", "of": "targ"}}
           ]
+        },
+        {
+          "name": "cleanup_detect",
+          "priority": 3,
+          "match": [
+            {"bind": "proc", "in": "TERMINATED", "select": "first",
+             "where": {"op": "!=", "left": {"prop": "protected", "of": "proc"}, "right": 1}},
+            {"bind": "ctl", "in": "SHELL_STATE"}
+          ],
+          "emit": [
+            {"set": "ctl", "property": "cleanup_pending", "value": 1}
+          ]
+        },
+        {
+          "name": "swap_to_rr",
+          "priority": 20,
+          "match": [
+            {"bind": "ctl", "in": "SHELL_STATE",
+             "where": {"op": "and",
+               "left": {"op": "==", "left": {"prop": "action", "of": "ctl"}, "right": 10},
+               "right": {"op": "==", "left": {"prop": "current_policy", "of": "ctl"}, "right": 0}}}
+          ],
+          "emit": [
+            {"set": "ctl", "property": "current_policy", "value": 1},
+            {"set": "ctl", "property": "load_policy", "value": 1},
+            {"set": "ctl", "property": "action", "value": 0}
+          ]
+        },
+        {
+          "name": "swap_to_pri",
+          "priority": 20,
+          "match": [
+            {"bind": "ctl", "in": "SHELL_STATE",
+             "where": {"op": "and",
+               "left": {"op": "==", "left": {"prop": "action", "of": "ctl"}, "right": 10},
+               "right": {"op": "==", "left": {"prop": "current_policy", "of": "ctl"}, "right": 1}}}
+          ],
+          "emit": [
+            {"set": "ctl", "property": "current_policy", "value": 0},
+            {"set": "ctl", "property": "load_policy", "value": 2},
+            {"set": "ctl", "property": "action", "value": 0}
+          ]
         }
       ]
     },
@@ -896,7 +939,7 @@
      "properties": {"mode": 0, "submitted": 0, "pending_cmd": 0, "pending_arg": 0, "mech_action": 0, "panel_click": 0}},
 
     {"name": "shell_ctl", "type": "input.ShellCtl", "in": "input.SHELL_STATE",
-     "properties": {"action": 0, "shell_protected": 1}},
+     "properties": {"action": 0, "shell_protected": 1, "cleanup_pending": 0, "current_policy": 0, "load_policy": 0}},
 
     {"name": "spawn_ctl", "type": "spawn.SpawnCtl", "in": "spawn.SPAWN_STATE",
      "properties": {"action": 0, "program_type": 0, "next_priority": 0}},
