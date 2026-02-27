@@ -82,8 +82,8 @@ kernel_main.o: kernel_main.c program_data.h process_programs.h ../src/herb_frees
 herb_runtime_freestanding.o: ../src/herb_runtime_freestanding.c ../src/herb_freestanding.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-herb_freestanding.o: ../src/herb_freestanding.c ../src/herb_freestanding.h
-	$(CC) $(CFLAGS) -c $< -o $@
+herb_freestanding.o: herb_freestanding.asm herb_freestanding_layout.inc
+	$(NASM) -f win64 $< -o $@
 
 herb_hw.o: herb_hw.asm
 	$(NASM) -f win64 $< -o $@

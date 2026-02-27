@@ -150,6 +150,23 @@
 %define SIZEOF_SCOPETEMPLATE 12
 
 ; ============================================================
+; Pool (8 bytes, 4-byte aligned)
+; ============================================================
+
+%define POOL_NAME_ID        0       ; int
+%define POOL_PROPERTY_ID    4       ; int
+%define SIZEOF_POOL         8
+
+; ============================================================
+; TransferType (12 bytes, 4-byte aligned)
+; ============================================================
+
+%define TT_NAME_ID          0       ; int
+%define TT_POOL_IDX         4       ; int
+%define TT_ENTITY_TYPE      8       ; int
+%define SIZEOF_TRANSFERTYPE 12
+
+; ============================================================
 ; Graph (720568 bytes, 8-byte aligned)
 ; ============================================================
 

@@ -89,6 +89,12 @@ extern int get_scoped_container(int entity_idx, int scope_name_id);
 /* try_move: deferred — Discovery 48 (GCC tail-call interaction, same pattern as Discovery 47) */
 extern int do_channel_send(int ch_idx, int entity_idx);
 extern int do_channel_receive(int ch_idx, int entity_idx, int to_container_idx);
+/* Phase 4e — Graph lookups */
+extern int graph_find_move_type_by_name(int name_id);
+extern int graph_find_channel_by_name(int name_id);
+extern int graph_find_transfer_by_name(int name_id);
+extern int get_type_scope_idx(int type_name_id);
+extern int is_property_pooled(int prop_id);
 #else
 static int intern(const char* s) {
     for (int i = 0; i < g_string_count; i++) {
@@ -505,6 +511,7 @@ static int graph_find_entity_by_name(int name_id) {
 }
 #endif
 
+#ifndef HERB_BINARY_ONLY
 static int graph_find_move_type_by_name(int name_id) {
     for (int i = 0; i < g_graph.move_type_count; i++) {
         if (g_graph.move_types[i].name_id == name_id) return i;
@@ -525,6 +532,7 @@ static int graph_find_transfer_by_name(int name_id) {
     }
     return -1;
 }
+#endif /* Phase 4e graph_find guard */
 
 #ifndef HERB_BINARY_ONLY
 static void container_add(int ci, int ei) {
@@ -582,6 +590,7 @@ static int get_scoped_container(int entity_idx, int scope_name_id) {
 }
 #endif
 
+#ifndef HERB_BINARY_ONLY
 /* Get scope templates for an entity type */
 static int get_type_scope_idx(int type_name_id) {
     for (int i = 0; i < g_graph.type_scope_count; i++) {
@@ -589,6 +598,7 @@ static int get_type_scope_idx(int type_name_id) {
     }
     return -1;
 }
+#endif
 
 /* Create entity with auto-scoped container creation */
 static int create_entity(int type_name_id, int name_id, int container_idx) {
@@ -634,6 +644,7 @@ static int create_entity(int type_name_id, int name_id, int container_idx) {
     return ei;
 }
 
+#ifndef HERB_BINARY_ONLY
 /* Check if a property is conserved (in a pool) */
 static int is_property_pooled(int prop_id) {
     for (int i = 0; i < g_graph.pool_count; i++) {
@@ -641,6 +652,7 @@ static int is_property_pooled(int prop_id) {
     }
     return 0;
 }
+#endif
 
 /* Regular move: returns 1 if executed */
 static int try_move(int mt_idx, int entity_idx, int to_container_idx) {
@@ -2201,6 +2213,7 @@ static void load_program(JsonValue* root) {
  * Returns the number of characters written.
  * ============================================================ */
 
+#ifndef HERB_BINARY_ONLY
 int herb_state(char* buf, int buf_size) {
     int pos = 0;
 
@@ -2258,6 +2271,7 @@ int herb_state(char* buf, int buf_size) {
 
     return pos;
 }
+#endif
 
 /* ============================================================
  * BINARY FORMAT LOADER
@@ -2801,6 +2815,7 @@ int herb_create(const char* name, const char* type, const char* container) {
     return create_entity(intern(type), intern(name), ci);
 }
 
+#ifndef HERB_BINARY_ONLY
 /* Set an integer property on an entity.
  * If the property already exists, update it. Otherwise add it.
  * Returns 0 on success, -1 on error. */
@@ -2883,8 +2898,9 @@ const char* herb_entity_location(int entity_id) {
 int herb_entity_total(void) {
     return g_graph.entity_count;
 }
+#endif /* Phase 4e public API guard */
 
-/* Get arena usage statistics */
+/* Get arena usage statistics — stays in C (accesses static g_arena) */
 herb_size_t herb_arena_usage(void) {
     return g_arena ? herb_arena_used(g_arena) : 0;
 }
@@ -2893,6 +2909,7 @@ herb_size_t herb_arena_total(void) {
     return g_arena ? g_arena->size : 0;
 }
 
+#ifndef HERB_BINARY_ONLY
 /* ============================================================
  * TENSION QUERY / TOGGLE API
  *
@@ -2929,6 +2946,7 @@ int herb_tension_owner(int idx) {
     if (idx < 0 || idx >= g_graph.tension_count) return -1;
     return g_graph.tensions[idx].owner;
 }
+#endif /* Phase 4e tension API guard */
 
 /* Phase 3c dirty flag — defined after HAM compiler when HERB_BINARY_ONLY,
  * no-op stub otherwise (test builds don't have HAM) */
@@ -3119,6 +3137,7 @@ int herb_remove_tension_by_name(const char* name) {
  * RUNTIME CONTAINER CREATION API
  * ============================================================ */
 
+#ifndef HERB_BINARY_ONLY
 int herb_create_container(const char* name, int kind) {
     if (g_graph.container_count >= MAX_CONTAINERS) return -1;
     int ci = g_graph.container_count++;
@@ -3131,6 +3150,7 @@ int herb_create_container(const char* name, int kind) {
     c->owner = -1;        /* global container */
     return ci;
 }
+#endif
 
 /* ============================================================
  * PROGRAM FRAGMENT LOADING
@@ -3376,6 +3396,7 @@ int herb_load_program(const uint8_t* data, herb_size_t len,
  * Session 64 — Phase 3a
  * ============================================================ */
 
+#ifndef HERB_BINARY_ONLY
 /* Fill buf with entity indices from container, returns count */
 int ham_scan(int container_idx, int* buf, int max_count) {
     if (container_idx < 0 || container_idx >= g_graph.container_count)
@@ -3386,7 +3407,9 @@ int ham_scan(int container_idx, int* buf, int max_count) {
         buf[i] = c->entities[i];
     return n;
 }
+#endif
 
+#ifndef HERB_BINARY_ONLY
 /* Returns integer value of property on entity. 0 if not found. */
 int64_t ham_eprop(int entity_idx, int prop_id) {
     if (entity_idx < 0 || entity_idx >= g_graph.entity_count)
@@ -3396,26 +3419,34 @@ int64_t ham_eprop(int entity_idx, int prop_id) {
     if (v.type == PV_FLOAT) return (int64_t)v.f;
     return 0;
 }
+#endif
 
+#ifndef HERB_BINARY_ONLY
 /* Returns entity count of container */
 int ham_ecnt(int container_idx) {
     if (container_idx < 0 || container_idx >= g_graph.container_count)
         return 0;
     return g_graph.containers[container_idx].entity_count;
 }
+#endif
 
+#ifndef HERB_BINARY_ONLY
 /* Returns container index where entity resides */
 int ham_entity_loc(int entity_idx) {
     if (entity_idx < 0 || entity_idx >= g_graph.entity_count)
         return -1;
     return g_graph.entity_location[entity_idx];
 }
+#endif
 
+#ifndef HERB_BINARY_ONLY
 /* Wrapper around try_move(). Returns 1 if successful. */
 int ham_try_move(int mt_idx, int entity_idx, int to_container_idx) {
     return try_move(mt_idx, entity_idx, to_container_idx);
 }
+#endif
 
+#ifndef HERB_BINARY_ONLY
 /* Sets integer property on entity. Returns 1 if value changed, 0 if same. */
 int ham_eset(int entity_idx, int prop_id, int64_t value) {
     if (entity_idx < 0 || entity_idx >= g_graph.entity_count)
@@ -3426,26 +3457,35 @@ int ham_eset(int entity_idx, int prop_id, int64_t value) {
     entity_set_prop(entity_idx, prop_id, pv_int(value));
     return 1;
 }
+#endif
 
+#ifndef HERB_BINARY_ONLY
 /* Resolve scoped container: entity_idx + scope_name → container_idx */
 int ham_resolve_scope(int entity_idx, int scope_name_id) {
     return get_scoped_container(entity_idx, scope_name_id);
 }
+#endif
 
+#ifndef HERB_BINARY_ONLY
 /* Try channel send: move entity from sender scope to channel buffer */
 int ham_try_channel_send(int ch_idx, int entity_idx) {
     return do_channel_send(ch_idx, entity_idx);
 }
+#endif
 
+#ifndef HERB_BINARY_ONLY
 /* Try channel receive: move entity from channel buffer to target container */
 int ham_try_channel_recv(int ch_idx, int entity_idx, int to_container_idx) {
     return do_channel_receive(ch_idx, entity_idx, to_container_idx);
 }
+#endif
 
+#ifndef HERB_BINARY_ONLY
 /* Non-static wrapper around intern() */
 int ham_intern(const char* s) {
     return intern(s);
 }
+#endif
 
 /* ============================================================
  * HAM BYTECODE COMPILER — General Purpose (Session 65)
