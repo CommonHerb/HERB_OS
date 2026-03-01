@@ -62,10 +62,6 @@
 %define CNT_OWNER           276     ; int (4 bytes)
 %define SIZEOF_CONTAINER    280
 
-; ContainerKind enum values
-%define CK_SIMPLE_V  0
-%define CK_SLOT_V    1
-
 ; ============================================================
 ; MoveType (284 bytes, 4-byte aligned)
 ; ============================================================
@@ -164,10 +160,6 @@
 %define EC_DUP_IN_SCOPE_CNAME_ID 100
 %define SIZEOF_EMITCLAUSE       104
 
-; EmitKind enum values
-%define EC_MOVE_V   0
-%define EC_SET_V    1
-
 ; ============================================================
 ; ScopeTemplate (12 bytes, 4-byte aligned)
 ; ============================================================
@@ -241,10 +233,45 @@
 %define EX_BINARY_RIGHT  24      ; binary.right (Expr* at union+16)
 %define SIZEOF_EXPR      32
 
+; Expr union offsets — count variant
+%define EX_COUNT_CIDX       8       ; count.container_idx (int at union+0)
+%define EX_COUNT_SCOPED     12      ; count.is_scoped (int at union+4)
+%define EX_COUNT_SBIND      16      ; count.scope_bind_id (int at union+8)
+%define EX_COUNT_SCNAME     20      ; count.scope_cname_id (int at union+12)
+%define EX_COUNT_ISCHAN     24      ; count.is_channel (int at union+16)
+%define EX_COUNT_CHANIDX    28      ; count.channel_idx (int at union+20)
+
+; Expr union offsets — unary variant
+%define EX_UNARY_ARG        8       ; unary.arg (Expr* at union+0)
+
+; Expr union offsets — in_of variant
+%define EX_INOF_CIDX        8       ; in_of.container_idx (int at union+0)
+%define EX_INOF_EREF        12      ; in_of.entity_ref_id (int at union+4)
+
+; Expr union offsets — string/bool (alias for int_val position)
+%define EX_STRING_ID        8       ; string_id (int at union+0)
+%define EX_BOOL_VAL         8       ; bool_val (int at union+0)
+%define EX_FLOAT_VAL        8       ; float_val (double at union+0)
+
 ; ExprKind enum values
 %define EX_INT_T    0
+%define EX_FLOAT_T  1
+%define EX_STRING_T 2
+%define EX_BOOL_T   3
 %define EX_PROP_T   4
+%define EX_COUNT_T  5
 %define EX_BINARY_T 6
+%define EX_UNARY_T  7
+%define EX_INOF_T   8
+
+; ============================================================
+; BinReader (24 bytes, 8-byte aligned)
+; ============================================================
+
+%define BR_DATA     0       ; const uint8_t* (8 bytes)
+%define BR_LEN      8       ; herb_size_t (8 bytes)
+%define BR_POS      16      ; herb_size_t (8 bytes)
+%define SIZEOF_BINREADER 24
 
 ; ============================================================
 ; Additional constants
@@ -256,8 +283,25 @@
 %define HAM_BYTECODE_SIZE 8192
 
 ; MatchKind enum values
-%define MC_ENTITY_IN_V  0
+%define MC_ENTITY_IN_V   0
+%define MC_EMPTY_IN_V    1
+%define MC_CONTAINER_IS_V 2
+%define MC_GUARD_V       3
 
 ; SelectMode enum values (for MatchClause.select)
 %define SEL_FIRST_V  0
 %define SEL_EACH_V   1
+%define SEL_MAX_BY_V 2
+%define SEL_MIN_BY_V 3
+
+; EmitKind enum values (full set)
+%define EC_MOVE_V       0
+%define EC_SET_V        1
+%define EC_SEND_V       2
+%define EC_RECEIVE_V    3
+%define EC_TRANSFER_V   4
+%define EC_DUPLICATE_V  5
+
+; ContainerKind enum values
+%define CK_SIMPLE_V  0
+%define CK_SLOT_V    1

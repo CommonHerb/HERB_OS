@@ -94,7 +94,10 @@ herb_ham.o: herb_ham.asm
 herb_graph.o: herb_graph.asm herb_graph_layout.inc
 	$(NASM) -f win64 $< -o $@
 
-OBJS = kernel_entry.o kernel_main.o herb_runtime_freestanding.o herb_freestanding.o herb_hw.o herb_ham.o herb_graph.o
+herb_loader.o: herb_loader.asm herb_graph_layout.inc herb_freestanding_layout.inc
+	$(NASM) -f win64 $< -o $@
+
+OBJS = kernel_entry.o kernel_main.o herb_runtime_freestanding.o herb_freestanding.o herb_hw.o herb_ham.o herb_graph.o herb_loader.o
 
 # ---- Step 3: Link into PE, then extract flat binary ----
 # Image base 0x0FFC00 makes .text land at VMA 0x100000
