@@ -29,7 +29,7 @@ def main():
         out.write("/* Auto-generated: multiple .herb program binaries */\n\n")
 
         for name, data in entries:
-            out.write(f"static const unsigned char program_{name}[] = {{\n")
+            out.write(f"const unsigned char program_{name}[] = {{\n")
             for i, byte in enumerate(data):
                 if i % 16 == 0:
                     out.write("    ")
@@ -39,7 +39,7 @@ def main():
             if len(data) % 16 != 0:
                 out.write("\n")
             out.write("};\n")
-            out.write(f"static const herb_size_t program_{name}_len = {len(data)};\n\n")
+            out.write(f"const herb_size_t program_{name}_len = {len(data)};\n\n")
 
 if __name__ == "__main__":
     main()
