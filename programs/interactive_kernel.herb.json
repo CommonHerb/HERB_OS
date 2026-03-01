@@ -1,5 +1,5 @@
 {
-  "compose": ["proc", "mem", "fs", "ipc", "display", "input", "spawn"],
+  "compose": ["proc", "mem", "fs", "ipc", "display", "input", "spawn", "world"],
   "modules": [
     {
       "module": "proc",
@@ -865,6 +865,175 @@
           ]
         }
       ]
+    },
+    {
+      "module": "world",
+      "exports": ["Player", "TileInfo", "Tree", "GameSignal", "GameCtl",
+                   "PLAYER", "TILES", "TREES", "TREE_GATHERED", "MOVE_SIG", "GATHER_SIG", "GAME_SIG_DONE", "GAME_STATE",
+                   "consume_game_sig", "gather_resource"],
+      "imports": [],
+      "entity_types": [
+        {
+          "name": "Player",
+          "scoped_containers": [
+            {"name": "INVENTORY", "kind": "simple", "entity_type": "Tree"}
+          ]
+        },
+        {"name": "TileInfo"},
+        {"name": "Tree"},
+        {"name": "GameSignal"},
+        {"name": "GameCtl"}
+      ],
+      "containers": [
+        {"name": "PLAYER",        "kind": "slot",   "entity_type": "Player"},
+        {"name": "TILES",         "kind": "simple", "entity_type": "TileInfo"},
+        {"name": "TREES",         "kind": "simple", "entity_type": "Tree"},
+        {"name": "TREE_GATHERED", "kind": "simple", "entity_type": "Tree"},
+        {"name": "MOVE_SIG",      "kind": "simple", "entity_type": "GameSignal"},
+        {"name": "GATHER_SIG",    "kind": "simple", "entity_type": "GameSignal"},
+        {"name": "GAME_SIG_DONE", "kind": "simple", "entity_type": "GameSignal"},
+        {"name": "GAME_STATE",    "kind": "slot",   "entity_type": "GameCtl"}
+      ],
+      "moves": [
+        {
+          "name": "consume_game_sig",
+          "from": ["MOVE_SIG", "GATHER_SIG"],
+          "to": ["GAME_SIG_DONE"],
+          "entity_type": "GameSignal"
+        },
+        {
+          "name": "gather_resource",
+          "from": ["TREES"],
+          "to": ["TREE_GATHERED"],
+          "entity_type": "Tree"
+        }
+      ],
+      "tensions": [
+        {
+          "name": "move_north",
+          "priority": 12,
+          "match": [
+            {"bind": "sig", "in": "MOVE_SIG", "select": "first",
+             "where": {"op": "==", "left": {"prop": "direction", "of": "sig"}, "right": 0}},
+            {"bind": "player", "in": "PLAYER"},
+            {"bind": "tile", "in": "TILES", "select": "first",
+             "where": {"op": "and",
+               "left":  {"op": "==", "left": {"prop": "tile_x", "of": "tile"}, "right": {"prop": "tile_x", "of": "player"}},
+               "right": {"op": "==", "left": {"prop": "tile_y", "of": "tile"},
+                         "right": {"op": "-", "left": {"prop": "tile_y", "of": "player"}, "right": 1}}}},
+            {"guard": {"op": "and",
+              "left":  {"op": "!=", "left": {"prop": "terrain", "of": "tile"}, "right": 2},
+              "right": {"op": "!=", "left": {"prop": "terrain", "of": "tile"}, "right": 3}}}
+          ],
+          "emit": [
+            {"set": "player", "property": "tile_y",
+             "value": {"op": "-", "left": {"prop": "tile_y", "of": "player"}, "right": 1}},
+            {"move": "consume_game_sig", "entity": "sig", "to": "GAME_SIG_DONE"}
+          ]
+        },
+        {
+          "name": "move_south",
+          "priority": 12,
+          "match": [
+            {"bind": "sig", "in": "MOVE_SIG", "select": "first",
+             "where": {"op": "==", "left": {"prop": "direction", "of": "sig"}, "right": 1}},
+            {"bind": "player", "in": "PLAYER"},
+            {"bind": "tile", "in": "TILES", "select": "first",
+             "where": {"op": "and",
+               "left":  {"op": "==", "left": {"prop": "tile_x", "of": "tile"}, "right": {"prop": "tile_x", "of": "player"}},
+               "right": {"op": "==", "left": {"prop": "tile_y", "of": "tile"},
+                         "right": {"op": "+", "left": {"prop": "tile_y", "of": "player"}, "right": 1}}}},
+            {"guard": {"op": "and",
+              "left":  {"op": "!=", "left": {"prop": "terrain", "of": "tile"}, "right": 2},
+              "right": {"op": "!=", "left": {"prop": "terrain", "of": "tile"}, "right": 3}}}
+          ],
+          "emit": [
+            {"set": "player", "property": "tile_y",
+             "value": {"op": "+", "left": {"prop": "tile_y", "of": "player"}, "right": 1}},
+            {"move": "consume_game_sig", "entity": "sig", "to": "GAME_SIG_DONE"}
+          ]
+        },
+        {
+          "name": "move_east",
+          "priority": 12,
+          "match": [
+            {"bind": "sig", "in": "MOVE_SIG", "select": "first",
+             "where": {"op": "==", "left": {"prop": "direction", "of": "sig"}, "right": 2}},
+            {"bind": "player", "in": "PLAYER"},
+            {"bind": "tile", "in": "TILES", "select": "first",
+             "where": {"op": "and",
+               "left":  {"op": "==", "left": {"prop": "tile_x", "of": "tile"},
+                         "right": {"op": "+", "left": {"prop": "tile_x", "of": "player"}, "right": 1}},
+               "right": {"op": "==", "left": {"prop": "tile_y", "of": "tile"}, "right": {"prop": "tile_y", "of": "player"}}}},
+            {"guard": {"op": "and",
+              "left":  {"op": "!=", "left": {"prop": "terrain", "of": "tile"}, "right": 2},
+              "right": {"op": "!=", "left": {"prop": "terrain", "of": "tile"}, "right": 3}}}
+          ],
+          "emit": [
+            {"set": "player", "property": "tile_x",
+             "value": {"op": "+", "left": {"prop": "tile_x", "of": "player"}, "right": 1}},
+            {"move": "consume_game_sig", "entity": "sig", "to": "GAME_SIG_DONE"}
+          ]
+        },
+        {
+          "name": "move_west",
+          "priority": 12,
+          "match": [
+            {"bind": "sig", "in": "MOVE_SIG", "select": "first",
+             "where": {"op": "==", "left": {"prop": "direction", "of": "sig"}, "right": 3}},
+            {"bind": "player", "in": "PLAYER"},
+            {"bind": "tile", "in": "TILES", "select": "first",
+             "where": {"op": "and",
+               "left":  {"op": "==", "left": {"prop": "tile_x", "of": "tile"},
+                         "right": {"op": "-", "left": {"prop": "tile_x", "of": "player"}, "right": 1}},
+               "right": {"op": "==", "left": {"prop": "tile_y", "of": "tile"}, "right": {"prop": "tile_y", "of": "player"}}}},
+            {"guard": {"op": "and",
+              "left":  {"op": "!=", "left": {"prop": "terrain", "of": "tile"}, "right": 2},
+              "right": {"op": "!=", "left": {"prop": "terrain", "of": "tile"}, "right": 3}}}
+          ],
+          "emit": [
+            {"set": "player", "property": "tile_x",
+             "value": {"op": "-", "left": {"prop": "tile_x", "of": "player"}, "right": 1}},
+            {"move": "consume_game_sig", "entity": "sig", "to": "GAME_SIG_DONE"}
+          ]
+        },
+        {
+          "name": "do_gather",
+          "priority": 12,
+          "match": [
+            {"bind": "sig", "in": "GATHER_SIG", "select": "first"},
+            {"bind": "player", "in": "PLAYER"},
+            {"bind": "tree", "in": "TREES", "select": "first",
+             "where": {"op": "and",
+               "left":  {"op": "==", "left": {"prop": "tile_x", "of": "tree"}, "right": {"prop": "tile_x", "of": "player"}},
+               "right": {"op": "==", "left": {"prop": "tile_y", "of": "tree"}, "right": {"prop": "tile_y", "of": "player"}}}}
+          ],
+          "emit": [
+            {"move": "gather_resource", "entity": "tree", "to": "TREE_GATHERED"},
+            {"move": "consume_game_sig", "entity": "sig", "to": "GAME_SIG_DONE"}
+          ]
+        },
+        {
+          "name": "cleanup_move",
+          "priority": 5,
+          "match": [
+            {"bind": "sig", "in": "MOVE_SIG", "select": "first"}
+          ],
+          "emit": [
+            {"move": "consume_game_sig", "entity": "sig", "to": "GAME_SIG_DONE"}
+          ]
+        },
+        {
+          "name": "cleanup_gather",
+          "priority": 5,
+          "match": [
+            {"bind": "sig", "in": "GATHER_SIG", "select": "first"}
+          ],
+          "emit": [
+            {"move": "consume_game_sig", "entity": "sig", "to": "GAME_SIG_DONE"}
+          ]
+        }
+      ]
     }
   ],
   "channels": [
@@ -1012,6 +1181,95 @@
      "properties": {"key": 100, "action": 11}},
     {"name": "mech_h",     "type": "input.MechBind", "in": "input.MECHBIND",
      "properties": {"key": 104, "action": 12}},
+    {"name": "mech_g",     "type": "input.MechBind", "in": "input.MECHBIND",
+     "properties": {"key": 103, "action": 13}},
+
+    {"name": "leg_game", "type": "display.Legend", "in": "display.LEGEND",
+     "properties": {"order": 15, "key_text": "G", "label_text": "ame"}},
+
+    {"name": "game_ctl", "type": "world.GameCtl", "in": "world.GAME_STATE",
+     "properties": {"display_mode": 0}},
+
+    {"name": "hero", "type": "world.Player", "in": "world.PLAYER",
+     "properties": {"tile_x": 3, "tile_y": 3, "hp": 10}},
+
+    {"name": "T00", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 0, "tile_y": 0, "terrain": 0}},
+    {"name": "T10", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 1, "tile_y": 0, "terrain": 0}},
+    {"name": "T20", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 2, "tile_y": 0, "terrain": 0}},
+    {"name": "T30", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 3, "tile_y": 0, "terrain": 0}},
+    {"name": "T40", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 4, "tile_y": 0, "terrain": 0}},
+    {"name": "T50", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 5, "tile_y": 0, "terrain": 1}},
+    {"name": "T60", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 6, "tile_y": 0, "terrain": 1}},
+    {"name": "T70", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 7, "tile_y": 0, "terrain": 0}},
+    {"name": "T01", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 0, "tile_y": 1, "terrain": 0}},
+    {"name": "T11", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 1, "tile_y": 1, "terrain": 0}},
+    {"name": "T21", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 2, "tile_y": 1, "terrain": 1}},
+    {"name": "T31", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 3, "tile_y": 1, "terrain": 1}},
+    {"name": "T41", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 4, "tile_y": 1, "terrain": 0}},
+    {"name": "T51", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 5, "tile_y": 1, "terrain": 0}},
+    {"name": "T61", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 6, "tile_y": 1, "terrain": 1}},
+    {"name": "T71", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 7, "tile_y": 1, "terrain": 0}},
+    {"name": "T02", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 0, "tile_y": 2, "terrain": 0}},
+    {"name": "T12", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 1, "tile_y": 2, "terrain": 0}},
+    {"name": "T22", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 2, "tile_y": 2, "terrain": 1}},
+    {"name": "T32", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 3, "tile_y": 2, "terrain": 1}},
+    {"name": "T42", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 4, "tile_y": 2, "terrain": 0}},
+    {"name": "T52", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 5, "tile_y": 2, "terrain": 0}},
+    {"name": "T62", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 6, "tile_y": 2, "terrain": 2}},
+    {"name": "T72", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 7, "tile_y": 2, "terrain": 2}},
+    {"name": "T03", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 0, "tile_y": 3, "terrain": 0}},
+    {"name": "T13", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 1, "tile_y": 3, "terrain": 0}},
+    {"name": "T23", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 2, "tile_y": 3, "terrain": 0}},
+    {"name": "T33", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 3, "tile_y": 3, "terrain": 0}},
+    {"name": "T43", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 4, "tile_y": 3, "terrain": 0}},
+    {"name": "T53", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 5, "tile_y": 3, "terrain": 0}},
+    {"name": "T63", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 6, "tile_y": 3, "terrain": 2}},
+    {"name": "T73", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 7, "tile_y": 3, "terrain": 2}},
+    {"name": "T04", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 0, "tile_y": 4, "terrain": 0}},
+    {"name": "T14", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 1, "tile_y": 4, "terrain": 3}},
+    {"name": "T24", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 2, "tile_y": 4, "terrain": 3}},
+    {"name": "T34", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 3, "tile_y": 4, "terrain": 0}},
+    {"name": "T44", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 4, "tile_y": 4, "terrain": 0}},
+    {"name": "T54", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 5, "tile_y": 4, "terrain": 0}},
+    {"name": "T64", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 6, "tile_y": 4, "terrain": 0}},
+    {"name": "T74", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 7, "tile_y": 4, "terrain": 0}},
+    {"name": "T05", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 0, "tile_y": 5, "terrain": 0}},
+    {"name": "T15", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 1, "tile_y": 5, "terrain": 3}},
+    {"name": "T25", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 2, "tile_y": 5, "terrain": 0}},
+    {"name": "T35", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 3, "tile_y": 5, "terrain": 0}},
+    {"name": "T45", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 4, "tile_y": 5, "terrain": 1}},
+    {"name": "T55", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 5, "tile_y": 5, "terrain": 1}},
+    {"name": "T65", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 6, "tile_y": 5, "terrain": 0}},
+    {"name": "T75", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 7, "tile_y": 5, "terrain": 0}},
+    {"name": "T06", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 0, "tile_y": 6, "terrain": 0}},
+    {"name": "T16", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 1, "tile_y": 6, "terrain": 0}},
+    {"name": "T26", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 2, "tile_y": 6, "terrain": 0}},
+    {"name": "T36", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 3, "tile_y": 6, "terrain": 0}},
+    {"name": "T46", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 4, "tile_y": 6, "terrain": 1}},
+    {"name": "T56", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 5, "tile_y": 6, "terrain": 1}},
+    {"name": "T66", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 6, "tile_y": 6, "terrain": 0}},
+    {"name": "T76", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 7, "tile_y": 6, "terrain": 0}},
+    {"name": "T07", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 0, "tile_y": 7, "terrain": 0}},
+    {"name": "T17", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 1, "tile_y": 7, "terrain": 0}},
+    {"name": "T27", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 2, "tile_y": 7, "terrain": 0}},
+    {"name": "T37", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 3, "tile_y": 7, "terrain": 0}},
+    {"name": "T47", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 4, "tile_y": 7, "terrain": 0}},
+    {"name": "T57", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 5, "tile_y": 7, "terrain": 0}},
+    {"name": "T67", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 6, "tile_y": 7, "terrain": 0}},
+    {"name": "T77", "type": "world.TileInfo", "in": "world.TILES", "properties": {"tile_x": 7, "tile_y": 7, "terrain": 0}},
+
+    {"name": "tree_5_0", "type": "world.Tree", "in": "world.TREES", "properties": {"tile_x": 5, "tile_y": 0}},
+    {"name": "tree_6_0", "type": "world.Tree", "in": "world.TREES", "properties": {"tile_x": 6, "tile_y": 0}},
+    {"name": "tree_2_1", "type": "world.Tree", "in": "world.TREES", "properties": {"tile_x": 2, "tile_y": 1}},
+    {"name": "tree_3_1", "type": "world.Tree", "in": "world.TREES", "properties": {"tile_x": 3, "tile_y": 1}},
+    {"name": "tree_6_1", "type": "world.Tree", "in": "world.TREES", "properties": {"tile_x": 6, "tile_y": 1}},
+    {"name": "tree_2_2", "type": "world.Tree", "in": "world.TREES", "properties": {"tile_x": 2, "tile_y": 2}},
+    {"name": "tree_4_5", "type": "world.Tree", "in": "world.TREES", "properties": {"tile_x": 4, "tile_y": 5}},
+    {"name": "tree_5_5", "type": "world.Tree", "in": "world.TREES", "properties": {"tile_x": 5, "tile_y": 5}},
+    {"name": "tree_4_6", "type": "world.Tree", "in": "world.TREES", "properties": {"tile_x": 4, "tile_y": 6}},
+    {"name": "tree_0_6", "type": "world.Tree", "in": "world.TREES", "properties": {"tile_x": 0, "tile_y": 6}},
+    {"name": "tree_7_4", "type": "world.Tree", "in": "world.TREES", "properties": {"tile_x": 7, "tile_y": 4}},
+    {"name": "tree_3_5", "type": "world.Tree", "in": "world.TREES", "properties": {"tile_x": 3, "tile_y": 5}},
 
     {"name": "c00", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},
     {"name": "c01", "type": "input.Char", "in": "input.CHAR_POOL", "properties": {"ascii": 0, "pos": 0}},

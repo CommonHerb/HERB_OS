@@ -622,4 +622,18 @@ static void fb_cursor_draw(void) {
 /* Selection highlight color */
 #define COL_SELECTED   0x00FFFFFF  /* bright white */
 
+/* Game world terrain colors */
+#define COL_TILE_GRASS   0x003A7D44   /* medium green */
+#define COL_TILE_FOREST  0x001B5E20   /* dark green */
+#define COL_TILE_WATER   0x001565C0   /* blue */
+#define COL_TILE_STONE   0x00757575   /* gray */
+#define COL_TILE_DIRT    0x00795548   /* brown */
+#define COL_TILE_GRID    0x002E5530   /* grid line color (subtle dark green) */
+#define COL_PLAYER       0x00FFD740   /* bright yellow/gold */
+#define COL_PLAYER_BDR   0x00FFA000   /* player border (amber) */
+#define COL_TREE         0x0066BB6A   /* tree marker (light green) */
+#define COL_TREE_TRUNK   0x00795548   /* tree trunk (brown) */
+#define COL_GAME_BG      0x00101818   /* game info panel background */
+#define COL_GAME_TITLE   0x0088CCAA   /* game title color */
+
 #endif /* FRAMEBUFFER_H */
