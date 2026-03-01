@@ -20,7 +20,7 @@ NASM    = nasm
 CC      = gcc
 LD      = ld
 OBJCOPY = objcopy
-PYTHON  = python
+PYTHON  = py
 QEMU    = "C:/Program Files/qemu/qemu-system-x86_64.exe"
 
 # HERB program to embed (override with: make PROGRAM=interactive_os)
