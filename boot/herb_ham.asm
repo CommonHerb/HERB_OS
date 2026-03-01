@@ -36,6 +36,8 @@
 [bits 64]
 default rel
 
+%include "herb_graph_layout.inc"
+
 ; C bridge function imports (Category B/C — ported to assembly in Phase 4d)
 extern ham_scan
 extern ham_eprop
@@ -47,6 +49,14 @@ extern try_move
 extern get_scoped_container
 extern do_channel_send
 extern do_channel_receive
+; Phase 4i — HAM compiler externs
+extern g_graph
+extern intern
+extern graph_find_entity_by_name
+extern graph_find_container_by_name
+extern str_of
+extern serial_print
+extern herb_snprintf
 
 ; Export entry point and debug counters
 global ham_run
@@ -59,6 +69,8 @@ global ham_dbg_require
 global ham_dbg_guard
 global ham_dbg_skip
 global fixpoint_iters
+; Phase 4i — HAM compiler exports
+global ham_compile_all
 
 ; ============================================================
 ; BSS — Static data for HAM execution
@@ -99,6 +111,48 @@ ham_dbg_require: resd 1        ; number of REQUIREs reached
 ham_dbg_guard:   resd 1        ; number of GUARDs reached
 ham_dbg_skip:    resd 1        ; number of THDR owner-check skips (Phase 3c)
 ham_dbg_emov:    resd 1        ; number of EMOV instructions executed
+
+; Phase 4i — HAM compiler BSS
+ham_op_ids_init: resd 1        ; lazy init flag
+ham_id_add:      resd 1
+ham_id_sub:      resd 1
+ham_id_mul:      resd 1
+ham_id_gt:       resd 1
+ham_id_lt:       resd 1
+ham_id_gte:      resd 1
+ham_id_lte:      resd 1
+ham_id_eq:       resd 1
+ham_id_neq:      resd 1
+ham_id_and:      resd 1
+ham_id_or:       resd 1
+
+; ============================================================
+; RDATA — HAM compiler string constants (Phase 4i)
+; ============================================================
+
+section .rdata
+
+hc_str_plus:      db "+", 0
+hc_str_minus:     db "-", 0
+hc_str_star:      db "*", 0
+hc_str_gt:        db ">", 0
+hc_str_lt:        db "<", 0
+hc_str_gte:       db ">=", 0
+hc_str_lte:       db "<=", 0
+hc_str_eq:        db "==", 0
+hc_str_neq:       db "!=", 0
+hc_str_and:       db "and", 0
+hc_str_or:        db "or", 0
+hc_comp_pfx:      db "  [COMP] ", 0
+hc_comp_ok:       db " OK len=%d", 10, 0
+hc_comp_fail:     db " FAIL", 10, 0
+hc_ham_diag:      db "  [HAM] Compiling ", 0
+hc_ham_mc:        db " mc[", 0
+hc_ham_eq2:       db "]=cidx ", 0
+hc_ham_lp:        db "(", 0
+hc_ham_rp:        db ")", 0
+hc_newline:       db 10, 0
+hc_intfmt:        db "%d", 0
 
 ; ============================================================
 ; TEXT — HAM engine code
@@ -1676,3 +1730,1590 @@ ham_op_erecv_s:
 
 .ercv_done:
     DISPATCH
+
+; ============================================================
+; PHASE 4i: HAM BYTECODE COMPILER (Assembly)
+;
+; Replaces the C HAM compiler from herb_runtime_freestanding.c.
+; Functions: ham_init_op_ids, ham_bind_lookup, ham_bind_alloc,
+;            ham_expr_compilable, ham_tension_compilable,
+;            ham_compile_expr, ham_compile_tension, ham_compile_all
+; ============================================================
+
+; ============================================================
+; ham_init_op_ids — Intern operator strings, cache IDs to BSS
+;
+; No args. Idempotent (checks ham_op_ids_init flag).
+; Clobbers: RCX, RDX, R8-R11, RAX
+; ============================================================
+ham_init_op_ids:
+    cmp     dword [ham_op_ids_init], 0
+    jne     .hioi_done
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 32             ; shadow space
+
+    lea     rcx, [hc_str_plus]
+    call    intern
+    mov     [ham_id_add], eax
+
+    lea     rcx, [hc_str_minus]
+    call    intern
+    mov     [ham_id_sub], eax
+
+    lea     rcx, [hc_str_star]
+    call    intern
+    mov     [ham_id_mul], eax
+
+    lea     rcx, [hc_str_gt]
+    call    intern
+    mov     [ham_id_gt], eax
+
+    lea     rcx, [hc_str_lt]
+    call    intern
+    mov     [ham_id_lt], eax
+
+    lea     rcx, [hc_str_gte]
+    call    intern
+    mov     [ham_id_gte], eax
+
+    lea     rcx, [hc_str_lte]
+    call    intern
+    mov     [ham_id_lte], eax
+
+    lea     rcx, [hc_str_eq]
+    call    intern
+    mov     [ham_id_eq], eax
+
+    lea     rcx, [hc_str_neq]
+    call    intern
+    mov     [ham_id_neq], eax
+
+    lea     rcx, [hc_str_and]
+    call    intern
+    mov     [ham_id_and], eax
+
+    lea     rcx, [hc_str_or]
+    call    intern
+    mov     [ham_id_or], eax
+
+    mov     dword [ham_op_ids_init], 1
+
+    add     rsp, 32
+    pop     rbx
+    pop     rbp
+.hioi_done:
+    ret
+
+; ============================================================
+; ham_bind_lookup(HamBindMap* m, int bind_id) -> int reg (-1 if not found)
+;
+; RCX = m (HamBindMap*), EDX = bind_id
+; Returns register index in EAX, or -1 if not found.
+; Leaf function — no frame needed.
+; ============================================================
+ham_bind_lookup:
+    mov     r8d, [rcx + HBM_COUNT]
+    xor     eax, eax            ; i = 0
+.hbl_loop:
+    cmp     eax, r8d
+    jge     .hbl_notfound
+    cmp     edx, [rcx + HBM_IDS + rax*4]
+    je      .hbl_found
+    inc     eax
+    jmp     .hbl_loop
+.hbl_found:
+    mov     eax, [rcx + HBM_REGS + rax*4]
+    ret
+.hbl_notfound:
+    mov     eax, -1
+    ret
+
+; ============================================================
+; ham_bind_alloc(HamBindMap* m, int bind_id) -> int reg (-1 if full)
+;
+; RCX = m (HamBindMap*), EDX = bind_id
+; Looks up bind_id first; if found, returns existing reg.
+; Otherwise allocates new slot (count as reg index).
+; Returns register index in EAX, or -1 if full.
+; ============================================================
+ham_bind_alloc:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    sub     rsp, 32
+
+    mov     rbx, rcx            ; RBX = m
+    mov     esi, edx            ; ESI = bind_id
+
+    ; Try lookup first
+    call    ham_bind_lookup
+    test    eax, eax
+    jns     .hba_done           ; found (>= 0)
+
+    ; Not found — allocate
+    mov     eax, [rbx + HBM_COUNT]
+    cmp     eax, HAM_MAX_BINDS
+    jge     .hba_full
+
+    ; m->ids[count] = bind_id
+    movsxd  rcx, eax
+    mov     [rbx + HBM_IDS + rcx*4], esi
+    ; m->regs[count] = count (reg = slot index)
+    mov     [rbx + HBM_REGS + rcx*4], eax
+    ; m->count++
+    inc     dword [rbx + HBM_COUNT]
+    ; return reg (already in EAX)
+    jmp     .hba_done
+
+.hba_full:
+    mov     eax, -1
+.hba_done:
+    add     rsp, 32
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+; ============================================================
+; ham_expr_compilable(Expr* e) -> int (1=compilable, 0=not)
+;
+; RCX = e (Expr*)
+; Recursive. Checks if expression tree can be compiled to HAM.
+; ============================================================
+ham_expr_compilable:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    sub     rsp, 32
+
+    ; if (!e) return 0
+    test    rcx, rcx
+    jz      .hec_zero
+
+    mov     ebx, [rcx + EX_KIND]  ; EBX = kind
+    mov     rsi, rcx              ; RSI = e
+
+    ; EX_INT (0) -> return 1
+    cmp     ebx, EX_INT_T
+    je      .hec_one
+
+    ; EX_BOOL (3) -> return 1
+    cmp     ebx, EX_BOOL_T
+    je      .hec_one
+
+    ; EX_PROP (4) -> return 1
+    cmp     ebx, EX_PROP_T
+    je      .hec_one
+
+    ; EX_COUNT (5) -> check flags
+    cmp     ebx, EX_COUNT_T
+    je      .hec_count
+
+    ; EX_BINARY (6) -> recurse
+    cmp     ebx, EX_BINARY_T
+    je      .hec_binary
+
+    ; EX_UNARY (7) -> recurse on arg
+    cmp     ebx, EX_UNARY_T
+    je      .hec_unary
+
+    ; default (EX_FLOAT, EX_STRING, EX_IN_OF) -> return 0
+    jmp     .hec_zero
+
+.hec_count:
+    ; return !e->count.is_scoped && !e->count.is_channel && e->count.container_idx >= 0
+    cmp     dword [rsi + EX_COUNT_SCOPED], 0
+    jne     .hec_zero
+    cmp     dword [rsi + EX_COUNT_ISCHAN], 0
+    jne     .hec_zero
+    cmp     dword [rsi + EX_COUNT_CIDX], 0
+    jl      .hec_zero
+    jmp     .hec_one
+
+.hec_binary:
+    ; init op IDs, check for unsupported ops (mul, or)
+    call    ham_init_op_ids
+    mov     eax, [rsi + EX_BINARY_OP_ID]
+    cmp     eax, [ham_id_mul]
+    je      .hec_zero
+    cmp     eax, [ham_id_or]
+    je      .hec_zero
+    ; recurse left
+    mov     rcx, [rsi + EX_BINARY_LEFT]
+    call    ham_expr_compilable
+    test    eax, eax
+    jz      .hec_zero
+    ; recurse right
+    mov     rcx, [rsi + EX_BINARY_RIGHT]
+    call    ham_expr_compilable
+    jmp     .hec_done           ; return result of right
+
+.hec_unary:
+    mov     rcx, [rsi + EX_UNARY_ARG]
+    call    ham_expr_compilable
+    jmp     .hec_done           ; return result of arg
+
+.hec_one:
+    mov     eax, 1
+    jmp     .hec_done
+.hec_zero:
+    xor     eax, eax
+.hec_done:
+    add     rsp, 32
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+; ============================================================
+; ham_tension_compilable(Tension* t) -> int (1=compilable, 0=not)
+;
+; RCX = t (Tension*)
+; Checks if all match/emit clauses are compilable.
+; ============================================================
+ham_tension_compilable:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    sub     rsp, 32
+
+    mov     rbx, rcx            ; RBX = t
+
+    ; if (!t->enabled) return 0
+    cmp     dword [rbx + TEN_ENABLED], 0
+    je      .htc_zero
+
+    ; --- Check match clauses ---
+    xor     esi, esi            ; ESI = i
+    mov     r12d, [rbx + TEN_MATCH_COUNT]
+
+.htc_mc_loop:
+    cmp     esi, r12d
+    jge     .htc_check_emits
+
+    ; mc = &t->matches[i]
+    movsxd  rax, esi
+    imul    rax, SIZEOF_MATCHCLAUSE
+    lea     rdi, [rbx + TEN_MATCHES + rax]  ; RDI = mc
+
+    mov     eax, [rdi + MC_KIND]
+
+    cmp     eax, MC_ENTITY_IN_V
+    je      .htc_mc_entity_in
+
+    cmp     eax, MC_EMPTY_IN_V
+    je      .htc_mc_empty_in
+
+    cmp     eax, MC_GUARD_V
+    je      .htc_mc_guard
+
+    cmp     eax, MC_CONTAINER_IS_V
+    je      .htc_mc_next        ; always compilable
+
+    ; unknown kind -> return 0
+    jmp     .htc_zero
+
+.htc_mc_entity_in:
+    ; if (mc->where_expr && !ham_expr_compilable(mc->where_expr)) return 0
+    mov     rcx, [rdi + MC_WHERE_EXPR]
+    test    rcx, rcx
+    jz      .htc_mc_next
+    call    ham_expr_compilable
+    test    eax, eax
+    jz      .htc_zero
+    jmp     .htc_mc_next
+
+.htc_mc_empty_in:
+    ; if (mc->container_count != 1) return 0
+    cmp     dword [rdi + MC_CONTAINER_COUNT], 1
+    jne     .htc_zero
+    jmp     .htc_mc_next
+
+.htc_mc_guard:
+    ; if (!mc->guard_expr || !ham_expr_compilable(mc->guard_expr)) return 0
+    mov     rcx, [rdi + MC_GUARD_EXPR]
+    test    rcx, rcx
+    jz      .htc_zero
+    call    ham_expr_compilable
+    test    eax, eax
+    jz      .htc_zero
+
+.htc_mc_next:
+    inc     esi
+    jmp     .htc_mc_loop
+
+.htc_check_emits:
+    ; --- Check emit clauses ---
+    xor     esi, esi            ; ESI = i
+    mov     r12d, [rbx + TEN_EMIT_COUNT]
+
+.htc_ec_loop:
+    cmp     esi, r12d
+    jge     .htc_one
+
+    ; ec = &t->emits[i]
+    movsxd  rax, esi
+    imul    rax, SIZEOF_EMITCLAUSE
+    lea     rdi, [rbx + TEN_EMITS + rax]  ; RDI = ec
+
+    mov     eax, [rdi + EC_KIND]
+
+    cmp     eax, EC_MOVE_V
+    je      .htc_ec_next        ; always compilable
+
+    cmp     eax, EC_SET_V
+    je      .htc_ec_set
+
+    cmp     eax, EC_SEND_V
+    je      .htc_ec_next        ; supported
+
+    cmp     eax, EC_RECEIVE_V
+    je      .htc_ec_next        ; supported (scoped target)
+
+    ; EC_TRANSFER, EC_DUPLICATE -> return 0
+    jmp     .htc_zero
+
+.htc_ec_set:
+    ; if (!ec->value_expr || !ham_expr_compilable(ec->value_expr)) return 0
+    mov     rcx, [rdi + EC_VALUE_EXPR]
+    test    rcx, rcx
+    jz      .htc_zero
+    call    ham_expr_compilable
+    test    eax, eax
+    jz      .htc_zero
+
+.htc_ec_next:
+    inc     esi
+    jmp     .htc_ec_loop
+
+.htc_one:
+    mov     eax, 1
+    jmp     .htc_done
+.htc_zero:
+    xor     eax, eax
+.htc_done:
+    add     rsp, 32
+    pop     r12
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+; ============================================================
+; ham_compile_expr(Expr* e, uint8_t* buf, int* pos, HamBindMap* bm, int buf_size) -> int
+;
+; RCX = e, RDX = buf, R8 = pos, R9 = bm, [RBP+48] = buf_size
+; Returns 1 on success, 0 on failure.
+;
+; Register plan for recursive calls:
+;   RBX = e, RSI = buf, RDI = pos_ptr, R12 = bm, R13d = buf_size
+; ============================================================
+ham_compile_expr:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    push    r13
+    sub     rsp, 40             ; 32 shadow + 8 align (5 pushes + push rbp = 48 = 16-aligned, +40 = 88 total, need +8 for alignment)
+    ; Stack: 6 pushes (48) + sub 40 = 88, RSP at call = 88 from entry... let me recalculate
+    ; Entry: RSP is 16n+8 (after return addr push)
+    ; push rbp: RSP = 16n
+    ; push rbx,rsi,rdi,r12,r13: 5 pushes, RSP = 16n - 40 = 16(n-2) - 8
+    ; Need sub rsp, X such that RSP - X is 16-aligned for calls
+    ; Current RSP = 16(n-2) - 8, so sub 40: RSP = 16(n-2) - 48 = 16(n-5), 16-aligned. Good.
+
+    ; Save args to callee-saved
+    mov     rbx, rcx            ; RBX = e
+    mov     rsi, rdx            ; RSI = buf
+    mov     rdi, r8             ; RDI = pos_ptr
+    mov     r12, r9             ; R12 = bm
+    mov     r13d, [rbp + 48]    ; R13d = buf_size
+
+    ; if (!e) return 0
+    test    rbx, rbx
+    jz      .hce_zero
+
+    ; if (*pos >= buf_size - 10) return 0
+    mov     eax, [rdi]
+    mov     ecx, r13d
+    sub     ecx, 10
+    cmp     eax, ecx
+    jge     .hce_zero
+
+    mov     ecx, [rbx + EX_KIND]  ; ECX = kind
+
+    cmp     ecx, EX_INT_T
+    je      .hce_int
+
+    cmp     ecx, EX_BOOL_T
+    je      .hce_bool
+
+    cmp     ecx, EX_PROP_T
+    je      .hce_prop
+
+    cmp     ecx, EX_COUNT_T
+    je      .hce_count
+
+    cmp     ecx, EX_BINARY_T
+    je      .hce_binary
+
+    cmp     ecx, EX_UNARY_T
+    je      .hce_unary
+
+    ; default -> return 0
+    jmp     .hce_zero
+
+.hce_int:
+    ; buf[pos++] = 0x20 (IPUSH)
+    mov     eax, [rdi]
+    mov     byte [rsi + rax], 0x20
+    inc     eax
+    ; ham_put_i32 inline: write (int32_t)e->int_val as LE
+    mov     ecx, [rbx + EX_INT_VAL]   ; low 32 bits of int64_t
+    mov     [rsi + rax], ecx           ; x86 stores LE natively
+    add     eax, 4
+    mov     [rdi], eax
+    jmp     .hce_one
+
+.hce_bool:
+    ; buf[pos++] = 0x20 (IPUSH)
+    mov     eax, [rdi]
+    mov     byte [rsi + rax], 0x20
+    inc     eax
+    ; value = bool_val ? 1 : 0
+    mov     ecx, [rbx + EX_BOOL_VAL]
+    test    ecx, ecx
+    setnz   cl
+    movzx   ecx, cl
+    mov     [rsi + rax], ecx
+    add     eax, 4
+    mov     [rdi], eax
+    jmp     .hce_one
+
+.hce_prop:
+    ; reg = ham_bind_lookup(bm, e->prop.of_id)
+    mov     rcx, r12
+    mov     edx, [rbx + EX_OF_ID]
+    call    ham_bind_lookup
+    test    eax, eax
+    js      .hce_zero           ; reg < 0 -> fail
+
+    ; buf[pos++] = 0x21 (EPROP), buf[pos++] = reg
+    mov     ecx, [rdi]          ; pos
+    mov     byte [rsi + rcx], 0x21
+    inc     ecx
+    mov     [rsi + rcx], al     ; reg byte
+    inc     ecx
+    ; ham_put_u16 inline: prop_id
+    mov     edx, [rbx + EX_PROP_ID]
+    mov     [rsi + rcx], dx     ; x86 stores u16 LE natively
+    add     ecx, 2
+    mov     [rdi], ecx
+    jmp     .hce_one
+
+.hce_count:
+    ; buf[pos++] = 0x22 (ECNT)
+    mov     eax, [rdi]
+    mov     byte [rsi + rax], 0x22
+    inc     eax
+    ; ham_put_u16 inline: container_idx
+    mov     ecx, [rbx + EX_COUNT_CIDX]
+    mov     [rsi + rax], cx
+    add     eax, 2
+    mov     [rdi], eax
+    jmp     .hce_one
+
+.hce_binary:
+    ; Recurse left: ham_compile_expr(e->binary.left, buf, pos, bm, buf_size)
+    mov     rcx, [rbx + EX_BINARY_LEFT]
+    mov     rdx, rsi
+    mov     r8, rdi
+    mov     r9, r12
+    mov     dword [rsp + 32], r13d
+    call    ham_compile_expr
+    test    eax, eax
+    jz      .hce_zero
+
+    ; Recurse right: ham_compile_expr(e->binary.right, buf, pos, bm, buf_size)
+    mov     rcx, [rbx + EX_BINARY_RIGHT]
+    mov     rdx, rsi
+    mov     r8, rdi
+    mov     r9, r12
+    mov     dword [rsp + 32], r13d
+    call    ham_compile_expr
+    test    eax, eax
+    jz      .hce_zero
+
+    ; Emit operator byte
+    call    ham_init_op_ids
+    mov     eax, [rbx + EX_BINARY_OP_ID]
+    mov     ecx, [rdi]          ; pos
+
+    cmp     eax, [ham_id_add]
+    je      .hce_bin_add
+    cmp     eax, [ham_id_sub]
+    je      .hce_bin_sub
+    cmp     eax, [ham_id_gt]
+    je      .hce_bin_gt
+    cmp     eax, [ham_id_lt]
+    je      .hce_bin_lt
+    cmp     eax, [ham_id_gte]
+    je      .hce_bin_gte
+    cmp     eax, [ham_id_lte]
+    je      .hce_bin_lte
+    cmp     eax, [ham_id_eq]
+    je      .hce_bin_eq
+    cmp     eax, [ham_id_neq]
+    je      .hce_bin_neq
+    cmp     eax, [ham_id_and]
+    je      .hce_bin_and
+    ; Unknown op -> fail
+    jmp     .hce_zero
+
+.hce_bin_add:
+    mov     byte [rsi + rcx], 0x24
+    jmp     .hce_bin_emit
+.hce_bin_sub:
+    mov     byte [rsi + rcx], 0x25
+    jmp     .hce_bin_emit
+.hce_bin_gt:
+    mov     byte [rsi + rcx], 0x27
+    jmp     .hce_bin_emit
+.hce_bin_lt:
+    mov     byte [rsi + rcx], 0x28
+    jmp     .hce_bin_emit
+.hce_bin_gte:
+    mov     byte [rsi + rcx], 0x29
+    jmp     .hce_bin_emit
+.hce_bin_lte:
+    mov     byte [rsi + rcx], 0x2A
+    jmp     .hce_bin_emit
+.hce_bin_eq:
+    mov     byte [rsi + rcx], 0x2B
+    jmp     .hce_bin_emit
+.hce_bin_neq:
+    mov     byte [rsi + rcx], 0x2C
+    jmp     .hce_bin_emit
+.hce_bin_and:
+    mov     byte [rsi + rcx], 0x2D
+
+.hce_bin_emit:
+    inc     ecx
+    mov     [rdi], ecx
+    jmp     .hce_one
+
+.hce_unary:
+    ; Recurse arg: ham_compile_expr(e->unary.arg, buf, pos, bm, buf_size)
+    mov     rcx, [rbx + EX_UNARY_ARG]
+    mov     rdx, rsi
+    mov     r8, rdi
+    mov     r9, r12
+    mov     dword [rsp + 32], r13d
+    call    ham_compile_expr
+    test    eax, eax
+    jz      .hce_zero
+    ; buf[pos++] = 0x2F (NOT)
+    mov     eax, [rdi]
+    mov     byte [rsi + rax], 0x2F
+    inc     eax
+    mov     [rdi], eax
+    jmp     .hce_one
+
+.hce_one:
+    mov     eax, 1
+    jmp     .hce_ret
+.hce_zero:
+    xor     eax, eax
+.hce_ret:
+    add     rsp, 40
+    pop     r13
+    pop     r12
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+; ============================================================
+; ham_compile_tension(Tension* t, uint8_t* buf, int* pos, int buf_size) -> int
+;
+; RCX = t, RDX = buf, R8 = pos, R9d = buf_size
+; Returns 1 on success, 0 on failure.
+;
+; Register plan:
+;   RBX = t, RSI = buf, RDI = pos_ptr, R12d = buf_size
+;   R13 = current clause pointer (mc/ec), R14 = scratch
+;   R15d = loop counter i
+;
+; Stack locals (sub rsp, 88):
+;   [rsp+32..35] = 5th arg slot for ham_compile_expr
+;   [rsp+40..75] = HamBindMap (36 bytes)
+;   [rsp+76..79] = len_pos
+;   [rsp+80..83] = t_start
+; ============================================================
+
+%define HCT_5TH   32
+%define HCT_BM    40
+%define HCT_LEN   76
+%define HCT_TST   80
+
+ham_compile_tension:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 88
+
+    ; Save args to callee-saved
+    mov     rbx, rcx            ; RBX = t
+    mov     rsi, rdx            ; RSI = buf
+    mov     rdi, r8             ; RDI = pos_ptr
+    mov     r12d, r9d           ; R12d = buf_size
+
+    ; --- Initialize HamBindMap: bm.count = 0 ---
+    mov     dword [rsp + HCT_BM + HBM_COUNT], 0
+
+    ; --- Pre-allocate bindings by scanning match clauses ---
+    xor     r15d, r15d          ; i = 0
+    mov     r14d, [rbx + TEN_MATCH_COUNT]
+
+.hct_prealloc_loop:
+    cmp     r15d, r14d
+    jge     .hct_prealloc_done
+
+    ; mc = &t->matches[i]
+    movsxd  rax, r15d
+    imul    rax, SIZEOF_MATCHCLAUSE
+    lea     r13, [rbx + TEN_MATCHES + rax]
+
+    ; if (mc->bind_id >= 0) ham_bind_alloc(&bm, mc->bind_id)
+    mov     edx, [r13 + MC_BIND_ID]
+    test    edx, edx
+    js      .hct_prealloc_next
+
+    lea     rcx, [rsp + HCT_BM]
+    call    ham_bind_alloc
+    test    eax, eax
+    js      .hct_fail           ; too many bindings
+
+.hct_prealloc_next:
+    inc     r15d
+    jmp     .hct_prealloc_loop
+
+.hct_prealloc_done:
+    ; --- Save t_start = *pos ---
+    mov     eax, [rdi]
+    mov     [rsp + HCT_TST], eax
+
+    ; --- Emit THDR: 0x40 + pri(1) + owner(2) + run_ctnr(2) + len_placeholder(2) ---
+    mov     ecx, [rdi]          ; pos
+    mov     byte [rsi + rcx], 0x40
+    inc     ecx
+
+    ; priority (clamped to 255)
+    mov     eax, [rbx + TEN_PRIORITY]
+    cmp     eax, 255
+    jle     .hct_pri_ok
+    mov     eax, 255
+.hct_pri_ok:
+    mov     [rsi + rcx], al
+    inc     ecx
+
+    ; owner (u16, 0xFFFF if < 0)
+    mov     eax, [rbx + TEN_OWNER]
+    test    eax, eax
+    jns     .hct_owner_ok
+    mov     eax, 0xFFFF
+.hct_owner_ok:
+    mov     [rsi + rcx], ax     ; u16 LE
+    add     ecx, 2
+
+    ; run_container (u16, 0xFFFF if < 0)
+    mov     eax, [rbx + TEN_OWNER_RUN_CNT]
+    test    eax, eax
+    jns     .hct_runcnt_ok
+    mov     eax, 0xFFFF
+.hct_runcnt_ok:
+    mov     [rsi + rcx], ax
+    add     ecx, 2
+
+    ; Save len_pos, write placeholder 0
+    mov     [rsp + HCT_LEN], ecx
+    mov     word [rsi + rcx], 0
+    add     ecx, 2
+    mov     [rdi], ecx          ; update *pos
+
+    ; ================================================================
+    ; COMPILE MATCH CLAUSES
+    ; ================================================================
+    xor     r15d, r15d          ; i = 0
+
+.hct_mc_loop:
+    cmp     r15d, [rbx + TEN_MATCH_COUNT]
+    jge     .hct_mc_done
+
+    ; mc = &t->matches[i]
+    movsxd  rax, r15d
+    imul    rax, SIZEOF_MATCHCLAUSE
+    lea     r13, [rbx + TEN_MATCHES + rax]  ; R13 = mc
+
+    mov     eax, [r13 + MC_KIND]
+
+    cmp     eax, MC_ENTITY_IN_V
+    je      .hct_mc_entity_in
+
+    cmp     eax, MC_EMPTY_IN_V
+    je      .hct_mc_empty_in
+
+    cmp     eax, MC_CONTAINER_IS_V
+    je      .hct_mc_container_is
+
+    cmp     eax, MC_GUARD_V
+    je      .hct_mc_guard
+
+    ; Unknown kind -> skip (shouldn't happen, compilable checked first)
+    jmp     .hct_mc_next
+
+    ; ---- MC_ENTITY_IN ----
+.hct_mc_entity_in:
+    ; Check scope_bind_id
+    mov     eax, [r13 + MC_SCOPE_BIND_ID]
+    test    eax, eax
+    jns     .hct_mc_ei_scoped
+
+    ; Check channel_idx
+    mov     eax, [r13 + MC_CHANNEL_IDX]
+    test    eax, eax
+    jns     .hct_mc_ei_channel
+
+    ; Normal SCAN: 0x01 + container_idx(u16)
+    mov     ecx, [rdi]
+    mov     byte [rsi + rcx], 0x01
+    inc     ecx
+    mov     eax, [r13 + MC_CONTAINER_IDX]
+    mov     [rsi + rcx], ax     ; u16 LE
+    add     ecx, 2
+    mov     [rdi], ecx
+    jmp     .hct_mc_ei_where
+
+.hct_mc_ei_scoped:
+    ; scope_bind_id >= 0: try binding register lookup
+    mov     edx, eax            ; scope_bind_id
+    lea     rcx, [rsp + HCT_BM]
+    call    ham_bind_lookup
+    test    eax, eax
+    jns     .hct_mc_ei_scoped_bound
+
+    ; Not bound — resolve as global entity name at compile time
+    mov     ecx, [r13 + MC_SCOPE_BIND_ID]
+    call    graph_find_entity_by_name
+    test    eax, eax
+    js      .hct_fail
+    mov     ecx, eax
+    mov     edx, [r13 + MC_SCOPE_CNAME_ID]
+    call    get_scoped_container
+    test    eax, eax
+    js      .hct_fail
+    ; Emit SCAN (0x01) + resolved cidx
+    mov     ecx, [rdi]
+    mov     byte [rsi + rcx], 0x01
+    inc     ecx
+    mov     [rsi + rcx], ax     ; u16 LE
+    add     ecx, 2
+    mov     [rdi], ecx
+    jmp     .hct_mc_ei_where
+
+.hct_mc_ei_scoped_bound:
+    ; Owner is bound — emit SCAN_SCOPED (0x02) + reg(1) + scope_cname_id(2)
+    mov     r14d, eax           ; R14d = scope_reg
+    mov     ecx, [rdi]
+    mov     byte [rsi + rcx], 0x02
+    inc     ecx
+    mov     [rsi + rcx], r14b   ; reg byte
+    inc     ecx
+    mov     eax, [r13 + MC_SCOPE_CNAME_ID]
+    mov     [rsi + rcx], ax     ; u16 LE
+    add     ecx, 2
+    mov     [rdi], ecx
+    jmp     .hct_mc_ei_where
+
+.hct_mc_ei_channel:
+    ; Channel: resolve buffer container
+    ; buffer_ctnr = g_graph.channels[channel_idx].buffer_container_idx
+    movsxd  rcx, eax            ; channel_idx
+    imul    rcx, SIZEOF_CHANNEL
+    mov     eax, [g_graph + GRAPH_CHANNELS + rcx + CH_BUFFER]
+    ; Emit SCAN (0x01) + buffer_ctnr(u16)
+    mov     ecx, [rdi]
+    mov     byte [rsi + rcx], 0x01
+    inc     ecx
+    mov     [rsi + rcx], ax     ; u16 LE
+    add     ecx, 2
+    mov     [rdi], ecx
+
+.hct_mc_ei_where:
+    ; WHERE filter (if where_expr && bind_id >= 0)
+    mov     rax, [r13 + MC_WHERE_EXPR]
+    test    rax, rax
+    jz      .hct_mc_ei_select
+    mov     r14d, [r13 + MC_BIND_ID]
+    test    r14d, r14d
+    js      .hct_mc_ei_select
+
+    ; reg = ham_bind_lookup(&bm, bind_id)
+    lea     rcx, [rsp + HCT_BM]
+    mov     edx, r14d
+    call    ham_bind_lookup
+    test    eax, eax
+    js      .hct_fail
+
+    ; Emit WHERE (0x10) + reg(1)
+    mov     ecx, [rdi]
+    mov     byte [rsi + rcx], 0x10
+    inc     ecx
+    mov     [rsi + rcx], al     ; reg byte
+    inc     ecx
+    mov     [rdi], ecx
+
+    ; ham_compile_expr(where_expr, buf, pos, &bm, buf_size)
+    mov     rcx, [r13 + MC_WHERE_EXPR]
+    mov     rdx, rsi
+    mov     r8, rdi
+    lea     r9, [rsp + HCT_BM]
+    mov     [rsp + HCT_5TH], r12d
+    call    ham_compile_expr
+    test    eax, eax
+    jz      .hct_fail
+
+    ; Emit ENDWHERE (0x11)
+    mov     ecx, [rdi]
+    mov     byte [rsi + rcx], 0x11
+    inc     ecx
+    mov     [rdi], ecx
+
+.hct_mc_ei_select:
+    ; Select mode (if bind_id >= 0)
+    mov     eax, [r13 + MC_BIND_ID]
+    test    eax, eax
+    js      .hct_mc_ei_require
+
+    ; reg = ham_bind_lookup(&bm, bind_id)
+    lea     rcx, [rsp + HCT_BM]
+    mov     edx, eax
+    call    ham_bind_lookup
+    test    eax, eax
+    js      .hct_fail
+    mov     r14d, eax           ; R14d = reg
+
+    mov     eax, [r13 + MC_SELECT]
+
+    cmp     eax, SEL_FIRST_V
+    je      .hct_mc_ei_sel_first
+    cmp     eax, SEL_MAX_BY_V
+    je      .hct_mc_ei_sel_max
+    cmp     eax, SEL_MIN_BY_V
+    je      .hct_mc_ei_sel_min
+    cmp     eax, SEL_EACH_V
+    je      .hct_mc_ei_sel_each
+    jmp     .hct_mc_ei_require
+
+.hct_mc_ei_sel_first:
+    ; SEL_FIRST (0x03) + reg(1)
+    mov     ecx, [rdi]
+    mov     byte [rsi + rcx], 0x03
+    inc     ecx
+    mov     [rsi + rcx], r14b
+    inc     ecx
+    mov     [rdi], ecx
+    jmp     .hct_mc_ei_require
+
+.hct_mc_ei_sel_max:
+    ; SEL_MAX (0x04) + reg(1) + key_prop_id(2)
+    mov     ecx, [rdi]
+    mov     byte [rsi + rcx], 0x04
+    inc     ecx
+    mov     [rsi + rcx], r14b
+    inc     ecx
+    mov     eax, [r13 + MC_KEY_PROP_ID]
+    mov     [rsi + rcx], ax
+    add     ecx, 2
+    mov     [rdi], ecx
+    jmp     .hct_mc_ei_require
+
+.hct_mc_ei_sel_min:
+    ; SEL_MIN (0x05) + reg(1) + key_prop_id(2)
+    mov     ecx, [rdi]
+    mov     byte [rsi + rcx], 0x05
+    inc     ecx
+    mov     [rsi + rcx], r14b
+    inc     ecx
+    mov     eax, [r13 + MC_KEY_PROP_ID]
+    mov     [rsi + rcx], ax
+    add     ecx, 2
+    mov     [rdi], ecx
+    jmp     .hct_mc_ei_require
+
+.hct_mc_ei_sel_each:
+    ; SEL_EACH (0x06) + reg(1)
+    mov     ecx, [rdi]
+    mov     byte [rsi + rcx], 0x06
+    inc     ecx
+    mov     [rsi + rcx], r14b
+    inc     ecx
+    mov     [rdi], ecx
+
+.hct_mc_ei_require:
+    ; REQUIRE if needed
+    cmp     dword [r13 + MC_REQUIRED], 0
+    je      .hct_mc_next
+    mov     ecx, [rdi]
+    mov     byte [rsi + rcx], 0x14
+    inc     ecx
+    mov     [rdi], ecx
+    jmp     .hct_mc_next
+
+    ; ---- MC_EMPTY_IN ----
+.hct_mc_empty_in:
+    ; ECNT(0x22) + ctnr(u16) + IPUSH(0x20) + 0(i32) + EQ(0x2B) + GUARD(0x12) + ENDGUARD(0x13)
+    mov     ecx, [rdi]
+    mov     byte [rsi + rcx], 0x22
+    inc     ecx
+    mov     eax, [r13 + MC_CONTAINERS]   ; containers[0]
+    mov     [rsi + rcx], ax
+    add     ecx, 2
+    mov     byte [rsi + rcx], 0x20       ; IPUSH
+    inc     ecx
+    mov     dword [rsi + rcx], 0         ; i32 = 0
+    add     ecx, 4
+    mov     byte [rsi + rcx], 0x2B       ; EQ
+    inc     ecx
+    mov     byte [rsi + rcx], 0x12       ; GUARD
+    inc     ecx
+    mov     byte [rsi + rcx], 0x13       ; ENDGUARD
+    inc     ecx
+    mov     [rdi], ecx
+    jmp     .hct_mc_next
+
+    ; ---- MC_CONTAINER_IS ----
+.hct_mc_container_is:
+    ; ECNT(0x22) + guard_ctnr(u16) + IPUSH(0x20) + 0(i32) + [EQ or GT] + GUARD + ENDGUARD
+    mov     ecx, [rdi]
+    mov     byte [rsi + rcx], 0x22
+    inc     ecx
+    mov     eax, [r13 + MC_GUARD_CNT_IDX]
+    mov     [rsi + rcx], ax
+    add     ecx, 2
+    mov     byte [rsi + rcx], 0x20       ; IPUSH
+    inc     ecx
+    mov     dword [rsi + rcx], 0
+    add     ecx, 4
+    ; is_empty -> EQ (0x2B), else GT (0x27)
+    cmp     dword [r13 + MC_IS_EMPTY], 0
+    je      .hct_mc_cis_gt
+    mov     byte [rsi + rcx], 0x2B       ; EQ
+    jmp     .hct_mc_cis_done
+.hct_mc_cis_gt:
+    mov     byte [rsi + rcx], 0x27       ; GT
+.hct_mc_cis_done:
+    inc     ecx
+    mov     byte [rsi + rcx], 0x12       ; GUARD
+    inc     ecx
+    mov     byte [rsi + rcx], 0x13       ; ENDGUARD
+    inc     ecx
+    mov     [rdi], ecx
+    jmp     .hct_mc_next
+
+    ; ---- MC_GUARD ----
+.hct_mc_guard:
+    ; compile guard_expr + GUARD + ENDGUARD
+    mov     rcx, [r13 + MC_GUARD_EXPR]
+    mov     rdx, rsi
+    mov     r8, rdi
+    lea     r9, [rsp + HCT_BM]
+    mov     [rsp + HCT_5TH], r12d
+    call    ham_compile_expr
+    test    eax, eax
+    jz      .hct_fail
+
+    mov     ecx, [rdi]
+    mov     byte [rsi + rcx], 0x12       ; GUARD
+    inc     ecx
+    mov     byte [rsi + rcx], 0x13       ; ENDGUARD
+    inc     ecx
+    mov     [rdi], ecx
+
+.hct_mc_next:
+    ; Buffer safety check: if (*pos >= buf_size - 20) return 0
+    mov     eax, [rdi]
+    mov     ecx, r12d
+    sub     ecx, 20
+    cmp     eax, ecx
+    jge     .hct_fail
+
+    inc     r15d
+    jmp     .hct_mc_loop
+
+.hct_mc_done:
+
+    ; ================================================================
+    ; COMPILE EMIT CLAUSES
+    ; ================================================================
+    xor     r15d, r15d          ; i = 0
+
+.hct_ec_loop:
+    cmp     r15d, [rbx + TEN_EMIT_COUNT]
+    jge     .hct_ec_done
+
+    ; ec = &t->emits[i]
+    movsxd  rax, r15d
+    imul    rax, SIZEOF_EMITCLAUSE
+    lea     r13, [rbx + TEN_EMITS + rax]  ; R13 = ec
+
+    mov     eax, [r13 + EC_KIND]
+
+    cmp     eax, EC_MOVE_V
+    je      .hct_ec_move
+
+    cmp     eax, EC_SET_V
+    je      .hct_ec_set
+
+    cmp     eax, EC_SEND_V
+    je      .hct_ec_send
+
+    cmp     eax, EC_RECEIVE_V
+    je      .hct_ec_recv
+
+    ; Unknown kind -> skip
+    jmp     .hct_ec_next
+
+    ; ---- EC_MOVE ----
+.hct_ec_move:
+    ; reg = ham_bind_lookup(&bm, ec->entity_ref)
+    lea     rcx, [rsp + HCT_BM]
+    mov     edx, [r13 + EC_ENTITY_REF]
+    call    ham_bind_lookup
+    test    eax, eax
+    js      .hct_fail
+    mov     r14d, eax           ; R14d = entity reg
+
+    ; Check to_scope_bind_id
+    mov     eax, [r13 + EC_TO_SCOPE_BIND_ID]
+    test    eax, eax
+    jns     .hct_ec_move_scoped
+
+    ; ---- Non-scoped move: resolve container by name ----
+    mov     ecx, [r13 + EC_TO_REF]
+    call    graph_find_container_by_name
+    test    eax, eax
+    jns     .hct_ec_move_emit_normal
+
+    ; Not found by name — check match clauses for MC_EMPTY_IN with bind_id == to_ref
+    mov     r8d, [r13 + EC_TO_REF]  ; R8d = to_ref
+    xor     ecx, ecx               ; mi = 0
+.hct_ec_move_search:
+    cmp     ecx, [rbx + TEN_MATCH_COUNT]
+    jge     .hct_fail               ; still not found -> fail
+    ; mc2 = &t->matches[mi]
+    movsxd  rax, ecx
+    push    rcx                     ; save mi
+    imul    rax, SIZEOF_MATCHCLAUSE
+    lea     rdx, [rbx + TEN_MATCHES + rax]
+    ; if (mc2->kind == MC_EMPTY_IN && mc2->bind_id == to_ref)
+    cmp     dword [rdx + MC_KIND], MC_EMPTY_IN_V
+    jne     .hct_ec_move_search_next
+    cmp     r8d, [rdx + MC_BIND_ID]
+    jne     .hct_ec_move_search_next
+    ; Found: to_ctnr = mc2->containers[0]
+    mov     eax, [rdx + MC_CONTAINERS]
+    pop     rcx
+    jmp     .hct_ec_move_emit_normal
+.hct_ec_move_search_next:
+    pop     rcx
+    inc     ecx
+    jmp     .hct_ec_move_search
+
+.hct_ec_move_emit_normal:
+    ; Emit EMOV (0x30) + mt(u16) + reg(1) + to_ctnr(u16)
+    mov     ecx, [rdi]
+    mov     byte [rsi + rcx], 0x30
+    inc     ecx
+    mov     edx, [r13 + EC_MOVE_TYPE_IDX]
+    mov     [rsi + rcx], dx     ; mt u16
+    add     ecx, 2
+    mov     [rsi + rcx], r14b   ; entity reg
+    inc     ecx
+    mov     [rsi + rcx], ax     ; to_ctnr u16 (already in EAX)
+    add     ecx, 2
+    mov     [rdi], ecx
+    jmp     .hct_ec_next
+
+.hct_ec_move_scoped:
+    ; to_scope_bind_id >= 0: try binding lookup
+    mov     edx, eax            ; to_scope_bind_id
+    lea     rcx, [rsp + HCT_BM]
+    call    ham_bind_lookup
+    test    eax, eax
+    jns     .hct_ec_move_scoped_bound
+
+    ; Not bound — resolve as global entity at compile time
+    mov     ecx, [r13 + EC_TO_SCOPE_BIND_ID]
+    call    graph_find_entity_by_name
+    test    eax, eax
+    js      .hct_fail
+    mov     ecx, eax
+    mov     edx, [r13 + EC_TO_SCOPE_CNAME_ID]
+    call    get_scoped_container
+    test    eax, eax
+    js      .hct_fail
+    ; Emit EMOV (0x30) normal with resolved scoped target
+    jmp     .hct_ec_move_emit_normal
+
+.hct_ec_move_scoped_bound:
+    ; Owner is bound — emit EMOV_S (0x31) + mt(u16) + entity_reg(1) + owner_reg(1) + scope_cname_id(u16)
+    mov     ecx, [rdi]
+    mov     byte [rsi + rcx], 0x31
+    inc     ecx
+    mov     edx, [r13 + EC_MOVE_TYPE_IDX]
+    mov     [rsi + rcx], dx     ; mt u16
+    add     ecx, 2
+    mov     [rsi + rcx], r14b   ; entity reg
+    inc     ecx
+    mov     [rsi + rcx], al     ; owner reg (from ham_bind_lookup result)
+    inc     ecx
+    mov     edx, [r13 + EC_TO_SCOPE_CNAME_ID]
+    mov     [rsi + rcx], dx     ; scope_cname_id u16
+    add     ecx, 2
+    mov     [rdi], ecx
+    jmp     .hct_ec_next
+
+    ; ---- EC_SET ----
+.hct_ec_set:
+    ; reg = ham_bind_lookup(&bm, ec->set_entity_ref)
+    lea     rcx, [rsp + HCT_BM]
+    mov     edx, [r13 + EC_SET_ENTITY_REF]
+    call    ham_bind_lookup
+    test    eax, eax
+    js      .hct_fail
+    mov     r14d, eax           ; R14d = reg
+
+    ; ham_compile_expr(ec->value_expr, buf, pos, &bm, buf_size)
+    mov     rcx, [r13 + EC_VALUE_EXPR]
+    mov     rdx, rsi
+    mov     r8, rdi
+    lea     r9, [rsp + HCT_BM]
+    mov     [rsp + HCT_5TH], r12d
+    call    ham_compile_expr
+    test    eax, eax
+    jz      .hct_fail
+
+    ; Emit ESET (0x32) + reg(1) + prop_id(u16)
+    mov     ecx, [rdi]
+    mov     byte [rsi + rcx], 0x32
+    inc     ecx
+    mov     [rsi + rcx], r14b   ; reg
+    inc     ecx
+    mov     eax, [r13 + EC_SET_PROP_ID]
+    mov     [rsi + rcx], ax     ; prop_id u16
+    add     ecx, 2
+    mov     [rdi], ecx
+    jmp     .hct_ec_next
+
+    ; ---- EC_SEND ----
+.hct_ec_send:
+    ; reg = ham_bind_lookup(&bm, ec->send_entity_ref)
+    lea     rcx, [rsp + HCT_BM]
+    mov     edx, [r13 + EC_SEND_ENTITY_REF]
+    call    ham_bind_lookup
+    test    eax, eax
+    js      .hct_fail
+    mov     r14d, eax           ; R14d = reg
+
+    ; Emit ESEND (0x33) + channel_idx(u16) + reg(1)
+    mov     ecx, [rdi]
+    mov     byte [rsi + rcx], 0x33
+    inc     ecx
+    mov     eax, [r13 + EC_SEND_CHANNEL_IDX]
+    mov     [rsi + rcx], ax     ; channel_idx u16
+    add     ecx, 2
+    mov     [rsi + rcx], r14b   ; reg
+    inc     ecx
+    mov     [rdi], ecx
+    jmp     .hct_ec_next
+
+    ; ---- EC_RECEIVE ----
+.hct_ec_recv:
+    ; entity_reg = ham_bind_lookup(&bm, ec->recv_entity_ref)
+    lea     rcx, [rsp + HCT_BM]
+    mov     edx, [r13 + EC_RECV_ENTITY_REF]
+    call    ham_bind_lookup
+    test    eax, eax
+    js      .hct_fail
+    mov     r14d, eax           ; R14d = entity_reg
+
+    ; Check recv_to_scope_bind_id
+    mov     eax, [r13 + EC_RECV_TO_SCOPE_BIND_ID]
+    test    eax, eax
+    js      .hct_fail           ; non-scoped receive not implemented
+
+    ; owner_reg = ham_bind_lookup(&bm, recv_to_scope_bind_id)
+    lea     rcx, [rsp + HCT_BM]
+    mov     edx, eax
+    call    ham_bind_lookup
+    test    eax, eax
+    js      .hct_fail           ; owner not bound -> fail
+
+    ; Emit ERECV_S (0x35) + channel_idx(u16) + entity_reg(1) + owner_reg(1) + scope_cname_id(u16)
+    mov     ecx, [rdi]
+    mov     byte [rsi + rcx], 0x35
+    inc     ecx
+    mov     edx, [r13 + EC_RECV_CHANNEL_IDX]
+    mov     [rsi + rcx], dx     ; channel_idx u16
+    add     ecx, 2
+    mov     [rsi + rcx], r14b   ; entity_reg
+    inc     ecx
+    mov     [rsi + rcx], al     ; owner_reg
+    inc     ecx
+    mov     edx, [r13 + EC_RECV_TO_SCOPE_CNAME_ID]
+    mov     [rsi + rcx], dx     ; scope_cname_id u16
+    add     ecx, 2
+    mov     [rdi], ecx
+
+.hct_ec_next:
+    ; Buffer safety: if (*pos >= buf_size - 10) return 0
+    mov     eax, [rdi]
+    mov     ecx, r12d
+    sub     ecx, 10
+    cmp     eax, ecx
+    jge     .hct_fail
+
+    inc     r15d
+    jmp     .hct_ec_loop
+
+.hct_ec_done:
+
+    ; --- Emit TEND (0x41) ---
+    mov     ecx, [rdi]
+    mov     byte [rsi + rcx], 0x41
+    inc     ecx
+    mov     [rdi], ecx
+
+    ; --- Patch tension_len ---
+    mov     eax, ecx            ; *pos (current)
+    sub     eax, [rsp + HCT_TST]   ; t_len = *pos - t_start
+    mov     ecx, [rsp + HCT_LEN]   ; len_pos
+    mov     [rsi + rcx], ax         ; patch u16 LE
+
+    ; Return 1 (success)
+    mov     eax, 1
+    jmp     .hct_ret
+
+.hct_fail:
+    xor     eax, eax
+.hct_ret:
+    add     rsp, 88
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+; ============================================================
+; ham_compile_all(uint8_t* buf, int buf_size, int* out_count) -> int
+;
+; RCX = buf, EDX = buf_size, R8 = out_count
+; Returns total bytecode bytes written.
+; *out_count is set to number of tensions compiled.
+;
+; Register plan:
+;   RBX = buf, R12d = buf_size, R13d = compiled count
+;   R14d = main loop i, R15d = n (tension_count)
+;
+; Stack locals (sub rsp, 344):
+;   [rsp+32..287]  = int order[64] (256 bytes)
+;   [rsp+288..291] = pos (int, passed by pointer to ham_compile_tension)
+;   [rsp+292..295] = save_pos (int)
+;   [rsp+296..303] = out_count pointer (8 bytes, saved)
+;   [rsp+304..307] = tmpcidx (spawn diagnostic temp)
+;   [rsp+308..311] = tmpj (spawn diagnostic temp)
+;   [rsp+312..335] = tmpbuf (24 bytes, snprintf scratch)
+; ============================================================
+
+%define HCA_ORDER     32
+%define HCA_POS       288
+%define HCA_SAVE_POS  292
+%define HCA_OUTCOUNT  296
+%define HCA_TMPCIDX   304
+%define HCA_TMPJ      308
+%define HCA_TMPBUF    312
+%define HCA_FRAME     344
+
+ham_compile_all:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, HCA_FRAME
+
+    ; Save args
+    mov     rbx, rcx            ; RBX = buf
+    mov     r12d, edx           ; R12d = buf_size
+    mov     [rsp + HCA_OUTCOUNT], r8  ; save out_count pointer
+
+    ; --- ham_init_op_ids() ---
+    call    ham_init_op_ids
+
+    ; --- Build order[] array: order[i] = i ---
+    mov     r15d, [g_graph + GRAPH_TENSION_COUNT]  ; R15d = n
+    xor     ecx, ecx
+.hca_init_order:
+    cmp     ecx, r15d
+    jge     .hca_sort
+    mov     [rsp + HCA_ORDER + rcx*4], ecx
+    inc     ecx
+    jmp     .hca_init_order
+
+.hca_sort:
+    ; --- Bubble sort descending by priority ---
+    xor     esi, esi            ; ESI = i
+
+.hca_sort_i:
+    lea     eax, [esi + 1]
+    cmp     eax, r15d
+    jge     .hca_sort_done
+
+    mov     edi, esi
+    inc     edi                 ; EDI = j = i+1
+
+.hca_sort_j:
+    cmp     edi, r15d
+    jge     .hca_sort_i_next
+
+    movsxd  rax, dword [rsp + HCA_ORDER + rsi*4]
+    imul    rax, SIZEOF_TENSION
+    mov     ecx, [g_graph + GRAPH_TENSIONS + rax + TEN_PRIORITY]
+
+    movsxd  rax, dword [rsp + HCA_ORDER + rdi*4]
+    imul    rax, SIZEOF_TENSION
+    mov     edx, [g_graph + GRAPH_TENSIONS + rax + TEN_PRIORITY]
+
+    cmp     ecx, edx
+    jge     .hca_sort_j_next
+
+    mov     eax, [rsp + HCA_ORDER + rsi*4]
+    mov     ecx, [rsp + HCA_ORDER + rdi*4]
+    mov     [rsp + HCA_ORDER + rsi*4], ecx
+    mov     [rsp + HCA_ORDER + rdi*4], eax
+
+.hca_sort_j_next:
+    inc     edi
+    jmp     .hca_sort_j
+
+.hca_sort_i_next:
+    inc     esi
+    jmp     .hca_sort_i
+
+.hca_sort_done:
+    ; --- Initialize pos = 0, compiled = 0 ---
+    mov     dword [rsp + HCA_POS], 0
+    xor     r13d, r13d          ; compiled = 0
+    xor     r14d, r14d          ; i = 0
+
+    ; ================================================================
+    ; MAIN COMPILE LOOP
+    ; ================================================================
+.hca_loop:
+    cmp     r14d, r15d
+    jge     .hca_done
+
+    ; t = &g_graph.tensions[order[i]]
+    movsxd  rax, dword [rsp + HCA_ORDER + r14*4]
+    imul    rax, SIZEOF_TENSION
+    lea     rdi, [g_graph + GRAPH_TENSIONS + rax]  ; RDI = t (callee-saved)
+
+    ; if (!ham_tension_compilable(t)) continue
+    mov     rcx, rdi
+    call    ham_tension_compilable
+    test    eax, eax
+    jz      .hca_loop_next
+
+    ; --- Spawn diagnostic: if name starts with "spa" ---
+    mov     ecx, [rdi + TEN_NAME_ID]
+    call    str_of
+    cmp     byte [rax], 's'
+    jne     .hca_no_spawn_diag
+    cmp     byte [rax + 1], 'p'
+    jne     .hca_no_spawn_diag
+    cmp     byte [rax + 2], 'a'
+    jne     .hca_no_spawn_diag
+
+    ; Print "  [HAM] Compiling <name>"
+    lea     rcx, [hc_ham_diag]
+    call    serial_print
+    mov     ecx, [rdi + TEN_NAME_ID]
+    call    str_of
+    mov     rcx, rax
+    call    serial_print
+
+    ; Print match clause container info (ESI = j, RDI = t preserved)
+    xor     esi, esi
+.hca_spawn_mc_loop:
+    cmp     esi, [rdi + TEN_MATCH_COUNT]
+    jge     .hca_spawn_mc_done
+
+    movsxd  rax, esi
+    imul    rax, SIZEOF_MATCHCLAUSE
+    lea     rax, [rdi + TEN_MATCHES + rax]
+
+    cmp     dword [rax + MC_KIND], MC_ENTITY_IN_V
+    jne     .hca_spawn_mc_next2
+    mov     ecx, [rax + MC_CONTAINER_IDX]
+    test    ecx, ecx
+    js      .hca_spawn_mc_next2
+
+    ; Save cidx and j to dedicated temp slots
+    mov     [rsp + HCA_TMPCIDX], ecx
+    mov     [rsp + HCA_TMPJ], esi
+
+    lea     rcx, [hc_ham_mc]
+    call    serial_print
+
+    ; Print j
+    mov     esi, [rsp + HCA_TMPJ]
+    lea     rcx, [rsp + HCA_TMPBUF]
+    mov     edx, 24
+    lea     r8, [hc_intfmt]
+    mov     r9d, esi
+    call    herb_snprintf
+    lea     rcx, [rsp + HCA_TMPBUF]
+    call    serial_print
+
+    lea     rcx, [hc_ham_eq2]
+    call    serial_print
+
+    ; Print cidx
+    mov     eax, [rsp + HCA_TMPCIDX]
+    lea     rcx, [rsp + HCA_TMPBUF]
+    mov     edx, 24
+    lea     r8, [hc_intfmt]
+    mov     r9d, eax
+    call    herb_snprintf
+    lea     rcx, [rsp + HCA_TMPBUF]
+    call    serial_print
+
+    lea     rcx, [hc_ham_lp]
+    call    serial_print
+
+    ; Print container name
+    movsxd  rax, dword [rsp + HCA_TMPCIDX]
+    imul    rax, SIZEOF_CONTAINER
+    mov     ecx, [g_graph + GRAPH_CONTAINERS + rax + CNT_NAME_ID]
+    call    str_of
+    mov     rcx, rax
+    call    serial_print
+
+    lea     rcx, [hc_ham_rp]
+    call    serial_print
+
+    ; Restore j
+    mov     esi, [rsp + HCA_TMPJ]
+
+.hca_spawn_mc_next2:
+    inc     esi
+    jmp     .hca_spawn_mc_loop
+
+.hca_spawn_mc_done:
+    lea     rcx, [hc_newline]
+    call    serial_print
+
+.hca_no_spawn_diag:
+    ; --- Print "  [COMP] <name>" ---
+    lea     rcx, [hc_comp_pfx]
+    call    serial_print
+    mov     ecx, [rdi + TEN_NAME_ID]
+    call    str_of
+    mov     rcx, rax
+    call    serial_print
+
+    ; --- save_pos = pos ---
+    mov     eax, [rsp + HCA_POS]
+    mov     [rsp + HCA_SAVE_POS], eax
+
+    ; --- ham_compile_tension(t, buf, &pos, buf_size) ---
+    mov     rcx, rdi            ; t
+    mov     rdx, rbx            ; buf
+    lea     r8, [rsp + HCA_POS] ; &pos
+    mov     r9d, r12d           ; buf_size
+    call    ham_compile_tension
+    test    eax, eax
+    jz      .hca_compile_fail
+
+    ; --- Success: compiled++, print " OK len=X\n" ---
+    inc     r13d
+    mov     eax, [rsp + HCA_POS]
+    sub     eax, [rsp + HCA_SAVE_POS]
+
+    lea     rcx, [rsp + HCA_TMPBUF]
+    mov     edx, 24
+    lea     r8, [hc_comp_ok]
+    mov     r9d, eax
+    call    herb_snprintf
+    lea     rcx, [rsp + HCA_TMPBUF]
+    call    serial_print
+    jmp     .hca_loop_next
+
+.hca_compile_fail:
+    ; --- Failure: rollback pos, print " FAIL\n" ---
+    mov     eax, [rsp + HCA_SAVE_POS]
+    mov     [rsp + HCA_POS], eax
+    lea     rcx, [hc_comp_fail]
+    call    serial_print
+
+.hca_loop_next:
+    inc     r14d
+    jmp     .hca_loop
+
+.hca_done:
+    ; --- Write *out_count = compiled ---
+    mov     rax, [rsp + HCA_OUTCOUNT]
+    test    rax, rax
+    jz      .hca_no_outcount
+    mov     [rax], r13d
+.hca_no_outcount:
+
+    ; --- Return pos ---
+    mov     eax, [rsp + HCA_POS]
+
+    add     rsp, HCA_FRAME
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret

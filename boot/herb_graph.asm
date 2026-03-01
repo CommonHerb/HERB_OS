@@ -33,6 +33,7 @@
 default rel
 
 %include "herb_graph_layout.inc"
+%include "herb_freestanding_layout.inc"
 
 ; External C functions we call
 extern herb_strcmp
@@ -44,6 +45,7 @@ extern herb_memcpy      ; Phase 4f
 extern ham_compile_all  ; Phase 4f — int ham_compile_all(uint8_t* buf, int buf_size, int* out_count)
 extern ham_run          ; Phase 4f — int ham_run(uint8_t* bytecode_ptr, int bytecode_len)
 extern alloc_expr       ; Phase 4f — Expr* alloc_expr(void)
+extern g_arena_ptr      ; Phase 4i — HerbArena* (from herb_loader.asm)
 
 ; External C data we access
 extern g_strings        ; char[2048][128]
@@ -123,6 +125,9 @@ global herb_tension_emit_move
 global herb_expr_int
 global herb_expr_prop
 global herb_expr_binary
+; Phase 4i — Arena queries
+global herb_arena_usage
+global herb_arena_total
 
 section .rdata
     str_question:   db "?", 0
@@ -3355,4 +3360,42 @@ herb_expr_binary:
     pop     rsi
     pop     rbx
     pop     rbp
+    ret
+
+; ============================================================
+; PHASE 4i: ARENA QUERIES
+; ============================================================
+
+; ============================================================
+; herb_arena_usage() -> herb_size_t
+;
+; Returns g_arena_ptr->offset (current arena usage in bytes).
+; Returns 0 if g_arena_ptr is NULL.
+; ============================================================
+herb_arena_usage:
+    lea     rax, [g_arena_ptr]
+    mov     rax, [rax]         ; RAX = g_arena_ptr value
+    test    rax, rax
+    jz      .hau_zero
+    mov     rax, [rax + ARENA_OFFSET]
+    ret
+.hau_zero:
+    xor     eax, eax
+    ret
+
+; ============================================================
+; herb_arena_total() -> herb_size_t
+;
+; Returns g_arena_ptr->size (total arena capacity in bytes).
+; Returns 0 if g_arena_ptr is NULL.
+; ============================================================
+herb_arena_total:
+    lea     rax, [g_arena_ptr]
+    mov     rax, [rax]         ; RAX = g_arena_ptr value
+    test    rax, rax
+    jz      .hat_zero
+    mov     rax, [rax + ARENA_SIZE]
+    ret
+.hat_zero:
+    xor     eax, eax
     ret

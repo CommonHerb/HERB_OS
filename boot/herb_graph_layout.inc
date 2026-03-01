@@ -305,3 +305,13 @@
 ; ContainerKind enum values
 %define CK_SIMPLE_V  0
 %define CK_SLOT_V    1
+
+; ============================================================
+; HamBindMap (36 bytes, 4-byte aligned) — Phase 4i
+; ============================================================
+
+%define HBM_IDS         0       ; int[4] (16 bytes)
+%define HBM_REGS        16      ; int[4] (16 bytes)
+%define HBM_COUNT       32      ; int (4 bytes)
+%define SIZEOF_HBM      36
+%define HAM_MAX_BINDS   4
