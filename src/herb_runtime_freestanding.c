@@ -140,6 +140,7 @@ typedef struct {
 extern void entity_set_prop(int ei, int prop_id, PropVal val);
 #endif
 
+#ifndef HERB_BINARY_ONLY
 static PropVal pv_none(void) { PropVal v; v.type = PV_NONE; return v; }
 static PropVal pv_int(int64_t i) { PropVal v; v.type = PV_INT; v.i = i; return v; }
 static PropVal pv_float(double f) { PropVal v; v.type = PV_FLOAT; v.f = f; return v; }
@@ -172,6 +173,7 @@ static int pv_equal(PropVal a, PropVal b) {
     if (a.type == PV_NONE) return 1;
     return 0;
 }
+#endif /* !HERB_BINARY_ONLY — PropVal constructors/helpers */
 
 /* ============================================================
  * ENTITY
@@ -2921,7 +2923,12 @@ int herb_entity_total(void) {
 }
 #endif /* Phase 4e public API guard */
 
-/* Get arena usage statistics — stays in C (accesses static g_arena) */
+#ifdef HERB_BINARY_ONLY
+/* Assembly implementations in boot/herb_graph.asm (Phase 4i) — read g_arena_ptr */
+extern herb_size_t herb_arena_usage(void);
+extern herb_size_t herb_arena_total(void);
+#else
+/* Get arena usage statistics — C version (accesses static g_arena) */
 herb_size_t herb_arena_usage(void) {
     return g_arena ? herb_arena_used(g_arena) : 0;
 }
@@ -2929,6 +2936,7 @@ herb_size_t herb_arena_usage(void) {
 herb_size_t herb_arena_total(void) {
     return g_arena ? g_arena->size : 0;
 }
+#endif /* !HERB_BINARY_ONLY — arena queries */
 
 #ifndef HERB_BINARY_ONLY
 /* ============================================================
@@ -3512,6 +3520,7 @@ int ham_intern(const char* s) {
 }
 #endif
 
+#ifndef HERB_BINARY_ONLY
 /* ============================================================
  * HAM BYTECODE COMPILER — General Purpose (Session 65)
  *
@@ -4040,6 +4049,7 @@ int ham_compile_all(uint8_t* buf, int buf_size, int* out_count) {
     if (out_count) *out_count = compiled;
     return pos;
 }
+#endif /* !HERB_BINARY_ONLY — HAM compiler */
 
 #ifdef HERB_BINARY_ONLY
 /* ============================================================
@@ -4066,4 +4076,5 @@ extern void ham_ensure_compiled(void);
 extern int ham_run_ham(int max_steps);
 extern int ham_get_compiled_count(void);
 extern int ham_get_bytecode_len(void);
+extern int ham_compile_all(uint8_t* buf, int buf_size, int* out_count);
 #endif /* HERB_BINARY_ONLY */

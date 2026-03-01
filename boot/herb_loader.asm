@@ -56,6 +56,7 @@ global load_program_binary
 global herb_load_program
 global herb_init
 global herb_load
+global g_arena_ptr
 
 section .bss
     g_bin_str_ids:   resd MAX_STRINGS      ; int[2048] — binary string table mapping
