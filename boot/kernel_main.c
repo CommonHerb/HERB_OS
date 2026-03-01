@@ -3366,28 +3366,6 @@ void kernel_main(void) {
     vga_print("  Program loaded\n");
     serial_print("  Program loaded\n");
 
-    /* DIAGNOSTIC: Check SPAWN_SIG vs SPAWN_STATE containers */
-    {
-        int n_sig = herb_container_count("proc.SPAWN_SIG");
-        int n_state = herb_container_count("spawn.SPAWN_STATE");
-        serial_print("  [DIAG] proc.SPAWN_SIG count=");
-        serial_print_int(n_sig);
-        serial_print(", spawn.SPAWN_STATE count=");
-        serial_print_int(n_state);
-        serial_print("\n");
-        /* Also check what index they resolve to */
-        extern int graph_find_container_by_name(int name_id);
-        int sig_id = intern("proc.SPAWN_SIG");
-        int state_id = intern("spawn.SPAWN_STATE");
-        int sig_cidx = graph_find_container_by_name(sig_id);
-        int state_cidx = graph_find_container_by_name(state_id);
-        serial_print("  [DIAG] SPAWN_SIG cidx=");
-        serial_print_int(sig_cidx);
-        serial_print(", SPAWN_STATE cidx=");
-        serial_print_int(state_cidx);
-        serial_print("\n");
-    }
-
     /* ---- Boot: resolve initial tensions ---- */
     vga_print("  Resolving initial tensions...\n");
     int boot_ops = ham_run_ham(100);

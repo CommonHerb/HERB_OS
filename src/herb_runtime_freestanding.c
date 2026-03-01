@@ -266,6 +266,9 @@ typedef struct Expr {
 Expr g_expr_pool[MAX_EXPR_POOL];
 int g_expr_count = 0;
 
+#ifdef HERB_BINARY_ONLY
+extern Expr* alloc_expr(void);  /* provided by herb_loader.asm */
+#else
 Expr* alloc_expr(void) {
     if (g_expr_count >= MAX_EXPR_POOL) {
         herb_error(HERB_ERR_FATAL, "expr pool full");
@@ -275,6 +278,7 @@ Expr* alloc_expr(void) {
     herb_memset(e, 0, sizeof(Expr));
     return e;
 }
+#endif
 
 /* ============================================================
  * MATCH CLAUSE
@@ -2294,6 +2298,9 @@ int herb_state(char* buf, int buf_size) {
  *   0x07 channels, 0x08 config, 0x09 tensions, 0xFF end
  * ============================================================ */
 
+#ifndef HERB_BINARY_ONLY
+/* Binary loader — C version (assembly version in herb_loader.asm for bare metal) */
+
 typedef struct {
     const uint8_t* data;
     herb_size_t len;
@@ -2763,6 +2770,7 @@ static int load_program_binary(const uint8_t* data, herb_size_t len) {
 
     return 0;
 }
+#endif /* !HERB_BINARY_ONLY — binary loader C version */
 
 /* ============================================================
  * PUBLIC API
@@ -2771,6 +2779,13 @@ static int load_program_binary(const uint8_t* data, herb_size_t len) {
  * (bootloader, test harness, assembly bootstrap) calls.
  * ============================================================ */
 
+#ifdef HERB_BINARY_ONLY
+/* herb_init, herb_load, herb_load_program provided by herb_loader.asm */
+extern void herb_init(void* arena_memory, herb_size_t arena_size, HerbErrorFn error_fn);
+extern int herb_load(const char* buf, herb_size_t len);
+extern int herb_load_program(const uint8_t* data, herb_size_t len,
+                              int owner_entity, const char* run_container);
+#else
 /* Initialize the runtime. Must be called before herb_load(). */
 void herb_init(void* arena_memory, herb_size_t arena_size, HerbErrorFn error_fn) {
     static HerbArena arena_storage;
@@ -2792,10 +2807,6 @@ int herb_load(const char* buf, herb_size_t len) {
         return load_program_binary((const uint8_t*)buf, len);
     }
 
-#ifdef HERB_BINARY_ONLY
-    herb_error(HERB_ERR_FATAL, "JSON loading disabled (HERB_BINARY_ONLY)");
-    return -1;
-#else
     /* Fall through to JSON parsing */
     JsonValue* root;
     const char* end = json_parse_value(buf, &root);
@@ -2812,8 +2823,8 @@ int herb_load(const char* buf, herb_size_t len) {
 
     load_program(root);
     return 0;
-#endif
 }
+#endif /* !HERB_BINARY_ONLY — herb_init/herb_load C versions */
 
 #ifndef HERB_BINARY_ONLY
 /* Create a runtime entity (for delivering signals).
@@ -3177,6 +3188,7 @@ int herb_create_container(const char* name, int kind) {
  * binary IS the program. Loading it injects behavioral rules.
  * ============================================================ */
 
+#ifndef HERB_BINARY_ONLY
 int herb_load_program(const uint8_t* data, herb_size_t len,
                        int owner_entity, const char* run_container) {
     BinReader reader = { data, len, 0 };
@@ -3396,6 +3408,7 @@ int herb_load_program(const uint8_t* data, herb_size_t len,
     if (loaded > 0) ham_mark_dirty();  /* Phase 3c: recompile HAM bytecode */
     return loaded;
 }
+#endif /* !HERB_BINARY_ONLY — herb_load_program C version */
 
 /* ============================================================
  * HAM (HERB Abstract Machine) BRIDGE FUNCTIONS
