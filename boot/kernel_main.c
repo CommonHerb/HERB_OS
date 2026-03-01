@@ -74,6 +74,14 @@
   #define CN_DISPLAY_STATE "display.DISPLAY_STATE"
   #define CN_LEGEND      "display.LEGEND"
   #define CN_HELP_TEXT   "display.HELP_TEXT"
+  #define CN_GAME_STATE     "world.GAME_STATE"
+  #define CN_GAME_PLAYER    "world.PLAYER"
+  #define CN_GAME_TILES     "world.TILES"
+  #define CN_GAME_TREES     "world.TREES"
+  #define CN_GAME_MOVE_SIG  "world.MOVE_SIG"
+  #define CN_GAME_GATHER_SIG "world.GATHER_SIG"
+  #define CN_GAME_TREE_GATHERED "world.TREE_GATHERED"
+  #define ET_GAME_SIGNAL    "world.GameSignal"
   #define ET_SHELLCTL    "input.ShellCtl"
   #define ET_SPAWNCTL    "spawn.SpawnCtl"
   #define ET_PROCESS     "proc.Process"
@@ -564,6 +572,12 @@ static int shell_eid = -1;      /* Shell process entity ID */
 static int spawn_ctl_eid = -1;  /* SpawnCtl entity ID (tracks spawn decisions) */
 #endif
 
+/* Game world state */
+#ifdef KERNEL_MODE
+static int game_ctl_eid = -1;
+static int player_eid = -1;
+#endif
+
 /* Display control state (Session 55) */
 #ifdef KERNEL_MODE
 static int display_ctl_eid = -1;  /* DisplayCtl entity ID (max_terminated, max_procs_per_region, timer_interval, buffer_capacity) */
@@ -1005,6 +1019,15 @@ static void draw_log(void) {
 #define GFX_RESLEG_Y    534
 #define GFX_RESLEG_H    20
 
+/* Game world layout */
+#define GAME_TILE_SIZE   50       /* pixels per tile */
+#define GAME_GRID_X      16      /* grid left edge */
+#define GAME_GRID_Y      80      /* grid top edge */
+#define GAME_GRID_W      (8 * GAME_TILE_SIZE)   /* 400px */
+#define GAME_GRID_H      (8 * GAME_TILE_SIZE)   /* 400px */
+#define GAME_INFO_X      432     /* info panel left edge */
+#define GAME_INFO_W      356     /* info panel width */
+
 /* Tension panel (right sidebar) */
 #define GFX_TENS_X      548
 #define GFX_TENS_Y      76
@@ -1270,6 +1293,184 @@ static void gfx_draw_tension_panel(void) {
 }
 #endif /* KERNEL_MODE */
 
+/* ---- Game world terrain helpers ---- */
+static uint32_t terrain_color(int terrain) {
+    switch (terrain) {
+        case 0: return COL_TILE_GRASS;
+        case 1: return COL_TILE_FOREST;
+        case 2: return COL_TILE_WATER;
+        case 3: return COL_TILE_STONE;
+        case 4: return COL_TILE_DIRT;
+        default: return COL_TILE_GRASS;
+    }
+}
+
+static const char* terrain_name(int terrain) {
+    switch (terrain) {
+        case 0: return "Grass";
+        case 1: return "Forest";
+        case 2: return "Water";
+        case 3: return "Stone";
+        case 4: return "Dirt";
+        default: return "???";
+    }
+}
+
+/* ---- Game world renderer ---- */
+#ifdef KERNEL_MODE
+static void gfx_draw_game(void) {
+    /* --- Tile grid --- */
+    int tile_count = herb_container_count(CN_GAME_TILES);
+    for (int i = 0; i < tile_count; i++) {
+        int eid = herb_container_entity(CN_GAME_TILES, i);
+        if (eid < 0) continue;
+        int tx = (int)herb_entity_prop_int(eid, "tile_x", 0);
+        int ty = (int)herb_entity_prop_int(eid, "tile_y", 0);
+        int terrain = (int)herb_entity_prop_int(eid, "terrain", 0);
+
+        int px = GAME_GRID_X + tx * GAME_TILE_SIZE;
+        int py = GAME_GRID_Y + ty * GAME_TILE_SIZE;
+
+        /* Fill tile with terrain color */
+        fb_fill_rect(px + 1, py + 1, GAME_TILE_SIZE - 2, GAME_TILE_SIZE - 2, terrain_color(terrain));
+        /* Grid border */
+        fb_draw_rect(px, py, GAME_TILE_SIZE, GAME_TILE_SIZE, COL_TILE_GRID);
+    }
+
+    /* --- Tree markers (before player so player draws on top) --- */
+    int tree_count = herb_container_count(CN_GAME_TREES);
+    for (int i = 0; i < tree_count; i++) {
+        int eid = herb_container_entity(CN_GAME_TREES, i);
+        if (eid < 0) continue;
+        int tx = (int)herb_entity_prop_int(eid, "tile_x", 0);
+        int ty = (int)herb_entity_prop_int(eid, "tile_y", 0);
+
+        int px = GAME_GRID_X + tx * GAME_TILE_SIZE;
+        int py = GAME_GRID_Y + ty * GAME_TILE_SIZE;
+
+        /* Tree: trunk + canopy */
+        int cx = px + GAME_TILE_SIZE / 2;
+        int cy = py + GAME_TILE_SIZE / 2;
+        fb_fill_rect(cx - 2, cy + 2, 4, 10, COL_TREE_TRUNK);
+        fb_fill_rect(cx - 8, cy - 8, 16, 14, COL_TREE);
+    }
+
+    /* --- Player marker --- */
+    if (player_eid >= 0) {
+        int px_tile = (int)herb_entity_prop_int(player_eid, "tile_x", 0);
+        int py_tile = (int)herb_entity_prop_int(player_eid, "tile_y", 0);
+
+        int px = GAME_GRID_X + px_tile * GAME_TILE_SIZE;
+        int py = GAME_GRID_Y + py_tile * GAME_TILE_SIZE;
+
+        /* Player: bordered bright square in center of tile */
+        int margin = 10;
+        fb_fill_rect(px + margin, py + margin,
+                     GAME_TILE_SIZE - margin * 2, GAME_TILE_SIZE - margin * 2,
+                     COL_PLAYER);
+        fb_draw_rect(px + margin - 1, py + margin - 1,
+                     GAME_TILE_SIZE - margin * 2 + 2, GAME_TILE_SIZE - margin * 2 + 2,
+                     COL_PLAYER_BDR);
+    }
+
+    /* --- Info panel (right side) --- */
+    fb_fill_rect(GAME_INFO_X, GAME_GRID_Y, GAME_INFO_W, GAME_GRID_H, COL_GAME_BG);
+    fb_draw_rect(GAME_INFO_X, GAME_GRID_Y, GAME_INFO_W, GAME_GRID_H, COL_BORDER);
+
+    int ix = GAME_INFO_X + 12;
+    int iy = GAME_GRID_Y + 12;
+
+    /* Title */
+    fb_draw_string(ix, iy, "COMMON HERB", COL_GAME_TITLE, COL_GAME_BG);
+    iy += 24;
+
+    /* Player info */
+    fb_draw_string(ix, iy, "Player", COL_TEXT_HI, COL_GAME_BG);
+    iy += 16;
+
+    if (player_eid >= 0) {
+        int ptx = (int)herb_entity_prop_int(player_eid, "tile_x", 0);
+        int pty = (int)herb_entity_prop_int(player_eid, "tile_y", 0);
+        int hp  = (int)herb_entity_prop_int(player_eid, "hp", 0);
+
+        /* Position */
+        int x = fb_draw_string(ix, iy, "Pos: (", COL_TEXT_DIM, COL_GAME_BG);
+        x = fb_draw_int(x, iy, ptx, COL_TEXT_VAL, COL_GAME_BG);
+        x = fb_draw_string(x, iy, ",", COL_TEXT_DIM, COL_GAME_BG);
+        x = fb_draw_int(x, iy, pty, COL_TEXT_VAL, COL_GAME_BG);
+        fb_draw_string(x, iy, ")", COL_TEXT_DIM, COL_GAME_BG);
+        iy += 16;
+
+        /* HP */
+        x = fb_draw_string(ix, iy, "HP: ", COL_TEXT_DIM, COL_GAME_BG);
+        fb_draw_int(x, iy, hp, COL_RUNNING, COL_GAME_BG);
+        iy += 16;
+
+        /* Terrain under player */
+        for (int i = 0; i < tile_count; i++) {
+            int tid = herb_container_entity(CN_GAME_TILES, i);
+            if (tid < 0) continue;
+            if ((int)herb_entity_prop_int(tid, "tile_x", -1) == ptx &&
+                (int)herb_entity_prop_int(tid, "tile_y", -1) == pty) {
+                int t = (int)herb_entity_prop_int(tid, "terrain", 0);
+                x = fb_draw_string(ix, iy, "On: ", COL_TEXT_DIM, COL_GAME_BG);
+                fb_draw_string(x, iy, terrain_name(t), terrain_color(t), COL_GAME_BG);
+                break;
+            }
+        }
+        iy += 16;
+    }
+
+    iy += 8;
+
+    /* Inventory */
+    fb_draw_string(ix, iy, "Inventory", COL_TEXT_HI, COL_GAME_BG);
+    iy += 16;
+
+    int wood = herb_container_count(CN_GAME_TREE_GATHERED);
+    if (wood < 0) wood = 0;
+    {
+        int x = fb_draw_string(ix, iy, "Wood: ", COL_TEXT_DIM, COL_GAME_BG);
+        fb_draw_int(x, iy, wood, COL_TREE, COL_GAME_BG);
+    }
+    iy += 16;
+
+    int trees_left = herb_container_count(CN_GAME_TREES);
+    if (trees_left < 0) trees_left = 0;
+    {
+        int x = fb_draw_string(ix, iy, "Trees left: ", COL_TEXT_DIM, COL_GAME_BG);
+        fb_draw_int(x, iy, trees_left, COL_TEXT_VAL, COL_GAME_BG);
+    }
+    iy += 24;
+
+    /* Terrain legend */
+    fb_draw_string(ix, iy, "Terrain", COL_TEXT_HI, COL_GAME_BG);
+    iy += 16;
+
+    fb_fill_rect(ix, iy + 2, 10, 10, COL_TILE_GRASS);
+    fb_draw_string(ix + 14, iy, "Grass", COL_TEXT_DIM, COL_GAME_BG);
+    iy += 14;
+    fb_fill_rect(ix, iy + 2, 10, 10, COL_TILE_FOREST);
+    fb_draw_string(ix + 14, iy, "Forest (trees)", COL_TEXT_DIM, COL_GAME_BG);
+    iy += 14;
+    fb_fill_rect(ix, iy + 2, 10, 10, COL_TILE_WATER);
+    fb_draw_string(ix + 14, iy, "Water (blocked)", COL_TEXT_DIM, COL_GAME_BG);
+    iy += 14;
+    fb_fill_rect(ix, iy + 2, 10, 10, COL_TILE_STONE);
+    fb_draw_string(ix + 14, iy, "Stone (blocked)", COL_TEXT_DIM, COL_GAME_BG);
+    iy += 24;
+
+    /* Controls */
+    fb_draw_string(ix, iy, "Controls", COL_TEXT_HI, COL_GAME_BG);
+    iy += 16;
+    fb_draw_string(ix, iy, "Arrows  Move", COL_TEXT_DIM, COL_GAME_BG);
+    iy += 14;
+    fb_draw_string(ix, iy, "Space   Gather", COL_TEXT_DIM, COL_GAME_BG);
+    iy += 14;
+    fb_draw_string(ix, iy, "G       OS view", COL_TEXT_DIM, COL_GAME_BG);
+}
+#endif /* KERNEL_MODE */
+
 /* ---- Full graphics redraw ---- */
 static void gfx_draw_full(void) {
     /* Clear to dark background */
@@ -1314,6 +1515,60 @@ static void gfx_draw_full(void) {
             fb_draw_string(x, GFX_STATS_Y + 3, "]", COL_TEXT_DIM, COL_STATS_BG);
         }
     }
+
+#ifdef KERNEL_MODE
+    /* ---- Game mode dispatch ---- */
+    if (game_ctl_eid >= 0 &&
+        herb_entity_prop_int(game_ctl_eid, "display_mode", 0) == 1) {
+
+        /* Game-specific legend */
+        fb_fill_rect(0, GFX_LEGEND_Y, FB_WIDTH, GFX_LEGEND_H, COL_LEGEND_BG);
+        {
+            int x = 12;
+            x = fb_draw_string(x, GFX_LEGEND_Y + 3, "Arrows", COL_TEXT_KEY, COL_LEGEND_BG);
+            x = fb_draw_string(x, GFX_LEGEND_Y + 3, "=Move ", COL_TEXT_DIM, COL_LEGEND_BG);
+            x = fb_draw_string(x, GFX_LEGEND_Y + 3, "Space", COL_TEXT_KEY, COL_LEGEND_BG);
+            x = fb_draw_string(x, GFX_LEGEND_Y + 3, "=Gather ", COL_TEXT_DIM, COL_LEGEND_BG);
+            x = fb_draw_string(x, GFX_LEGEND_Y + 3, "G", COL_TEXT_KEY, COL_LEGEND_BG);
+            fb_draw_string(x, GFX_LEGEND_Y + 3, "=OS view", COL_TEXT_DIM, COL_LEGEND_BG);
+        }
+        fb_hline(0, GFX_LEGEND_Y + GFX_LEGEND_H + 2, FB_WIDTH, COL_BORDER);
+
+        /* Draw game world */
+        gfx_draw_game();
+
+        /* Log bar */
+        fb_fill_rect(0, GFX_LOG_Y, FB_WIDTH, GFX_LOG_H, COL_LEGEND_BG);
+        if (last_action[0]) {
+            fb_draw_string(12, GFX_LOG_Y + 3, "> ", COL_RUNNING, COL_LEGEND_BG);
+            fb_draw_string(28, GFX_LOG_Y + 3, last_action, COL_TEXT, COL_LEGEND_BG);
+        }
+
+        /* Game summary bar */
+        fb_fill_rect(0, GFX_SUMMARY_Y, FB_WIDTH, GFX_SUMMARY_H, COL_STATS_BG);
+        {
+            int x = 12;
+            int wood = herb_container_count(CN_GAME_TREE_GATHERED);
+            if (wood < 0) wood = 0;
+            x = fb_draw_string(x, GFX_SUMMARY_Y + 3, "COMMON HERB", COL_GAME_TITLE, COL_STATS_BG);
+            x = fb_draw_string(x + 16, GFX_SUMMARY_Y + 3, "Wood:", COL_TEXT_DIM, COL_STATS_BG);
+            x = fb_draw_int(x, GFX_SUMMARY_Y + 3, wood, COL_TREE, COL_STATS_BG);
+            x = fb_draw_string(x + 16, GFX_SUMMARY_Y + 3, "Trees:", COL_TEXT_DIM, COL_STATS_BG);
+            int trees = herb_container_count(CN_GAME_TREES);
+            fb_draw_int(x, GFX_SUMMARY_Y + 3, trees < 0 ? 0 : trees, COL_TEXT_VAL, COL_STATS_BG);
+        }
+
+        /* Bottom bars */
+        fb_fill_rect(0, GFX_RESLEG_Y, FB_WIDTH, GFX_RESLEG_H, COL_LEGEND_BG);
+        fb_fill_rect(0, GFX_RESLEG_Y + GFX_RESLEG_H + 4, FB_WIDTH, 22, 0x00161622);
+        fb_draw_string(8, GFX_RESLEG_Y + GFX_RESLEG_H + 7, "G", COL_TEXT_KEY, 0x00161622);
+        fb_draw_string(20, GFX_RESLEG_Y + GFX_RESLEG_H + 7, "= return to OS", COL_TEXT_DIM, 0x00161622);
+
+        fb_flip();
+        fb_cursor_draw();
+        return;
+    }
+#endif
 
     /* ---- Key legend (derived from HERB LEGEND entities, Session 56) ---- */
     fb_fill_rect(0, GFX_LEGEND_Y, FB_WIDTH, GFX_LEGEND_H, COL_LEGEND_BG);
@@ -2020,6 +2275,18 @@ static void dispatch_cmd_from_route(int cmd_id, int arg_id) {
     post_dispatch(sig_eid, ops, cpu0_name);
 }
 
+static void cmd_toggle_game(void) {
+    if (game_ctl_eid < 0) return;
+    int cur = (int)herb_entity_prop_int(game_ctl_eid, "display_mode", 0);
+    int next = cur ? 0 : 1;
+    herb_set_prop_int(game_ctl_eid, "display_mode", next);
+    serial_print("[GAME] mode=");
+    serial_print_int(next);
+    serial_print("\n");
+    herb_snprintf(last_action, sizeof(last_action),
+        next ? "Game view (G=back, Arrows=move, Space=gather)" : "OS view");
+}
+
 /* Dispatch mechanism action from HERB routing (Session 54) */
 static void dispatch_mech_action(int action) {
     switch (action) {
@@ -2035,6 +2302,7 @@ static void dispatch_mech_action(int action) {
         case 10: cmd_tension_next();   break;
         case 11: cmd_tension_toggle(); break;
         case 12: cmd_ham_test();       break;
+        case 13: cmd_toggle_game();    break;
         default: break;
     }
 }
@@ -2618,6 +2886,19 @@ static void create_key_signal(int ascii_code) {
     }
 }
 
+static void create_move_signal(int direction) {
+    char name[32];
+    make_sig_name(name, sizeof(name), "mv");
+    int eid = herb_create(name, ET_GAME_SIGNAL, CN_GAME_MOVE_SIG);
+    if (eid >= 0) herb_set_prop_int(eid, "direction", direction);
+}
+
+static void create_gather_signal(void) {
+    char name[32];
+    make_sig_name(name, sizeof(name), "ga");
+    herb_create(name, ET_GAME_SIGNAL, CN_GAME_GATHER_SIG);
+}
+
 /* Read the CMDLINE container and assemble a string from Char entities.
  * This is mechanism (reading HERB state for output), not policy. */
 static int read_cmdline(char* buf, int bufsz) {
@@ -2840,6 +3121,86 @@ static void handle_key(uint8_t scancode) {
     } else {
         herb_snprintf(last_key_name, sizeof(last_key_name), "x%d", scancode);
     }
+
+    /* ---- Game mode: intercept arrow keys and space ---- */
+#ifdef KERNEL_MODE
+    if (game_ctl_eid >= 0 &&
+        herb_entity_prop_int(game_ctl_eid, "display_mode", 0) == 1) {
+
+        int direction = -1;
+        const char* dname = "";
+        if (scancode == 0x48) { direction = 0; dname = "N"; }  /* Up */
+        if (scancode == 0x50) { direction = 1; dname = "S"; }  /* Down */
+        if (scancode == 0x4D) { direction = 2; dname = "E"; }  /* Right */
+        if (scancode == 0x4B) { direction = 3; dname = "W"; }  /* Left */
+
+        if (direction >= 0 && player_eid >= 0) {
+            herb_snprintf(last_key_name, sizeof(last_key_name), "%s", dname);
+            int px = (int)herb_entity_prop_int(player_eid, "tile_x", 0);
+            int py = (int)herb_entity_prop_int(player_eid, "tile_y", 0);
+
+            create_move_signal(direction);
+            int ops = ham_run_ham(100);
+            total_ops += ops;
+
+            int nx = (int)herb_entity_prop_int(player_eid, "tile_x", 0);
+            int ny = (int)herb_entity_prop_int(player_eid, "tile_y", 0);
+            int moved = (nx != px || ny != py);
+
+            serial_print("[GAME] move ");
+            serial_print(dname);
+            if (!moved) serial_print(" BLOCKED");
+            serial_print(" pos=");
+            serial_print_int(nx);
+            serial_print(",");
+            serial_print_int(ny);
+            serial_print(" ops=");
+            serial_print_int(ops);
+            serial_print("\n");
+
+            herb_snprintf(last_action, sizeof(last_action),
+                moved ? "Move %s -> (%d,%d)" : "Blocked %s at (%d,%d)", dname, nx, ny);
+            draw_full();
+            return;
+        }
+
+        if (ch == ' ' && player_eid >= 0) {
+            last_key_name[0] = 'S'; last_key_name[1] = 'P';
+            last_key_name[2] = 'C'; last_key_name[3] = '\0';
+            int prev_wood = herb_container_count(CN_GAME_TREE_GATHERED);
+            if (prev_wood < 0) prev_wood = 0;
+
+            create_gather_signal();
+            int ops = ham_run_ham(100);
+            total_ops += ops;
+
+            int new_wood = herb_container_count(CN_GAME_TREE_GATHERED);
+            if (new_wood < 0) new_wood = 0;
+            int px = (int)herb_entity_prop_int(player_eid, "tile_x", 0);
+            int py = (int)herb_entity_prop_int(player_eid, "tile_y", 0);
+            int gathered = (new_wood > prev_wood);
+
+            serial_print("[GAME] gather");
+            if (!gathered) serial_print(" FAIL");
+            serial_print(" pos=");
+            serial_print_int(px);
+            serial_print(",");
+            serial_print_int(py);
+            serial_print(" wood=");
+            serial_print_int(new_wood);
+            serial_print(" ops=");
+            serial_print_int(ops);
+            serial_print("\n");
+
+            herb_snprintf(last_action, sizeof(last_action),
+                gathered ? "Gathered! wood=%d" : "Nothing here (wood=%d)", new_wood);
+            draw_full();
+            return;
+        }
+
+        /* G key and other keys: fall through to normal KERNEL_MODE routing */
+    }
+#endif
 
     /* ---- Input routing as HERB policy (Session 54) ----
      * Every keystroke becomes KEY_SIG. HERB tensions decide what it
@@ -3190,6 +3551,24 @@ void kernel_main(void) {
                 serial_print("\n");
                 break;
             }
+        }
+    }
+
+    /* Find game world entities */
+    {
+        int ns = herb_container_count(CN_GAME_STATE);
+        if (ns > 0) {
+            game_ctl_eid = herb_container_entity(CN_GAME_STATE, 0);
+            serial_print("  Game control entity found (id=");
+            serial_print_int(game_ctl_eid);
+            serial_print(")\n");
+        }
+        ns = herb_container_count(CN_GAME_PLAYER);
+        if (ns > 0) {
+            player_eid = herb_container_entity(CN_GAME_PLAYER, 0);
+            serial_print("  Player entity found (id=");
+            serial_print_int(player_eid);
+            serial_print(")\n");
         }
     }
 #endif
