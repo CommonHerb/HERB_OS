@@ -12,7 +12,7 @@ def main():
 
     with open(sys.argv[2], 'w') as out:
         out.write("/* Auto-generated from {} */\n\n".format(sys.argv[1]))
-        out.write("static const unsigned char program_data[] = {\n")
+        out.write("const unsigned char program_data[] = {\n")
 
         for i, byte in enumerate(data):
             if i % 16 == 0:
@@ -24,7 +24,7 @@ def main():
         if len(data) % 16 != 0:
             out.write("\n")
         out.write("};\n")
-        out.write("static const herb_size_t program_data_len = {};\n".format(len(data)))
+        out.write("const herb_size_t program_data_len = {};\n".format(len(data)))
 
 if __name__ == "__main__":
     main()

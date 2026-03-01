@@ -170,7 +170,7 @@ static int read_cmdline(char* buf, int bufsz);
 static void handle_submission(void);
 
 /* Forward declarations — mechanism functions (Session 54) */
-static void cmd_timer(void);
+void cmd_timer(void);
 static void cmd_boost(void);
 static void cmd_step(void);
 #ifdef KERNEL_MODE
@@ -181,7 +181,7 @@ static void cmd_close_fd(void);
 static void cmd_send_msg(void);
 static void cmd_tension_prev(void);
 static void cmd_tension_next(void);
-static void cmd_tension_toggle(void);
+void cmd_tension_toggle(void);
 static void cmd_ham_test(void);
 #endif
 
@@ -223,7 +223,6 @@ extern uint8_t inb(uint16_t port);
 extern void io_wait(void);
 
 /* Privileged CPU ops — implemented in herb_hw.asm (Phase 2, Session 59) */
-extern void hw_lidt(void* idt_descriptor);
 extern void hw_sti(void);
 extern void hw_hlt(void);
 
@@ -258,7 +257,7 @@ extern int intern(const char* s);
 extern int ham_dbg_thdr, ham_dbg_fail, ham_dbg_tend, ham_dbg_skip;
 extern int ham_dbg_action, ham_dbg_scan_nz, ham_dbg_require, ham_dbg_guard;
 
-static void serial_print_int(int val) {
+void serial_print_int(int val) {
     char buf[16];
     herb_snprintf(buf, sizeof(buf), "%d", val);
     serial_print(buf);
@@ -295,11 +294,11 @@ static int vga_row = 0;
 static int vga_col = 0;
 static uint8_t vga_color = 0x0F;
 
-static void vga_set_color(uint8_t fg, uint8_t bg) {
+void vga_set_color(uint8_t fg, uint8_t bg) {
     vga_color = (bg << 4) | (fg & 0x0F);
 }
 
-static void vga_clear(void) {
+void vga_clear(void) {
     uint16_t blank = (uint16_t)(' ') | ((uint16_t)vga_color << 8);
     for (int i = 0; i < VGA_WIDTH * VGA_HEIGHT; i++) {
         vga_buffer[i] = blank;
@@ -324,7 +323,7 @@ static void vga_putchar(char c) {
     vga_col++;
 }
 
-static void vga_print(const char* s) {
+void vga_print(const char* s) {
     while (*s) {
         vga_putchar(*s++);
     }
@@ -336,7 +335,7 @@ static void vga_print_at(int row, int col, const char* s) {
     vga_print(s);
 }
 
-static void vga_print_int(int val) {
+void vga_print_int(int val) {
     char buf[16];
     herb_snprintf(buf, sizeof(buf), "%d", val);
     vga_print(buf);
@@ -386,44 +385,7 @@ static const char scancode_to_ascii[128] = {
     0,   0,   0,   0,   0,   0,   0,   0,    /* 0x78-0x7F */
 };
 
-/* ============================================================
- * IDT — Interrupt Descriptor Table (64-bit)
- * ============================================================ */
-
-typedef struct {
-    uint16_t offset_low;
-    uint16_t selector;
-    uint8_t  ist;
-    uint8_t  type_attr;
-    uint16_t offset_mid;
-    uint32_t offset_high;
-    uint32_t reserved;
-} __attribute__((packed)) IDTEntry;
-
-typedef struct {
-    uint16_t limit;
-    uint64_t base;
-} __attribute__((packed)) IDTPointer;
-
-#define IDT_ENTRIES 256
-static IDTEntry idt[IDT_ENTRIES];
-static IDTPointer idt_ptr;
-
-static void idt_set_gate(int n, uint64_t handler) {
-    idt[n].offset_low  = (uint16_t)(handler & 0xFFFF);
-    idt[n].selector    = 0x18;
-    idt[n].ist         = 0;
-    idt[n].type_attr   = 0x8E;
-    idt[n].offset_mid  = (uint16_t)((handler >> 16) & 0xFFFF);
-    idt[n].offset_high = (uint32_t)((handler >> 32) & 0xFFFFFFFF);
-    idt[n].reserved    = 0;
-}
-
-static void idt_install(void) {
-    idt_ptr.limit = sizeof(idt) - 1;
-    idt_ptr.base  = (uint64_t)&idt;
-    hw_lidt(&idt_ptr);
-}
+/* IDT setup moved to herb_kernel.asm (Phase A) */
 
 /* ============================================================
  * ARENA MEMORY
@@ -445,28 +407,28 @@ static void idt_install(void) {
  * ============================================================ */
 
 /* Mouse state */
-static int mouse_x = 400;       /* absolute cursor position */
-static int mouse_y = 300;
-static int mouse_cycle = 0;     /* packet assembly: 0, 1, 2 */
-static uint8_t mouse_packet[3]; /* accumulated packet bytes */
-static int mouse_buttons = 0;   /* current button state */
-static int mouse_left_clicked = 0;   /* flag: left button just clicked */
-static int mouse_moved = 0;     /* flag: cursor position changed */
+int mouse_x = 400;       /* absolute cursor position */
+int mouse_y = 300;
+int mouse_cycle = 0;     /* packet assembly: 0, 1, 2 */
+uint8_t mouse_packet[3]; /* accumulated packet bytes */
+int mouse_buttons = 0;   /* current button state */
+int mouse_left_clicked = 0;   /* flag: left button just clicked */
+int mouse_moved = 0;     /* flag: cursor position changed */
 
 /* Selected process tracking (graphics mode only) */
 #ifdef GRAPHICS_MODE
-static int selected_eid = -1;   /* entity ID of selected process, -1 = none */
+int selected_eid = -1;   /* entity ID of selected process, -1 = none */
 #endif
 
 /* Cursor HERB entity ID (for updating x,y properties) */
-static int cursor_eid = -1;
+int cursor_eid = -1;
 
 /* Tension panel state */
-static int selected_tension_idx = -1;  /* -1 = no selection */
+int selected_tension_idx = -1;  /* -1 = no selection */
 
 
 /* Process a complete 3-byte mouse packet */
-static void mouse_handle_packet(void) {
+void mouse_handle_packet(void) {
     uint8_t flags = mouse_packet[0];
     int dx = (int)mouse_packet[1];
     int dy = (int)mouse_packet[2];
@@ -505,7 +467,7 @@ static void mouse_handle_packet(void) {
  * HERB ERROR HANDLER
  * ============================================================ */
 
-static void herb_error_handler(int severity, const char* message) {
+void herb_error_handler(int severity, const char* message) {
     (void)severity;
     uint8_t old_color = vga_color;
     vga_set_color(VGA_RED, VGA_BLACK);
@@ -546,43 +508,43 @@ static void herb_error_handler(int severity, const char* message) {
 #define ROW_ERROR     24
 
 /* Global state */
-static int timer_count = 0;
-static int total_ops = 0;
-static int signal_counter = 0;
-static int process_counter = 0;
-static int buffer_eid = -1;       /* Shared buffer entity for producer/consumer */
-static char last_action[80] = "";
-static char last_key_name[16] = "";
+int timer_count = 0;
+int total_ops = 0;
+int signal_counter = 0;
+int process_counter = 0;
+int buffer_eid = -1;       /* Shared buffer entity for producer/consumer */
+char last_action[80] = "";
+char last_key_name[16] = "";
 
 /* Scheduling policy label — derived from HERB ShellCtl.current_policy (Phase 5c) */
 
 /* Text input state (Session 49) */
 #ifdef KERNEL_MODE
-static int input_ctl_eid = -1;  /* InputCtl entity ID (tracks mode, submitted) */
+int input_ctl_eid = -1;  /* InputCtl entity ID (tracks mode, submitted) */
 #endif
 
 /* Shell process state (Session 50) */
 #ifdef KERNEL_MODE
-static int shell_ctl_eid = -1;  /* ShellCtl entity ID (tracks action) */
-static int shell_eid = -1;      /* Shell process entity ID */
+int shell_ctl_eid = -1;  /* ShellCtl entity ID (tracks action) */
+int shell_eid = -1;      /* Shell process entity ID */
 #endif
 
 /* Spawn control state (Session 52) */
 #ifdef KERNEL_MODE
-static int spawn_ctl_eid = -1;  /* SpawnCtl entity ID (tracks spawn decisions) */
+int spawn_ctl_eid = -1;  /* SpawnCtl entity ID (tracks spawn decisions) */
 #endif
 
 /* Game world state */
 #ifdef KERNEL_MODE
-static int game_ctl_eid = -1;
-static int player_eid = -1;
+int game_ctl_eid = -1;
+int player_eid = -1;
 #endif
 
 /* Display control state (Session 55) */
 #ifdef KERNEL_MODE
-static int display_ctl_eid = -1;  /* DisplayCtl entity ID (max_terminated, max_procs_per_region, timer_interval, buffer_capacity) */
-static int timer_interval = 300;  /* Auto-timer interval in ticks (read from DisplayCtl at boot) */
-static int buffer_capacity = 20;  /* Shared buffer max capacity (read from DisplayCtl at boot) */
+int display_ctl_eid = -1;  /* DisplayCtl entity ID (max_terminated, max_procs_per_region, timer_interval, buffer_capacity) */
+int timer_interval = 300;  /* Auto-timer interval in ticks (read from DisplayCtl at boot) */
+int buffer_capacity = 20;  /* Shared buffer max capacity (read from DisplayCtl at boot) */
 #endif
 
 /* ============================================================
@@ -615,7 +577,7 @@ static void draw_banner(void) {
 /* ============================================================
  * DRAW: Stats bar
  * ============================================================ */
-static void draw_stats(void) {
+void draw_stats(void) {
     vga_set_color(VGA_WHITE, VGA_BLUE);
     vga_clear_row(ROW_STATS);
     vga_print_at(ROW_STATS, 1, "Tick:");
@@ -1819,7 +1781,7 @@ static void gfx_draw_full(void) {
 }
 
 /* Quick stats-only update for periodic refresh (avoids full redraw) */
-static void gfx_draw_stats_only(void) {
+void gfx_draw_stats_only(void) {
     /* Redraw just the stats bar and flip */
     fb_fill_rect(0, GFX_STATS_Y, FB_WIDTH, GFX_STATS_H, COL_STATS_BG);
     {
@@ -1847,13 +1809,22 @@ static void gfx_draw_stats_only(void) {
     fb_cursor_draw();
 }
 
+/* ---- Framebuffer wrapper functions for assembly (Phase A) ---- */
+int km_fb_init(void) { return fb_init_display(); }
+void km_fb_clear_bg(void) { fb_clear(COL_BG); }
+void km_fb_flip(void) { fb_flip(); }
+void km_fb_cursor_erase(void) { fb_cursor_erase(); }
+void km_fb_cursor_draw(void) { fb_cursor_draw(); }
+int km_fb_get_active(void) { return fb_active; }
+void km_set_cursor(int x, int y) { cursor_x = x; cursor_y = y; }
+
 #endif /* GRAPHICS_MODE */
 
 /* ============================================================
  * DRAW: Full screen refresh
  * ============================================================ */
 
-static void draw_full(void) {
+void draw_full(void) {
 #ifdef GRAPHICS_MODE
     if (fb_active) {
         gfx_draw_full();
@@ -1931,7 +1902,7 @@ static void report_buffer_state(void) {
 }
 
 /* Timer tick: create timer signal, HERB decides preemption */
-static void cmd_timer(void) {
+void cmd_timer(void) {
     char name[32];
     make_sig_name(name, sizeof(name), "t");
 
@@ -2591,7 +2562,7 @@ static void cmd_send_msg(void) {
  * HERB hit-test tensions match the click coordinates against
  * container region bounds and select the first process found. */
 #ifdef GRAPHICS_MODE
-static void cmd_click(int cx, int cy) {
+void cmd_click(int cx, int cy) {
     /* Clear previous selection */
     if (selected_eid >= 0) {
         herb_set_prop_int(selected_eid, "selected", 0);
@@ -2691,7 +2662,7 @@ static void cmd_tension_prev(void) {
     serial_print("\n");
 }
 
-static void cmd_tension_toggle(void) {
+void cmd_tension_toggle(void) {
     if (selected_tension_idx < 0 || selected_tension_idx >= herb_tension_count()) {
         herb_snprintf(last_action, sizeof(last_action),
             "No tension selected (use [ ] to select)");
@@ -3091,7 +3062,7 @@ static void handle_submission(void) {
  * KEYBOARD DISPATCH
  * ============================================================ */
 
-static void handle_key(uint8_t scancode) {
+void handle_key(uint8_t scancode) {
     /* Ignore key-up events (bit 7 set) */
     if (scancode & 0x80) return;
 
@@ -3296,395 +3267,4 @@ static void handle_key(uint8_t scancode) {
     draw_full();
 }
 
-/* ============================================================
- * KERNEL MAIN
- * ============================================================ */
-
-void kernel_main(void) {
-    /* ---- Serial init ---- */
-    serial_init();
-#ifdef KERNEL_MODE
-    serial_print("HERB OS v3 - Four-Module Kernel\n");
-#else
-    serial_print("HERB OS v2 - Interactive\n");
-#endif
-
-    /* ---- VGA setup (always init for boot messages) ---- */
-    vga_set_color(VGA_WHITE, VGA_BLACK);
-    vga_clear();
-
-    vga_set_color(VGA_CYAN, VGA_BLACK);
-#ifdef KERNEL_MODE
-    vga_print("HERB OS - Four-Module Kernel (proc+mem+fs+ipc)\n");
-#else
-    vga_print("HERB OS - Interactive Bare Metal Runtime\n");
-#endif
-    vga_set_color(VGA_LGRAY, VGA_BLACK);
-    vga_print("Initializing...\n\n");
-
-#ifdef GRAPHICS_MODE
-    /* ---- Initialize BGA framebuffer ---- */
-    vga_print("  Framebuffer: detecting BGA...\n");
-    serial_print("  Framebuffer: detecting BGA...\n");
-    {
-        int fb_rc = fb_init_display();
-        if (fb_rc == 0) {
-            vga_print("  Framebuffer: 800x600x32 OK\n");
-            serial_print("  Framebuffer: 800x600x32 initialized\n");
-            /* Quick test: fill with dark blue */
-            fb_clear(COL_BG);
-            fb_flip();
-        } else {
-            char errbuf[64];
-            herb_snprintf(errbuf, sizeof(errbuf),
-                "  Framebuffer: init failed (rc=%d), using text mode\n", fb_rc);
-            vga_print(errbuf);
-            serial_print(errbuf);
-            /* fb_active remains 0 — will fall through to text mode */
-        }
-    }
-#endif
-
-    /* ---- Initialize HERB runtime ---- */
-    vga_print("  Arena: 4MB at 0x800000\n");
-    herb_init((void*)ARENA_ADDR, ARENA_SIZE, herb_error_handler);
-    vga_print("  Runtime initialized\n");
-    serial_print("  Runtime initialized\n");
-
-    /* ---- Load embedded program ---- */
-    vga_print("  Loading program (");
-    vga_print_int((int)program_data_len);
-    vga_print(" bytes)...\n");
-
-    int rc = herb_load((const char*)program_data, program_data_len);
-    if (rc != 0) {
-        vga_set_color(VGA_RED, VGA_BLACK);
-        vga_print("\n  FATAL: Program load failed!\n");
-        serial_print("  FATAL: Program load failed!\n");
-        for (;;) hw_hlt();
-    }
-    vga_print("  Program loaded\n");
-    serial_print("  Program loaded\n");
-
-    /* ---- Boot: resolve initial tensions ---- */
-    vga_print("  Resolving initial tensions...\n");
-    int boot_ops = ham_run_ham(100);
-    total_ops = boot_ops;
-    vga_print("  Equilibrium reached (");
-    vga_print_int(boot_ops);
-    vga_print(" ops)\n");
-    serial_print("  Boot: ");
-    serial_print_int(boot_ops);
-    serial_print(" ops\n");
-
-#ifdef KERNEL_MODE
-    /* Find the cursor Surface entity in display.VISIBLE (kind=2) */
-    {
-        int nv = herb_container_count(CN_VISIBLE);
-        for (int i = 0; i < nv; i++) {
-            int sid = herb_container_entity(CN_VISIBLE, i);
-            if (sid >= 0 && herb_entity_prop_int(sid, "kind", -1) == 2) {
-                cursor_eid = sid;
-                serial_print("  Cursor entity found (id=");
-                serial_print_int(sid);
-                serial_print(")\n");
-                break;
-            }
-        }
-    }
-
-    /* Find the InputCtl entity in input.INPUT_STATE (Session 49) */
-    {
-        int ns = herb_container_count(CN_INPUT_STATE);
-        for (int i = 0; i < ns; i++) {
-            int sid = herb_container_entity(CN_INPUT_STATE, i);
-            if (sid >= 0) {
-                input_ctl_eid = sid;
-                serial_print("  Input control entity found (id=");
-                serial_print_int(sid);
-                serial_print(")\n");
-                break;
-            }
-        }
-    }
-
-    /* Create shared BUFFER container and entity for producer/consumer interaction */
-    {
-        herb_create_container(CN_BUFFER, 0 /* CK_SIMPLE */);
-        buffer_eid = herb_create("shared_buffer", ET_BUFFER, CN_BUFFER);
-        if (buffer_eid >= 0) {
-            herb_set_prop_int(buffer_eid, "count", 0);
-            herb_set_prop_int(buffer_eid, "capacity", buffer_capacity);
-            serial_print("  Buffer created (capacity=");
-            serial_print_int(buffer_capacity);
-            serial_print(")\n");
-        }
-    }
-
-    /* ---- Shell process (Session 50) ----
-     * The shell is a HERB process whose tensions transform CMD_SIG
-     * entities into system actions. Loaded from .herb binary data.
-     * No run_container = tensions fire regardless of scheduling.
-     * Kill the shell → tensions removed → commands stop working. */
-    {
-        shell_eid = herb_create("shell", ET_PROCESS, CN_READY);
-        if (shell_eid >= 0) {
-            herb_set_prop_int(shell_eid, "priority", 0);
-            herb_set_prop_int(shell_eid, "time_slice", 3);
-            herb_set_prop_int(shell_eid, "msgs_received", 0);
-            herb_set_prop_int(shell_eid, "selected", 0);
-            /* protected value set after shell_ctl discovery (Session 56) */
-
-            /* Create scoped resources (minimal — shell doesn't need them) */
-            char cname[64], rname[64];
-            herb_snprintf(cname, sizeof(cname), "shell::MEM_FREE");
-            herb_snprintf(rname, sizeof(rname), "pg0_shell");
-            herb_create(rname, ET_PAGE, cname);
-            herb_snprintf(cname, sizeof(cname), "shell::FD_FREE");
-            herb_snprintf(rname, sizeof(rname), "fd0_shell");
-            herb_create(rname, ET_FD, cname);
-
-            /* Display Surface */
-            herb_snprintf(cname, sizeof(cname), "shell::SURFACE");
-            herb_snprintf(rname, sizeof(rname), "surf_shell");
-            {
-                int sid = herb_create(rname, ET_SURFACE, cname);
-                if (sid >= 0) {
-                    herb_set_prop_int(sid, "kind", 1);
-                    herb_set_prop_int(sid, "state", 0);
-                    herb_set_prop_int(sid, "border_color", 0);
-                    herb_set_prop_int(sid, "fill_color", 0);
-                }
-            }
-
-            /* Load shell behavior from .herb binary — NO run_container.
-             * Shell tensions fire regardless of which process is in CPU0.
-             * This is a daemon: always-active behavioral rules. */
-            int loaded = herb_load_program(program_shell, program_shell_len,
-                                            shell_eid, "");
-            serial_print("  Shell process created (id=");
-            serial_print_int(shell_eid);
-            serial_print(", tensions=");
-            serial_print_int(loaded);
-            serial_print(")\n");
-
-            /* Run to settle display tensions for shell */
-            int settle_ops = ham_run_ham(100);
-            total_ops += settle_ops;
-        }
-    }
-
-    /* Find the ShellCtl entity in input.SHELL_STATE */
-    {
-        int ns = herb_container_count(CN_SHELL_STATE);
-        for (int i = 0; i < ns; i++) {
-            int sid = herb_container_entity(CN_SHELL_STATE, i);
-            if (sid >= 0) {
-                shell_ctl_eid = sid;
-                serial_print("  Shell control entity found (id=");
-                serial_print_int(sid);
-                serial_print(")\n");
-                /* Set shell protection from HERB state (Session 56) */
-                if (shell_eid >= 0) {
-                    int prot = (int)herb_entity_prop_int(sid, "shell_protected", 1);
-                    herb_set_prop_int(shell_eid, "protected", prot);
-                }
-                break;
-            }
-        }
-    }
-
-    /* Find the SpawnCtl entity in spawn.SPAWN_STATE (Session 52) */
-    {
-        int ns = herb_container_count(CN_SPAWN_STATE);
-        for (int i = 0; i < ns; i++) {
-            int sid = herb_container_entity(CN_SPAWN_STATE, i);
-            if (sid >= 0) {
-                spawn_ctl_eid = sid;
-                serial_print("  Spawn control entity found (id=");
-                serial_print_int(sid);
-                serial_print(")\n");
-                break;
-            }
-        }
-    }
-
-    /* Find the DisplayCtl entity in display.DISPLAY_STATE (Session 55) */
-    {
-        int ns = herb_container_count(CN_DISPLAY_STATE);
-        for (int i = 0; i < ns; i++) {
-            int sid = herb_container_entity(CN_DISPLAY_STATE, i);
-            if (sid >= 0) {
-                display_ctl_eid = sid;
-                serial_print("  Display control entity found (id=");
-                serial_print_int(sid);
-                serial_print(")\n");
-                /* Cache system parameters from HERB (Session 56) */
-                timer_interval = (int)herb_entity_prop_int(sid, "timer_interval", 300);
-                buffer_capacity = (int)herb_entity_prop_int(sid, "buffer_capacity", 20);
-                serial_print("  timer_interval=");
-                serial_print_int(timer_interval);
-                serial_print(" buffer_capacity=");
-                serial_print_int(buffer_capacity);
-                serial_print("\n");
-                break;
-            }
-        }
-    }
-
-    /* Find game world entities */
-    {
-        int ns = herb_container_count(CN_GAME_STATE);
-        if (ns > 0) {
-            game_ctl_eid = herb_container_entity(CN_GAME_STATE, 0);
-            serial_print("  Game control entity found (id=");
-            serial_print_int(game_ctl_eid);
-            serial_print(")\n");
-        }
-        ns = herb_container_count(CN_GAME_PLAYER);
-        if (ns > 0) {
-            player_eid = herb_container_entity(CN_GAME_PLAYER, 0);
-            serial_print("  Player entity found (id=");
-            serial_print_int(player_eid);
-            serial_print(")\n");
-        }
-    }
-#endif
-
-    herb_snprintf(last_action, sizeof(last_action),
-        "Booted with %d ops. Press / to type commands.", boot_ops);
-
-    vga_print("\nStarting interactive mode...\n");
-    serial_print("Starting interactive mode\n");
-
-    /* Brief pause for boot messages */
-    for (volatile int i = 0; i < 30000000; i++);
-
-    /* ---- Set up interrupts ---- */
-    herb_memset(idt, 0, sizeof(idt));
-    idt_set_gate(32, (uint64_t)timer_isr_stub);
-    idt_set_gate(33, (uint64_t)keyboard_isr_stub);
-    idt_set_gate(44, (uint64_t)mouse_isr_stub);
-    idt_install();
-    pic_remap();
-    pit_init(100);
-
-    /* ---- Initialize PS/2 mouse ---- */
-    mouse_init();
-    serial_print("  Mouse initialized (IRQ12)\n");
-
-    hw_sti();
-
-    /* ---- Initial display ---- */
-    vga_set_color(VGA_LGRAY, VGA_BLACK);
-    vga_clear();
-    draw_full();
-
-    /* ---- Main loop ---- */
-    for (;;) {
-        hw_hlt();
-
-        /* ---- Timer interrupt ---- */
-        if (volatile_timer_fired) {
-            volatile_timer_fired = 0;
-            timer_count++;
-
-            /* Auto-timer at HERB-configured interval (Session 56) */
-            if (timer_interval > 0 && timer_count % timer_interval == 0) {
-                cmd_timer();
-                draw_full();
-            }
-
-            /* Refresh stats every 500ms */
-            if (timer_count % 50 == 0) {
-#ifdef GRAPHICS_MODE
-                if (fb_active) {
-                    gfx_draw_stats_only();
-                } else {
-                    draw_stats();
-                }
-#else
-                draw_stats();
-#endif
-            }
-        }
-
-        /* ---- Keyboard interrupt ---- */
-        if (volatile_key_pressed) {
-            volatile_key_pressed = 0;
-            handle_key(volatile_key_scancode);
-        }
-
-        /* ---- Mouse ring buffer: drain all accumulated bytes ---- */
-        {
-            int mouse_packets_processed = 0;
-            while (mouse_ring_tail != mouse_ring_head) {
-                uint8_t byte = mouse_ring[mouse_ring_tail];
-                mouse_ring_tail = (mouse_ring_tail + 1) & 0x3F;
-
-                /* Byte 0 must have bit 3 set (always-1 in PS/2 protocol).
-                 * If not, re-sync by waiting for a valid first byte. */
-                if (mouse_cycle == 0 && !(byte & 0x08)) {
-                    /* Discard: not a valid first byte */
-                } else {
-                    mouse_packet[mouse_cycle] = byte;
-                    mouse_cycle++;
-                    if (mouse_cycle >= 3) {
-                        mouse_cycle = 0;
-                        mouse_handle_packet();
-                        mouse_packets_processed++;
-                    }
-                }
-            }
-
-            if (mouse_packets_processed > 0) {
-#ifdef GRAPHICS_MODE
-                /* Update cursor position for rendering */
-                if (fb_active) {
-                    cursor_x = mouse_x;
-                    cursor_y = mouse_y;
-                }
-
-                /* Update cursor entity position in HERB state */
-#ifdef KERNEL_MODE
-                if (cursor_eid >= 0) {
-                    herb_set_prop_int(cursor_eid, "x", mouse_x);
-                    herb_set_prop_int(cursor_eid, "y", mouse_y);
-                }
-#endif
-
-                /* Handle left click (Session 54: all clicks → HERB) */
-                if (mouse_left_clicked) {
-                    mouse_left_clicked = 0;
-#ifdef KERNEL_MODE
-                    /* ALL clicks go to HERB — click_panel or click_select tensions decide */
-                    cmd_click(mouse_x, mouse_y);
-
-                    /* Check if HERB detected a panel click */
-                    if (input_ctl_eid >= 0) {
-                        int panel_click = (int)herb_entity_prop_int(input_ctl_eid, "panel_click", 0);
-                        if (panel_click) {
-                            herb_set_prop_int(input_ctl_eid, "panel_click", 0);
-                            /* C computes row (mechanism — requires division) */
-                            int row = (mouse_y - (GFX_TENS_Y + 22)) / GFX_TENS_ROW_H;
-                            if (row >= 0 && row < herb_tension_count()) {
-                                selected_tension_idx = row;
-                                cmd_tension_toggle();
-                            }
-                        }
-                    }
-#endif
-                    draw_full();
-                }
-
-                /* Update cursor on screen (direct MMIO, no full redraw) */
-                if (mouse_moved && fb_active) {
-                    mouse_moved = 0;
-                    fb_cursor_erase();
-                    fb_cursor_draw();
-                }
-#endif /* GRAPHICS_MODE */
-            }
-        }
-    }
-}
+/* kernel_main() moved to herb_kernel.asm (Phase A) */
