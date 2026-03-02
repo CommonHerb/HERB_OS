@@ -72,9 +72,9 @@ static HerbArena* g_arena = HERB_NULL;
  * STRING INTERN TABLE
  * ============================================================ */
 
-/* Non-static: accessible from assembly (boot/herb_graph.asm) */
-char g_strings[MAX_STRINGS][MAX_STRING_LEN];
-int g_string_count = 0;
+/* g_strings/g_string_count — now in herb_graph.asm (Phase D Step 7d) */
+extern char g_strings[MAX_STRINGS][MAX_STRING_LEN];
+extern int g_string_count;
 
 #ifdef HERB_BINARY_ONLY
 /* Assembly implementations in boot/herb_graph.asm (Phase 4b) */
@@ -265,8 +265,9 @@ typedef struct Expr {
     };
 } Expr;
 
-Expr g_expr_pool[MAX_EXPR_POOL];
-int g_expr_count = 0;
+/* g_expr_pool/g_expr_count — now in herb_graph.asm (Phase D Step 7d) */
+extern Expr g_expr_pool[MAX_EXPR_POOL];
+extern int g_expr_count;
 
 #ifdef HERB_BINARY_ONLY
 extern Expr* alloc_expr(void);  /* provided by herb_loader.asm */
@@ -494,8 +495,8 @@ typedef struct {
     int op_count;
 } Graph;
 
-/* Non-static: accessible from assembly (boot/herb_graph.asm) */
-Graph g_graph;
+/* g_graph — now in herb_graph.asm (Phase D Step 7d) */
+extern Graph g_graph;
 
 /* ============================================================
  * GRAPH OPERATIONS
@@ -4063,11 +4064,12 @@ int ham_compile_all(uint8_t* buf, int buf_size, int* out_count) {
  * herb_ham.asm provides ham_run(). Test builds use herb_run().
  * ============================================================ */
 
+/* g_ham_bytecode/len/count/dirty — now in herb_ham.asm (Phase D Step 7d) */
 #define HAM_BYTECODE_SIZE 8192
-uint8_t g_ham_bytecode[HAM_BYTECODE_SIZE];
-int g_ham_bytecode_len = 0;
-int g_ham_compiled_count = 0;
-int g_ham_dirty = 1;  /* start dirty — must compile before first run */
+extern uint8_t g_ham_bytecode[HAM_BYTECODE_SIZE];
+extern int g_ham_bytecode_len;
+extern int g_ham_compiled_count;
+extern int g_ham_dirty;
 
 /* Phase 4f: ham_mark_dirty, ham_ensure_compiled, ham_run_ham,
  * ham_get_compiled_count, ham_get_bytecode_len now in herb_graph.asm */

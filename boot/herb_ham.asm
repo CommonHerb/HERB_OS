@@ -71,6 +71,8 @@ global ham_dbg_skip
 global fixpoint_iters
 ; Phase 4i — HAM compiler exports
 global ham_compile_all
+; Phase D Step 7d — HAM data exports (migrated from C)
+global g_ham_bytecode, g_ham_bytecode_len, g_ham_compiled_count, g_ham_dirty
 
 ; ============================================================
 ; BSS — Static data for HAM execution
@@ -112,6 +114,9 @@ ham_dbg_guard:   resd 1        ; number of GUARDs reached
 ham_dbg_skip:    resd 1        ; number of THDR owner-check skips (Phase 3c)
 ham_dbg_emov:    resd 1        ; number of EMOV instructions executed
 
+; Phase D Step 7d — HAM data (migrated from C)
+g_ham_bytecode:  resb 8192     ; uint8_t[8192] — compiled bytecode buffer
+
 ; Phase 4i — HAM compiler BSS
 ham_op_ids_init: resd 1        ; lazy init flag
 ham_id_add:      resd 1
@@ -125,6 +130,17 @@ ham_id_eq:       resd 1
 ham_id_neq:      resd 1
 ham_id_and:      resd 1
 ham_id_or:       resd 1
+
+; ============================================================
+; DATA — HAM counters (Phase D Step 7d: migrated from C)
+; ============================================================
+
+section .data
+
+align 4
+g_ham_bytecode_len:   dd 0     ; int — compiled bytecode length
+g_ham_compiled_count: dd 0     ; int — number of compiled tensions
+g_ham_dirty:          dd 1     ; int — dirty flag (1 = needs recompile)
 
 ; ============================================================
 ; RDATA — HAM compiler string constants (Phase 4i)
