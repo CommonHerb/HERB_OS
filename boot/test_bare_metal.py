@@ -296,6 +296,25 @@ def run_tests(image_path):
         mode_str = "KERNEL" if is_kernel else "FLAT"
         print(f"  Mode detected: {mode_str}")
 
+        # ============================================================
+        # In-Kernel Compiler Tests (boot-time)
+        # The compiler tests run during boot before interactive mode.
+        # Check that all 7 fragment programs compiled byte-identically.
+        # ============================================================
+        print("\n" + "=" * 60)
+        print("In-Kernel Compiler Tests")
+        print("=" * 60)
+
+        serial_so_far = t.get_serial()
+        compiler_programs = [
+            "schedule_priority", "schedule_roundrobin",
+            "worker", "producer", "consumer", "beacon", "shell"
+        ]
+        for prog in compiler_programs:
+            pattern = rf"\[COMPILER PASS\] {prog} byte-identical"
+            m_comp = re.search(pattern, serial_so_far)
+            t.check(f"Compiler: {prog} byte-identical", m_comp is not None)
+
         # Wait for interrupts to be set up
         time.sleep(1)
 

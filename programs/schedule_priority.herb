@@ -1,0 +1,7 @@
+# Priority-based scheduler
+# Selects highest-priority ready process for CPU0
+
+tension proc.schedule_pri priority 10
+  match proc in proc.READY select max_by priority
+  match cpu empty_in proc.CPU0
+  emit move proc.schedule proc to cpu

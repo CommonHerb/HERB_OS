@@ -43,6 +43,7 @@ extern herb_tension_set_enabled
 extern herb_tension_owner
 extern herb_create_container
 extern herb_load_program
+extern herb_compile_source
 extern herb_remove_owner_tensions
 extern herb_remove_tension_by_name
 extern ham_run_ham
@@ -265,6 +266,7 @@ alignb 4
 last_action:     resb 80        ; char[80]
 last_key_name:   resb 16        ; char[16]
 mouse_packet:    resb 4         ; uint8_t[3] + padding
+comp_test_buf:   resb 2048      ; compiler test output buffer
 
 ; ============================================================
 ; DATA — Initialized globals (Phase D Step 7d)
@@ -380,6 +382,58 @@ program_schedule_roundrobin_len: dd program_schedule_roundrobin_end - program_sc
 %endif
 
 %ifdef KERNEL_MODE
+; Embedded .herb SOURCE text for compiler tests
+align 4
+src_schedule_priority:
+    incbin "../programs/schedule_priority.herb"
+    db 0
+src_schedule_priority_end:
+src_schedule_priority_len: dd src_schedule_priority_end - src_schedule_priority - 1
+
+align 4
+src_schedule_roundrobin:
+    incbin "../programs/schedule_roundrobin.herb"
+    db 0
+src_schedule_roundrobin_end:
+src_schedule_roundrobin_len: dd src_schedule_roundrobin_end - src_schedule_roundrobin - 1
+
+align 4
+src_worker:
+    incbin "../programs/worker.herb"
+    db 0
+src_worker_end:
+src_worker_len: dd src_worker_end - src_worker - 1
+
+align 4
+src_producer:
+    incbin "../programs/producer.herb"
+    db 0
+src_producer_end:
+src_producer_len: dd src_producer_end - src_producer - 1
+
+align 4
+src_consumer:
+    incbin "../programs/consumer.herb"
+    db 0
+src_consumer_end:
+src_consumer_len: dd src_consumer_end - src_consumer - 1
+
+align 4
+src_beacon:
+    incbin "../programs/beacon.herb"
+    db 0
+src_beacon_end:
+src_beacon_len: dd src_beacon_end - src_beacon - 1
+
+align 4
+src_shell:
+    incbin "../programs/shell.herb"
+    db 0
+src_shell_end:
+src_shell_len: dd src_shell_end - src_shell - 1
+%endif  ; KERNEL_MODE — compiler test sources
+
+%ifdef KERNEL_MODE
 str_boot_banner:    db "HERB OS v3 - Four-Module Kernel", 10, 0
 str_vga_banner:     db "HERB OS - Four-Module Kernel (proc+mem+fs+ipc)", 10, 0
 %else
@@ -417,6 +471,24 @@ str_boot_action:    db "Booted with %d ops. Press / to type commands.", 0
 ; Phase D Step 4 — error handler strings
 str_err_prefix:     db "ERR: ", 0
 str_err_serial:     db "[ERROR] ", 0
+
+; Compiler test strings
+str_comp_test_hdr:    db 10, "--- Compiler Tests ---", 10, 0
+str_comp_pass:        db "[COMPILER PASS] ", 0
+str_comp_fail:        db "[COMPILER FAIL] ", 0
+str_comp_name_sp:     db "schedule_priority", 0
+str_comp_name_sr:     db "schedule_roundrobin", 0
+str_comp_name_wk:     db "worker", 0
+str_comp_name_pr:     db "producer", 0
+str_comp_name_cn:     db "consumer", 0
+str_comp_name_bc:     db "beacon", 0
+str_comp_name_sh:     db "shell", 0
+str_comp_byte_id:     db " byte-identical", 10, 0
+str_comp_mismatch:    db " mismatch at byte ", 0
+str_comp_got:         db " got=0x", 0
+str_comp_exp:         db " exp=0x", 0
+str_comp_len_mm:      db " length mismatch got=", 0
+str_comp_len_exp:     db " exp=", 0
 
 ; Phase D Step 4 — terrain name strings
 str_terrain_grass:  db "Grass", 0
@@ -1879,6 +1951,13 @@ kernel_main:
     lea r8, [rel str_boot_action]
     mov r9d, [rsp + BOOT_OPS]
     call herb_snprintf
+
+    ; ================================================================
+    ; COMPILER TESTS — verify assembly compiler matches Python output
+    ; ================================================================
+%ifdef KERNEL_MODE
+    call compiler_run_tests
+%endif
 
     lea rcx, [rel str_start_msg]
     call vga_print
@@ -10938,3 +11017,230 @@ draw_full:
     pop rbx
     pop rbp
     ret
+
+
+; ============================================================
+; COMPILER TESTS
+; ============================================================
+%ifdef KERNEL_MODE
+
+; compiler_run_tests — run all 7 compiler byte-identity tests
+compiler_run_tests:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 56
+    ; ret(8)+rbp(8)+7*push(56)+sub(56)=128, 128%16=0 ✓
+
+    lea     rcx, [rel str_comp_test_hdr]
+    call    serial_print
+
+    ; Test 1: schedule_priority
+    lea     rcx, [rel src_schedule_priority]
+    lea     rax, [rel src_schedule_priority_len]
+    mov     edx, [rax]
+    lea     r8, [rel program_schedule_priority]
+    lea     rax, [rel program_schedule_priority_len]
+    mov     r9d, [rax]
+    lea     rax, [rel str_comp_name_sp]
+    mov     [rsp+32], rax
+    call    compiler_test_one
+
+    ; Test 2: schedule_roundrobin
+    lea     rcx, [rel src_schedule_roundrobin]
+    lea     rax, [rel src_schedule_roundrobin_len]
+    mov     edx, [rax]
+    lea     r8, [rel program_schedule_roundrobin]
+    lea     rax, [rel program_schedule_roundrobin_len]
+    mov     r9d, [rax]
+    lea     rax, [rel str_comp_name_sr]
+    mov     [rsp+32], rax
+    call    compiler_test_one
+
+    ; Test 3: worker
+    lea     rcx, [rel src_worker]
+    lea     rax, [rel src_worker_len]
+    mov     edx, [rax]
+    lea     r8, [rel program_worker]
+    lea     rax, [rel program_worker_len]
+    mov     r9d, [rax]
+    lea     rax, [rel str_comp_name_wk]
+    mov     [rsp+32], rax
+    call    compiler_test_one
+
+    ; Test 4: producer
+    lea     rcx, [rel src_producer]
+    lea     rax, [rel src_producer_len]
+    mov     edx, [rax]
+    lea     r8, [rel program_producer]
+    lea     rax, [rel program_producer_len]
+    mov     r9d, [rax]
+    lea     rax, [rel str_comp_name_pr]
+    mov     [rsp+32], rax
+    call    compiler_test_one
+
+    ; Test 5: consumer
+    lea     rcx, [rel src_consumer]
+    lea     rax, [rel src_consumer_len]
+    mov     edx, [rax]
+    lea     r8, [rel program_consumer]
+    lea     rax, [rel program_consumer_len]
+    mov     r9d, [rax]
+    lea     rax, [rel str_comp_name_cn]
+    mov     [rsp+32], rax
+    call    compiler_test_one
+
+    ; Test 6: beacon
+    lea     rcx, [rel src_beacon]
+    lea     rax, [rel src_beacon_len]
+    mov     edx, [rax]
+    lea     r8, [rel program_beacon]
+    lea     rax, [rel program_beacon_len]
+    mov     r9d, [rax]
+    lea     rax, [rel str_comp_name_bc]
+    mov     [rsp+32], rax
+    call    compiler_test_one
+
+    ; Test 7: shell
+    lea     rcx, [rel src_shell]
+    lea     rax, [rel src_shell_len]
+    mov     edx, [rax]
+    lea     r8, [rel program_shell]
+    lea     rax, [rel program_shell_len]
+    mov     r9d, [rax]
+    lea     rax, [rel str_comp_name_sh]
+    mov     [rsp+32], rax
+    call    compiler_test_one
+
+    add     rsp, 56
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+
+; compiler_test_one — compile source, compare with reference binary
+;
+; RCX = source text ptr
+; EDX = source text len
+; R8  = reference binary ptr
+; R9D = reference binary len
+; [RSP+32+8*8] = name string ptr (5th arg: after shadow + 7 pushes + ret)
+; Actually: 5th arg passed at [RSP+32] before call, so callee sees at [RBP+48]
+compiler_test_one:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 56
+    ; ret(8)+rbp(8)+7*push(56)+sub(56)=128, 128%16=0 ✓
+
+    ; Save args
+    mov     r12, rcx            ; source ptr
+    mov     r13d, edx           ; source len
+    mov     r14, r8             ; ref binary ptr
+    mov     r15d, r9d           ; ref binary len
+    mov     rsi, [rbp+48]       ; name string ptr (5th arg)
+
+    ; Call herb_compile_source(src, len, comp_test_buf, 2048)
+    mov     rcx, r12
+    mov     edx, r13d
+    lea     r8, [rel comp_test_buf]
+    mov     r9d, 2048
+    call    herb_compile_source
+    mov     ebx, eax            ; ebx = compiled length
+
+    ; Compare lengths
+    cmp     ebx, r15d
+    jne     .cto_len_mismatch
+
+    ; Compare bytes
+    xor     edi, edi            ; byte index
+.cto_cmp_loop:
+    cmp     edi, ebx
+    jge     .cto_pass
+
+    lea     rax, [rel comp_test_buf]
+    movzx   ecx, byte [rax + rdi]
+    movzx   edx, byte [r14 + rdi]
+    cmp     cl, dl
+    jne     .cto_byte_mismatch
+    inc     edi
+    jmp     .cto_cmp_loop
+
+.cto_pass:
+    ; Print [COMPILER PASS] <name> byte-identical
+    lea     rcx, [rel str_comp_pass]
+    call    serial_print
+    mov     rcx, rsi
+    call    serial_print
+    lea     rcx, [rel str_comp_byte_id]
+    call    serial_print
+    jmp     .cto_done
+
+.cto_len_mismatch:
+    ; Print [COMPILER FAIL] <name> length mismatch got=X exp=Y strs_got=A strs_exp=B
+    lea     rcx, [rel str_comp_fail]
+    call    serial_print
+    mov     rcx, rsi
+    call    serial_print
+    lea     rcx, [rel str_comp_len_mm]
+    call    serial_print
+    mov     ecx, ebx
+    call    serial_print_int
+    lea     rcx, [rel str_comp_len_exp]
+    call    serial_print
+    mov     ecx, r15d
+    call    serial_print_int
+    lea     rcx, [rel str_newline]
+    call    serial_print
+    jmp     .cto_done
+
+.cto_byte_mismatch:
+    ; Print [COMPILER FAIL] <name> mismatch at byte <offset>
+    push    rcx                 ; save got byte
+    push    rdx                 ; save exp byte
+    lea     rcx, [rel str_comp_fail]
+    call    serial_print
+    mov     rcx, rsi
+    call    serial_print
+    lea     rcx, [rel str_comp_mismatch]
+    call    serial_print
+    mov     ecx, edi
+    call    serial_print_int
+    pop     rdx                 ; exp byte
+    pop     rcx                 ; got byte — but we need it in ecx for print
+    ; Print got and exp as hex would be nice but serial_print_int is decimal
+    ; Just print the offset, that's enough for debugging
+    lea     rcx, [rel str_newline]
+    call    serial_print
+
+.cto_done:
+    add     rsp, 56
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+%endif  ; KERNEL_MODE — compiler tests
