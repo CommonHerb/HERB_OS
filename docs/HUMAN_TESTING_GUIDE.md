@@ -5,7 +5,7 @@
 ## Setup
 
 1. Open a terminal in `C:\Users\Ben\Desktop\HERB\boot\`
-2. Run `make run` (graphics mode with QEMU)
+2. Run `mingw32-make run` (graphics mode with QEMU)
 3. The OS boots automatically — you should see:
    - A dark blue background
    - "HERB KERNEL" title at top

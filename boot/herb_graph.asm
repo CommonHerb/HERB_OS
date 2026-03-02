@@ -45,18 +45,16 @@ extern herb_memcpy      ; Phase 4f
 extern ham_compile_all  ; Phase 4f — int ham_compile_all(uint8_t* buf, int buf_size, int* out_count)
 extern ham_run          ; Phase 4f — int ham_run(uint8_t* bytecode_ptr, int bytecode_len)
 extern alloc_expr       ; Phase 4f — Expr* alloc_expr(void)
-extern g_arena_ptr      ; Phase 4i — HerbArena* (from herb_loader.asm)
 
-; External C data we access
-extern g_strings        ; char[2048][128]
-extern g_string_count   ; int
-extern g_graph          ; Graph (720568 bytes)
-extern g_expr_pool      ; Expr[4096]
-extern g_expr_count     ; int
-extern g_ham_bytecode   ; uint8_t[8192]
-extern g_ham_bytecode_len   ; int
-extern g_ham_compiled_count ; int
-extern g_ham_dirty      ; int
+; External data
+extern g_arena_ptr      ; HerbArena* (from herb_loader.asm)
+extern g_ham_bytecode       ; uint8_t[8192] (from herb_ham.asm)
+extern g_ham_bytecode_len   ; int (from herb_ham.asm)
+extern g_ham_compiled_count ; int (from herb_ham.asm)
+extern g_ham_dirty          ; int (from herb_ham.asm)
+
+; Graph data — owned by this file (Phase D Step 7d)
+global g_strings, g_string_count, g_graph, g_expr_pool, g_expr_count
 
 ; Export our functions — Phase 4b Part 1
 global intern
@@ -128,6 +126,31 @@ global herb_expr_binary
 ; Phase 4i — Arena queries
 global herb_arena_usage
 global herb_arena_total
+
+; ============================================================
+; BSS — Graph data (Phase D Step 7d: migrated from C)
+; ============================================================
+
+section .bss
+
+align 16
+g_strings:      resb 262144     ; char[2048][128] — string intern table
+g_expr_pool:    resb 131072     ; Expr[4096] — expression pool (4096 × 32 bytes)
+g_graph:        resb SIZEOF_GRAPH ; Graph struct (720568 bytes)
+
+; ============================================================
+; DATA — Graph counters (Phase D Step 7d: migrated from C)
+; ============================================================
+
+section .data
+
+align 4
+g_string_count: dd 0            ; int — number of interned strings
+g_expr_count:   dd 0            ; int — number of allocated expressions
+
+; ============================================================
+; RDATA — String constants
+; ============================================================
 
 section .rdata
     str_question:   db "?", 0

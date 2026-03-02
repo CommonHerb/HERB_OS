@@ -17,7 +17,6 @@
 # ============================================================
 
 NASM    = nasm
-CC      = gcc
 LD      = ld
 OBJCOPY = objcopy
 PYTHON  = py
@@ -29,22 +28,7 @@ PROGRAM ?= interactive_kernel
 # Graphics mode: 1=framebuffer, 0=text (default: 1 for interactive use)
 GRAPHICS ?= 1
 
-# Freestanding kernel flags
-# -DHERB_BINARY_ONLY strips the JSON parser — bare metal loads .herb binary only
-CFLAGS = -ffreestanding -nostdlib -mno-red-zone -fno-stack-protector \
-         -fno-pic -fno-exceptions -Wall -O2 -I../src -I. -DHERB_BINARY_ONLY
-
-# Add KERNEL_MODE flag for the four-module kernel
-ifeq ($(PROGRAM),interactive_kernel)
-CFLAGS += -DKERNEL_MODE
-endif
-
-# Add GRAPHICS_MODE flag
-ifeq ($(GRAPHICS),1)
-CFLAGS += -DGRAPHICS_MODE
-endif
-
-# NASM flags for herb_kernel.asm (must match GCC conditional flags)
+# NASM flags for herb_kernel.asm (conditional build modes)
 NASMFLAGS_KERNEL = -f win64
 ifeq ($(PROGRAM),interactive_kernel)
 NASMFLAGS_KERNEL += -DKERNEL_MODE
@@ -73,23 +57,9 @@ $(PROGRAM_BIN): ../src/herb_compile.py $(PROGRAM_JSON)
 %.herb: ../programs/%.herb.json ../src/herb_compile.py
 	$(PYTHON) ../src/herb_compile.py $< $@
 
-# ---- Step 1c: Generate embedded program header (main kernel) ----
-program_data.h: gen_program_data.py $(PROGRAM_BIN)
-	$(PYTHON) gen_program_data.py $(PROGRAM_BIN) program_data.h
-
-# ---- Step 1d: Generate embedded process programs header ----
-process_programs.h: gen_multi_program_data.py $(PROC_HERB_BINS)
-	$(PYTHON) gen_multi_program_data.py $(foreach p,$(PROC_PROGRAMS),$(p):$(p).herb) process_programs.h
-
 # ---- Step 2: Compile all objects ----
 kernel_entry.o: kernel_entry.asm
 	$(NASM) -f win64 $< -o $@
-
-kernel_main.o: kernel_main.c program_data.h process_programs.h ../src/herb_freestanding.h font8x16.h framebuffer.h
-	$(CC) $(CFLAGS) -c $< -o $@
-
-herb_runtime_freestanding.o: ../src/herb_runtime_freestanding.c ../src/herb_freestanding.h
-	$(CC) $(CFLAGS) -c $< -o $@
 
 herb_freestanding.o: herb_freestanding.asm herb_freestanding_layout.inc
 	$(NASM) -f win64 $< -o $@
@@ -106,10 +76,10 @@ herb_graph.o: herb_graph.asm herb_graph_layout.inc
 herb_loader.o: herb_loader.asm herb_graph_layout.inc herb_freestanding_layout.inc
 	$(NASM) -f win64 $< -o $@
 
-herb_kernel.o: herb_kernel.asm
+herb_kernel.o: herb_kernel.asm $(PROGRAM_BIN) $(PROC_HERB_BINS)
 	$(NASM) $(NASMFLAGS_KERNEL) $< -o $@
 
-OBJS = kernel_entry.o kernel_main.o herb_runtime_freestanding.o herb_freestanding.o herb_hw.o herb_ham.o herb_graph.o herb_loader.o herb_kernel.o
+OBJS = kernel_entry.o herb_freestanding.o herb_hw.o herb_ham.o herb_graph.o herb_loader.o herb_kernel.o
 
 # ---- Step 3: Link into PE, then extract flat binary ----
 # Image base 0x0FFC00 makes .text land at VMA 0x100000
@@ -159,7 +129,7 @@ test-bare-metal:
 # ---- Clean ----
 clean:
 	$(PYTHON) -c "import glob,os;\
-	[os.remove(f) for p in ['*.o','kernel.pe','kernel.bin','boot.bin','herb_os.img','program_data.h','process_programs.h','interactive_kernel.herb','interactive_os.herb','producer.herb','consumer.herb','worker.herb','beacon.herb','schedule_priority.herb','schedule_roundrobin.herb','shell.herb','test_serial.log'] for f in glob.glob(p) if os.path.isfile(f)]"
+	[os.remove(f) for p in ['*.o','kernel.pe','kernel.bin','boot.bin','herb_os.img','interactive_kernel.herb','interactive_os.herb','producer.herb','consumer.herb','worker.herb','beacon.herb','schedule_priority.herb','schedule_roundrobin.herb','shell.herb','test_serial.log'] for f in glob.glob(p) if os.path.isfile(f)]"
 
 # ---- Help ----
 help:

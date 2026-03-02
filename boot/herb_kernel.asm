@@ -89,14 +89,20 @@ extern vga_set_color
 extern vga_clear
 extern vga_print
 extern vga_print_int
+extern vga_print_at
+extern vga_clear_row
+extern vga_print_padded
+extern vga_putchar
+extern vga_color
+extern herb_entity_location
 extern serial_print_int
-extern draw_full
-extern draw_stats
+; draw_full now defined locally (Phase D Step 7c)
+; draw_stats now defined locally (Phase D Step 5)
 ; handle_key now defined locally (Phase C Step 10)
-extern mouse_handle_packet
-extern scancode_to_ascii
+; mouse_handle_packet now defined locally (Phase D Step 4)
+; scancode_to_ascii now defined locally (Phase D Step 7d)
 ; cmd_timer now defined locally (Phase C)
-extern herb_error_handler
+; herb_error_handler now defined locally (Phase D Step 4)
 
 %ifdef KERNEL_MODE
 ; cmd_click and cmd_tension_toggle now defined locally (Phase C)
@@ -105,75 +111,65 @@ extern herb_error_handler
 %endif
 
 %ifdef GRAPHICS_MODE
-extern gfx_draw_stats_only
-extern km_fb_init
-extern km_fb_clear_bg
-extern km_fb_flip
-extern km_fb_cursor_erase
-extern km_fb_cursor_draw
-extern km_fb_get_active
-extern km_set_cursor
+; gfx_draw_stats_only now defined locally (Phase D Step 7a)
+extern fb_init_display
+extern fb_clear
+extern fb_flip
+extern fb_cursor_erase
+extern fb_cursor_draw
+extern fb_active
+extern cursor_x
+extern cursor_y
+; Framebuffer drawing primitives (from herb_hw.asm — Phase D Step 6)
+extern fb_pixel
+extern fb_fill_rect
+extern fb_draw_rect
+extern fb_draw_rect2
+extern fb_hline
+extern fb_draw_char
+extern fb_draw_string
+extern fb_draw_int
+extern fb_draw_padded
+extern fb_draw_container
+extern fb_draw_process
+extern fb_draw_resources
 %endif
 
 ; ============================================================
-; EXTERNS — Globals from kernel_main.c
+; GLOBALS — Kernel state (migrated from kernel_main.c, Phase D Step 7d)
+; Definitions in DATA/BSS sections below.
 ; ============================================================
 
-extern timer_count
-extern total_ops
-extern signal_counter
-extern process_counter
-extern buffer_eid
-extern last_action
-extern last_key_name
-extern mouse_x
-extern mouse_y
-extern mouse_cycle
-extern mouse_packet
-extern mouse_buttons
-extern mouse_left_clicked
-extern mouse_moved
-extern cursor_eid
-extern selected_tension_idx
+global timer_count, total_ops, signal_counter, process_counter
+global buffer_eid, last_action, last_key_name
+global mouse_x, mouse_y, mouse_cycle, mouse_packet
+global mouse_buttons, mouse_left_clicked, mouse_moved
+global cursor_eid, selected_tension_idx
+global scancode_to_ascii
 
 %ifdef KERNEL_MODE
-extern input_ctl_eid
-extern shell_ctl_eid
-extern shell_eid
-extern spawn_ctl_eid
-extern game_ctl_eid
-extern player_eid
-extern display_ctl_eid
-extern timer_interval
-extern buffer_capacity
+global input_ctl_eid, shell_ctl_eid, shell_eid, spawn_ctl_eid
+global game_ctl_eid, player_eid, display_ctl_eid
+global timer_interval, buffer_capacity
 %endif
 
 %ifdef GRAPHICS_MODE
-extern selected_eid
+global selected_eid
 %endif
 
 ; ============================================================
-; EXTERNS — Program data (from generated headers, linked from C)
+; Program data globals (embedded via incbin — Phase D Step 7e)
 ; ============================================================
 
-extern program_data
-extern program_data_len
-
+global program_data, program_data_len
 %ifdef KERNEL_MODE
-extern program_shell
-extern program_shell_len
-extern program_producer
-extern program_producer_len
-extern program_consumer
-extern program_consumer_len
-extern program_worker
-extern program_worker_len
-extern program_beacon
-extern program_beacon_len
-extern program_schedule_priority
-extern program_schedule_priority_len
-extern program_schedule_roundrobin
-extern program_schedule_roundrobin_len
+global program_shell, program_shell_len
+global program_producer, program_producer_len
+global program_consumer, program_consumer_len
+global program_worker, program_worker_len
+global program_beacon, program_beacon_len
+global program_schedule_priority, program_schedule_priority_len
+global program_schedule_roundrobin, program_schedule_roundrobin_len
 %endif
 
 ; ============================================================
@@ -227,6 +223,32 @@ global cmd_new_process
 %endif
 ; Phase C Step 10 — handle_key (final function)
 global handle_key
+; Phase D Step 4 — infrastructure + helpers
+global mouse_handle_packet
+global herb_error_handler
+global terrain_color
+global terrain_name
+global draw_banner
+; Phase D Step 5 — text mode draw functions
+global draw_stats
+global draw_legend
+global draw_process_row
+global draw_process_table
+global draw_summary
+global draw_log
+; Phase D Step 7c — draw_full (top-level draw dispatcher)
+global draw_full
+; Phase D Step 6 — graphics draw functions
+; Phase D Step 7 — gfx_draw_full, gfx_draw_stats_only
+%ifdef GRAPHICS_MODE
+global gfx_draw_full
+global gfx_draw_stats_only
+global gfx_draw_procs_in_region
+%ifdef KERNEL_MODE
+global gfx_draw_tension_panel
+global gfx_draw_game
+%endif
+%endif
 
 ; ============================================================
 ; BSS — IDT data
@@ -238,11 +260,124 @@ align 16
 idt:        resb 4096       ; 256 entries * 16 bytes each
 idt_ptr:    resb 10         ; 2-byte limit + 8-byte base
 
+; Phase D Step 7d — Kernel state (BSS, zero-initialized)
+alignb 4
+last_action:     resb 80        ; char[80]
+last_key_name:   resb 16        ; char[16]
+mouse_packet:    resb 4         ; uint8_t[3] + padding
+
 ; ============================================================
-; RDATA — String literals
+; DATA — Initialized globals (Phase D Step 7d)
+; ============================================================
+
+section .data
+
+align 4
+mouse_x:            dd 400
+mouse_y:            dd 300
+mouse_cycle:        dd 0
+mouse_buttons:      dd 0
+mouse_left_clicked: dd 0
+mouse_moved:        dd 0
+cursor_eid:         dd -1
+selected_tension_idx: dd -1
+timer_count:        dd 0
+total_ops:          dd 0
+signal_counter:     dd 0
+process_counter:    dd 0
+buffer_eid:         dd -1
+
+%ifdef KERNEL_MODE
+input_ctl_eid:      dd -1
+shell_ctl_eid:      dd -1
+shell_eid:          dd -1
+spawn_ctl_eid:      dd -1
+game_ctl_eid:       dd -1
+player_eid:         dd -1
+display_ctl_eid:    dd -1
+timer_interval:     dd 300
+buffer_capacity:    dd 20
+%endif
+
+%ifdef GRAPHICS_MODE
+selected_eid:       dd -1
+%endif
+
+; ============================================================
+; RDATA — String literals + const data
 ; ============================================================
 
 section .rdata
+
+; PS/2 Scancode table (Set 1, US QWERTY) — Phase D Step 7d
+scancode_to_ascii:
+    db 0,   27, '1', '2', '3', '4', '5', '6'    ; 0x00-0x07
+    db '7', '8', '9', '0', '-', '=',  8,   9     ; 0x08-0x0F (BS, TAB)
+    db 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i'   ; 0x10-0x17
+    db 'o', 'p', '[', ']',  10,  0,  'a', 's'    ; 0x18-0x1F (ENTER, LCTRL)
+    db 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';'   ; 0x20-0x27
+    db 39,  '`',  0,  '\', 'z', 'x', 'c', 'v'   ; 0x28-0x2F (LSHIFT)
+    db 'b', 'n', 'm', ',', '.', '/',  0,  '*'    ; 0x30-0x37 (RSHIFT)
+    db  0,  ' ',  0,   0,   0,   0,   0,   0     ; 0x38-0x3F (LALT,SPACE,CAPS,F1-F4)
+    db  0,   0,   0,   0,   0,   0,   0,   0     ; 0x40-0x47 (F5-F10,NUM,SCROLL)
+    db  0,   0,   0,   0,   0,   0,   0,   0     ; 0x48-0x4F
+    db  0,   0,   0,   0,   0,   0,   0,   0     ; 0x50-0x57
+    db  0,   0,   0,   0,   0,   0,   0,   0     ; 0x58-0x5F
+    db  0,   0,   0,   0,   0,   0,   0,   0     ; 0x60-0x67
+    db  0,   0,   0,   0,   0,   0,   0,   0     ; 0x68-0x6F
+    db  0,   0,   0,   0,   0,   0,   0,   0     ; 0x70-0x77
+    db  0,   0,   0,   0,   0,   0,   0,   0     ; 0x78-0x7F
+
+; Embedded .herb program data (Phase D Step 7e — replaces C headers)
+align 4
+program_data:
+    incbin "interactive_kernel.herb"
+program_data_end:
+program_data_len: dd program_data_end - program_data
+
+%ifdef KERNEL_MODE
+align 4
+program_shell:
+    incbin "shell.herb"
+program_shell_end:
+program_shell_len: dd program_shell_end - program_shell
+
+align 4
+program_producer:
+    incbin "producer.herb"
+program_producer_end:
+program_producer_len: dd program_producer_end - program_producer
+
+align 4
+program_consumer:
+    incbin "consumer.herb"
+program_consumer_end:
+program_consumer_len: dd program_consumer_end - program_consumer
+
+align 4
+program_worker:
+    incbin "worker.herb"
+program_worker_end:
+program_worker_len: dd program_worker_end - program_worker
+
+align 4
+program_beacon:
+    incbin "beacon.herb"
+program_beacon_end:
+program_beacon_len: dd program_beacon_end - program_beacon
+
+align 4
+program_schedule_priority:
+    incbin "schedule_priority.herb"
+program_schedule_priority_end:
+program_schedule_priority_len: dd program_schedule_priority_end - program_schedule_priority
+
+align 4
+program_schedule_roundrobin:
+    incbin "schedule_roundrobin.herb"
+program_schedule_roundrobin_end:
+program_schedule_roundrobin_len: dd program_schedule_roundrobin_end - program_schedule_roundrobin
+%endif
 
 %ifdef KERNEL_MODE
 str_boot_banner:    db "HERB OS v3 - Four-Module Kernel", 10, 0
@@ -278,6 +413,101 @@ str_fb_fail_fmt:    db "  Framebuffer: init failed (rc=%d), using text mode", 10
 
 ; Boot message format for last_action
 str_boot_action:    db "Booted with %d ops. Press / to type commands.", 0
+
+; Phase D Step 4 — error handler strings
+str_err_prefix:     db "ERR: ", 0
+str_err_serial:     db "[ERROR] ", 0
+
+; Phase D Step 4 — terrain name strings
+str_terrain_grass:  db "Grass", 0
+str_terrain_forest: db "Forest", 0
+str_terrain_water:  db "Water", 0
+str_terrain_stone:  db "Stone", 0
+str_terrain_dirt:   db "Dirt", 0
+str_terrain_unknown: db "???", 0
+
+; Phase D Step 4 — banner title strings
+%ifdef KERNEL_MODE
+str_os_title_km:    db "HERB KERNEL", 0
+str_os_subtitle_km: db "Shell", 0
+%else
+str_os_title:       db "HERB OS", 0
+str_os_subtitle:    db "Interactive Shell", 0
+%endif
+
+; Phase D Step 5 — draw_stats strings
+str_tick:           db "Tick:", 0
+str_ops_label:      db "  Ops:", 0
+str_arena_label:    db "  Arena:", 0
+str_kb:             db "KB", 0
+str_procs_label:    db "  Procs:", 0
+str_sched_label:    db "  Sched:", 0
+str_priority_pol:   db "PRIORITY", 0
+str_roundrobin_pol: db "ROUND-ROBIN", 0
+str_key_open:       db "  Key:[", 0
+str_key_close:      db "]", 0
+str_current_policy: db "current_policy", 0
+; draw_legend strings
+str_space:          db " ", 0
+str_ques:           db "?", 0
+str_empty:          db "", 0
+str_key_text:       db "key_text", 0
+str_label_text:     db "label_text", 0
+%ifndef KERNEL_MODE
+str_leg_N:          db "N", 0
+str_leg_ew:         db "ew ", 0
+str_leg_K:          db "K", 0
+str_leg_ill:        db "ill ", 0
+str_leg_B:          db "B", 0
+str_leg_lk:         db "lk ", 0
+str_leg_U:          db "U", 0
+str_leg_nblk:       db "nblk ", 0
+str_leg_T:          db "T", 0
+str_leg_mr:         db "mr ", 0
+str_leg_Plus:       db "+", 0
+str_leg_Boost:      db "Boost ", 0
+str_leg_Space:      db "Space", 0
+str_leg_Step:       db "=Step", 0
+%endif
+; draw_process_table strings
+str_hdr_hash:       db "#", 0
+str_hdr_st:         db "ST", 0
+str_hdr_name:       db "NAME", 0
+str_hdr_loc:        db "LOCATION", 0
+str_hdr_pri:        db "PRI", 0
+str_hdr_ts:         db "TS", 0
+str_hdr_mem:        db "MEM(f/u)", 0
+str_hdr_fd:         db "FD(f/o)", 0
+str_max_terminated: db "max_terminated", 0
+str_plus_open:      db "(+", 0
+str_term_suffix:    db " terminated)", 0
+; draw_process_row strings
+str_p_eq:           db "p=", 0
+str_ts_eq:          db "ts=", 0
+str_m_colon:        db "M:", 0
+str_slash:          db "/", 0
+str_fd_label:       db "  F:", 0
+; draw_summary strings
+str_containers:     db "Containers:", 0
+str_ready_eq:       db "READY=", 0
+str_cpu0_eq:        db "  CPU0=", 0
+str_blocked_eq:     db "  BLOCKED=", 0
+str_term_eq:        db "  TERM=", 0
+str_sigdone_eq:     db "  SigDone=", 0
+str_resources:      db "Resources:", 0
+str_mem_label2:     db " MEM:", 0
+str_fu_sep:         db "f/", 0
+str_u_suffix:       db "u  FD:", 0
+str_fo_sep:         db "f/", 0
+str_o_suffix:       db "o  IN:", 0
+; draw_log strings
+str_log_prefix:     db "> ", 0
+; scoped resource strings (for draw_process_row, draw_summary)
+str_sc_mem_free:    db "MEM_FREE", 0
+str_sc_mem_used:    db "MEM_USED", 0
+str_sc_fd_free:     db "FD_FREE", 0
+str_sc_fd_open:     db "FD_OPEN", 0
+str_sc_inbox:       db "INBOX", 0
 
 %ifdef KERNEL_MODE
 ; Entity discovery messages
@@ -338,9 +568,6 @@ str_cn_display_state: db "display.DISPLAY_STATE", 0
 str_cn_game_state:  db "world.GAME_STATE", 0
 str_cn_game_player: db "world.PLAYER", 0
 str_cn_cpu0:        db "proc.CPU0", 0
-
-; Empty string for run_container=""
-str_empty:          db 0
 
 ; Type name strings
 str_et_buffer:      db "Buffer", 0
@@ -413,7 +640,6 @@ str_pos:            db "pos", 0
 str_load_policy:    db "load_policy", 0
 str_key_ascii:      db "key_ascii", 0
 str_ascii_prop:     db "ascii", 0
-str_current_policy: db "current_policy", 0
 str_order:          db "order", 0
 str_cmd_text:       db "cmd_text", 0
 str_tile_x:         db "tile_x", 0
@@ -568,7 +794,6 @@ str_cn_cpu0:        db "CPU0", 0
 str_cn_ready:       db "READY", 0
 str_et_process:     db "Process", 0
 str_et_signal:      db "Signal", 0
-str_empty:          db 0
 str_newline:        db 10, 0
 %endif
 
@@ -667,7 +892,243 @@ str_priority_label: db "PRIORITY", 0
 ; Misc
 str_empty_name:     db "EMPTY", 0
 str_ham_timer:      db "ham_timer", 0
-str_space:          db " ", 0
+
+; Phase D Step 7c — draw_full VGA cmdline strings
+%ifdef KERNEL_MODE
+str_vga_colon:      db ":", 0
+str_vga_slash_cmd:  db "/ to type command", 0
+%endif
+
+; Phase D Step 7 — gfx stats/draw_full string constants
+%ifdef GRAPHICS_MODE
+str_gfx_tick:       db "Tick:", 0
+str_gfx_ops:        db "Ops:", 0
+str_gfx_arena:      db "Arena:", 0
+str_gfx_kb:         db "KB", 0
+str_gfx_procs:      db "Procs:", 0
+str_gfx_sched:      db "Sched:", 0
+str_gfx_priority:   db "PRIORITY", 0
+str_gfx_roundrobin: db "ROUND-ROBIN", 0
+str_gfx_key_open:   db "Key:[", 0
+str_gfx_key_close:  db "]", 0
+str_gfx_gt:         db "> ", 0
+str_gfx_ready_eq:   db "READY=", 0
+str_gfx_cpu0_eq:    db "CPU0=", 0
+str_gfx_blocked_eq: db "BLOCKED=", 0
+str_gfx_term_eq:    db "TERM=", 0
+str_gfx_buf_lbl:    db "BUF", 0
+str_gfx_buf_fmt:    db "%d/%d", 0
+str_gfx_gt_prod:    db ">", 0
+str_gfx_producer:   db "producer  ", 0
+str_gfx_lt_cons:    db "<", 0
+str_gfx_consumer:   db "consumer", 0
+str_gfx_mem_free_lbl: db "MEM free  ", 0
+str_gfx_mem_used_lbl: db "MEM used  ", 0
+str_gfx_fd_free_lbl: db "FD free  ", 0
+str_gfx_fd_open_lbl: db "FD open", 0
+str_gfx_colon:      db ":", 0
+str_gfx_slash_cmd:  db "/", 0
+str_gfx_type_cmd:   db "type command", 0
+str_gfx_os_return:  db "= return to OS", 0
+; Game mode legend strings
+str_gfx_arrows:     db "Arrows", 0
+str_gfx_eq_move:    db "=Move ", 0
+str_gfx_space_key:  db "Space", 0
+str_gfx_eq_gather:  db "=Gather ", 0
+str_gfx_g_key:      db "G", 0
+str_gfx_eq_osview:  db "=OS view", 0
+str_gfx_wood_lbl2:  db "Wood:", 0
+str_gfx_trees_lbl2: db "Trees:", 0
+%ifdef KERNEL_MODE
+; gfx_draw_full property names for Surface entity queries
+str_gfx_width:      db "width", 0
+str_gfx_height:     db "height", 0
+str_gfx_region_id:  db "region_id", 0
+; region_titles array — indexed by region_id
+str_region_cpu0:    db "CPU0 (RUNNING)", 0
+str_region_ready:   db "READY", 0
+str_region_blocked: db "BLOCKED", 0
+str_region_term:    db "TERMINATED", 0
+align 8
+region_titles:
+    dq str_region_cpu0
+    dq str_region_ready
+    dq str_region_blocked
+    dq str_region_term
+; region_containers array — indexed by region_id
+region_containers:
+    dq str_cn_cpu0
+    dq str_cn_ready
+    dq str_cn_blocked
+    dq str_cn_terminated
+%endif ; KERNEL_MODE
+%ifndef KERNEL_MODE
+; Non-KERNEL_MODE legend strings
+str_gfx_leg_cpu0:     db "CPU0 (RUNNING)", 0
+str_gfx_leg_ready:    db "READY", 0
+str_gfx_leg_blocked:  db "BLOCKED", 0
+str_gfx_leg_term:     db "TERMINATED", 0
+%endif
+%endif ; GRAPHICS_MODE
+
+; Phase D Step 6 — Graphics draw string constants
+%ifdef GRAPHICS_MODE
+str_gfx_surface:    db "::SURFACE", 0
+str_gfx_border_color: db "border_color", 0
+str_gfx_fill_color: db "fill_color", 0
+str_gfx_selected:   db "selected", 0
+str_gfx_produced:   db "produced", 0
+str_gfx_consumed:   db "consumed", 0
+str_gfx_max_procs:  db "max_procs_per_region", 0
+str_gfx_more_fmt:   db "+%d more", 0
+str_gfx_prod_fmt:   db ">%d", 0
+str_gfx_cons_fmt:   db "<%d", 0
+%ifdef KERNEL_MODE
+str_gfx_tensions:   db "TENSIONS", 0
+str_gfx_tens_cnt:   db " %d/%d", 0
+str_gfx_lbracket:   db "[", 0
+str_gfx_rbracket:   db "]", 0
+str_gfx_sel_lbl:    db "sel ", 0
+str_gfx_d_key:      db "D", 0
+str_gfx_toggle_lbl: db "=toggle", 0
+str_gfx_common_herb: db "COMMON HERB", 0
+str_gfx_player_lbl: db "Player", 0
+str_gfx_pos_open:   db "Pos: (", 0
+str_gfx_comma:      db ",", 0
+str_gfx_paren_close: db ")", 0
+str_gfx_hp_lbl:     db "HP: ", 0
+str_gfx_on_lbl:     db "On: ", 0
+str_gfx_inventory:  db "Inventory", 0
+str_gfx_wood_lbl:   db "Wood: ", 0
+str_gfx_trees_lbl:  db "Trees left: ", 0
+str_gfx_terrain_hdr: db "Terrain", 0
+str_gfx_grass:      db "Grass", 0
+str_gfx_forest:     db "Forest (trees)", 0
+str_gfx_water:      db "Water (blocked)", 0
+str_gfx_stone:      db "Stone (blocked)", 0
+str_gfx_controls:   db "Controls", 0
+str_gfx_ctrl_arrow: db "Arrows  Move", 0
+str_gfx_ctrl_space: db "Space   Gather", 0
+str_gfx_ctrl_g:     db "G       OS view", 0
+str_gfx_pri_fmt:    db "%d", 0
+str_gfx_surf_fmt:   db "%s::SURFACE", 0
+%endif  ; KERNEL_MODE
+%endif  ; GRAPHICS_MODE
+
+; ============================================================
+; GRAPHICS LAYOUT EQU CONSTANTS — Phase D Step 6
+; ============================================================
+
+%ifdef GRAPHICS_MODE
+
+; FB dimensions
+FB_WIDTH        equ 800
+FB_HEIGHT       equ 600
+
+; Layout bands
+GFX_BANNER_Y   equ 0
+GFX_BANNER_H   equ 30
+GFX_STATS_Y    equ 30
+GFX_STATS_H    equ 20
+GFX_LEGEND_Y   equ 50
+GFX_LEGEND_H   equ 20
+GFX_MAIN_Y     equ 76
+GFX_MAIN_H     equ 404
+GFX_LOG_Y       equ 486
+GFX_LOG_H       equ 20
+GFX_SUMMARY_Y   equ 510
+GFX_SUMMARY_H   equ 20
+GFX_RESLEG_Y    equ 534
+GFX_RESLEG_H    equ 20
+
+; Game world
+GAME_TILE_SIZE  equ 50
+GAME_GRID_X     equ 16
+GAME_GRID_Y     equ 80
+GAME_GRID_W     equ 400   ; 8 * 50
+GAME_GRID_H     equ 400   ; 8 * 50
+GAME_INFO_X     equ 432
+GAME_INFO_W     equ 356
+
+; Tension panel
+GFX_TENS_X      equ 548
+GFX_TENS_Y      equ 76
+GFX_TENS_W      equ 244
+GFX_TENS_H      equ 388
+GFX_TENS_ROW_H  equ 16
+
+; Container regions: (800-24)/2=388, (404-24)/2=190
+GFX_PAD         equ 8
+GFX_CONT_W     equ 388
+GFX_CONT_H     equ 190
+
+GFX_CPU0_X      equ GFX_PAD           ; 8
+GFX_CPU0_Y      equ GFX_MAIN_Y        ; 76
+GFX_READY_X     equ (GFX_PAD*2 + GFX_CONT_W)  ; 16+388=404
+GFX_READY_Y     equ GFX_MAIN_Y        ; 76
+GFX_BLOCK_X     equ GFX_PAD           ; 8
+GFX_BLOCK_Y     equ (GFX_MAIN_Y + GFX_CONT_H + GFX_PAD) ; 76+190+8=274
+GFX_TERM_X      equ (GFX_PAD*2 + GFX_CONT_W)  ; 404
+GFX_TERM_Y      equ (GFX_MAIN_Y + GFX_CONT_H + GFX_PAD) ; 274
+
+; Process rect sizing
+GFX_PROC_W     equ 120
+GFX_PROC_PAD   equ 6
+%ifdef KERNEL_MODE
+GFX_PROC_H     equ 56
+%else
+GFX_PROC_H     equ 40
+%endif
+
+; Color constants for graphics mode
+COL_BG           equ 0x00101020
+COL_BANNER_BG    equ 0x00182848
+COL_STATS_BG     equ 0x00142038
+COL_LEGEND_BG    equ 0x00101828
+COL_RUNNING      equ 0x0000CC66
+COL_RUNNING_BG   equ 0x00103020
+COL_READY_COL    equ 0x00CCAA00
+COL_READY_BG     equ 0x00282010
+COL_BLOCKED_COL  equ 0x00CC3333
+COL_BLOCKED_BG   equ 0x00281010
+COL_TERM_COL     equ 0x00555555
+COL_TERM_BG      equ 0x00181818
+COL_BORDER       equ 0x00446688
+COL_HEADER_FG    equ 0x00AACCEE
+COL_TEXT         equ 0x00DDDDDD
+COL_TEXT_DIM     equ 0x00888888
+COL_TEXT_HI      equ 0x00FFFFFF
+COL_TEXT_KEY     equ 0x00FFDD44
+COL_TEXT_VAL     equ 0x0066CCFF
+COL_SELECTED     equ 0x00FFFFFF
+COL_TENS_BG      equ 0x000C1018
+COL_TENS_BORDER  equ 0x00336688
+COL_TENS_ON      equ 0x0000BBDD
+COL_TENS_OFF     equ 0x00443333
+COL_TENS_ON_BG   equ 0x00101830
+COL_TENS_OFF_BG  equ 0x000C0C14
+COL_TENS_TITLE   equ 0x0066AACC
+COL_TENS_NAME    equ 0x00AADDEE
+COL_TENS_DIM     equ 0x00556666
+COL_TENS_PRI     equ 0x00887799
+COL_TENS_SEL     equ 0x00FFFFFF
+COL_TILE_GRASS   equ 0x003A7D44
+COL_TILE_FOREST  equ 0x001B5E20
+COL_TILE_WATER   equ 0x001565C0
+COL_TILE_STONE   equ 0x00757575
+COL_TILE_GRID    equ 0x002E5530
+COL_PLAYER       equ 0x00FFD740
+COL_PLAYER_BDR   equ 0x00FFA000
+COL_TREE         equ 0x0066BB6A
+COL_TREE_TRUNK   equ 0x00795548
+COL_GAME_BG      equ 0x00101818
+COL_GAME_TITLE   equ 0x0088CCAA
+COL_RES_FREE     equ 0x00338855
+COL_RES_USED     equ 0x00CC4444
+COL_RES_FD_F     equ 0x00335588
+COL_RES_FD_U     equ 0x00CC8844
+
+%endif  ; GRAPHICS_MODE
 
 ; ============================================================
 ; TEXT — Code
@@ -829,7 +1290,7 @@ kernel_main:
     lea rcx, [rel str_fb_detect]
     call serial_print
 
-    call km_fb_init
+    call fb_init_display
     test eax, eax
     jnz .fb_fail
 
@@ -840,8 +1301,9 @@ kernel_main:
     call serial_print
 
     ; fb_clear(COL_BG) + fb_flip()
-    call km_fb_clear_bg
-    call km_fb_flip
+    mov ecx, 0x00101020          ; COL_BG
+    call fb_clear
+    call fb_flip
     jmp .fb_done
 
 .fb_fail:
@@ -1483,6 +1945,7 @@ kernel_main:
     call vga_set_color
 
     call vga_clear
+
     call draw_full
 
     ; ================================================================
@@ -1539,9 +2002,8 @@ kernel_main:
     jnz .no_timer
 
 %ifdef GRAPHICS_MODE
-    call km_fb_get_active
-    test eax, eax
-    jz .stats_text_mode
+    cmp dword [rel fb_active], 0
+    je .stats_text_mode
 
     call gfx_draw_stats_only
     jmp .no_timer
@@ -1635,16 +2097,14 @@ kernel_main:
 
 %ifdef GRAPHICS_MODE
     ; Update cursor position for rendering
-    call km_fb_get_active
-    test eax, eax
-    jz .no_cursor_update
+    cmp dword [rel fb_active], 0
+    je .no_cursor_update
 
     ; cursor_x = mouse_x; cursor_y = mouse_y
-    lea rax, [rel mouse_x]
-    mov ecx, dword [rax]
-    lea rax, [rel mouse_y]
-    mov edx, dword [rax]
-    call km_set_cursor
+    mov eax, [rel mouse_x]
+    mov [rel cursor_x], eax
+    mov eax, [rel mouse_y]
+    mov [rel cursor_y], eax
 
 .no_cursor_update:
 
@@ -1753,16 +2213,15 @@ kernel_main:
     test eax, eax
     jz .no_mouse_move
 
-    call km_fb_get_active
-    test eax, eax
-    jz .no_mouse_move
+    cmp dword [rel fb_active], 0
+    je .no_mouse_move
 
     ; mouse_moved = 0
     lea rax, [rel mouse_moved]
     mov dword [rax], 0
 
-    call km_fb_cursor_erase
-    call km_fb_cursor_draw
+    call fb_cursor_erase
+    call fb_cursor_draw
 
 .no_mouse_move:
 %endif  ; GRAPHICS_MODE
@@ -6080,6 +6539,4400 @@ handle_key:
     add rsp, 136
     pop r13
     pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; Phase D Step 4: Infrastructure + Simple Helpers
+; ============================================================
+
+; void mouse_handle_packet(void)
+; Process a complete 3-byte mouse packet.
+; Reads mouse_packet[0..2], updates mouse_x/y, detects clicks.
+mouse_handle_packet:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 32                     ; shadow space
+    ; 1 push + sub 32 = 8+32 = 40. 40%16=8. ✓
+
+    ; flags = mouse_packet[0], dx = mouse_packet[1], dy = mouse_packet[2]
+    lea rax, [rel mouse_packet]
+    movzx ecx, byte [rax]          ; flags
+    movzx edx, byte [rax + 1]      ; dx (unsigned)
+    movzx r8d, byte [rax + 2]      ; dy (unsigned)
+
+    ; Sign extension from flags
+    test ecx, 0x10
+    jz .mhp_no_sx
+    or edx, 0xFFFFFF00              ; sign-extend X
+.mhp_no_sx:
+    test ecx, 0x20
+    jz .mhp_no_sy
+    or r8d, 0xFFFFFF00              ; sign-extend Y
+.mhp_no_sy:
+
+    ; Discard overflow packets
+    test ecx, 0xC0
+    jnz .mhp_done
+
+    ; Update absolute position: mouse_x += dx, mouse_y -= dy
+    add dword [rel mouse_x], edx
+    sub dword [rel mouse_y], r8d
+
+    ; Clamp mouse_x: 0..799
+    mov eax, [rel mouse_x]
+    test eax, eax
+    jns .mhp_mx_pos
+    mov dword [rel mouse_x], 0
+    jmp .mhp_clamp_y
+.mhp_mx_pos:
+    cmp eax, 800
+    jl .mhp_clamp_y
+    mov dword [rel mouse_x], 799
+
+.mhp_clamp_y:
+    mov eax, [rel mouse_y]
+    test eax, eax
+    jns .mhp_my_pos
+    mov dword [rel mouse_y], 0
+    jmp .mhp_click
+.mhp_my_pos:
+    cmp eax, 600
+    jl .mhp_click
+    mov dword [rel mouse_y], 599
+
+.mhp_click:
+    ; Detect left button click (transition from not-pressed to pressed)
+    mov eax, ecx
+    and eax, 0x01                   ; left_now
+    test eax, eax
+    jz .mhp_no_click
+    test dword [rel mouse_buttons], 0x01
+    jnz .mhp_no_click              ; was already pressed
+    mov dword [rel mouse_left_clicked], 1
+.mhp_no_click:
+    ; mouse_buttons = flags & 0x07
+    mov eax, ecx
+    and eax, 0x07
+    mov [rel mouse_buttons], eax
+
+    ; Mark cursor moved if dx != 0 || dy != 0
+    test edx, edx
+    jnz .mhp_moved
+    test r8d, r8d
+    jz .mhp_done
+.mhp_moved:
+    mov dword [rel mouse_moved], 1
+
+.mhp_done:
+    add rsp, 32
+    pop rbp
+    ret
+
+; void herb_error_handler(int severity, const char* message)
+; Display error on VGA row 24 in red + print to serial.
+; MS x64: ECX=severity (unused), RDX=message
+herb_error_handler:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    sub rsp, 32                     ; shadow
+    ; 2 pushes + sub 32 = 16+32 = 48. 48%16=8. ✓ (wait: 8+16+32 = 56. 56%16=8. ✓)
+
+    mov rbx, rdx                    ; save message pointer
+
+    ; Save old color, set red on black
+    movzx eax, byte [rel vga_color]
+    mov [rsp + 28], al              ; save old_color at [rsp+28]
+    mov ecx, 0x04                   ; VGA_RED
+    xor edx, edx                    ; VGA_BLACK
+    call vga_set_color
+
+    ; vga_print_at(24, 0, "ERR: ")
+    mov ecx, 24
+    xor edx, edx
+    lea r8, [rel str_err_prefix]
+    call vga_print_at
+
+    ; vga_print(message)
+    mov rcx, rbx
+    call vga_print
+
+    ; Restore old color
+    movzx eax, byte [rsp + 28]
+    mov [rel vga_color], al
+
+    ; serial_print("[ERROR] ")
+    lea rcx, [rel str_err_serial]
+    call serial_print
+
+    ; serial_print(message)
+    mov rcx, rbx
+    call serial_print
+
+    ; serial_print("\n")
+    lea rcx, [rel str_newline]
+    call serial_print
+
+    add rsp, 32
+    pop rbx
+    pop rbp
+    ret
+
+; uint32_t terrain_color(int terrain)
+; Returns color constant for terrain type 0-4.
+; MS x64: ECX=terrain. Returns EAX=color.
+terrain_color:
+    cmp ecx, 0
+    je .tc_grass
+    cmp ecx, 1
+    je .tc_forest
+    cmp ecx, 2
+    je .tc_water
+    cmp ecx, 3
+    je .tc_stone
+    cmp ecx, 4
+    je .tc_dirt
+.tc_grass:
+    mov eax, 0x003A7D44             ; COL_TILE_GRASS
+    ret
+.tc_forest:
+    mov eax, 0x001B5E20             ; COL_TILE_FOREST
+    ret
+.tc_water:
+    mov eax, 0x001565C0             ; COL_TILE_WATER
+    ret
+.tc_stone:
+    mov eax, 0x00757575             ; COL_TILE_STONE
+    ret
+.tc_dirt:
+    mov eax, 0x00795548             ; COL_TILE_DIRT
+    ret
+
+; const char* terrain_name(int terrain)
+; Returns name string for terrain type 0-4.
+; MS x64: ECX=terrain. Returns RAX=pointer.
+terrain_name:
+    cmp ecx, 0
+    je .tn_grass
+    cmp ecx, 1
+    je .tn_forest
+    cmp ecx, 2
+    je .tn_water
+    cmp ecx, 3
+    je .tn_stone
+    cmp ecx, 4
+    je .tn_dirt
+    lea rax, [rel str_terrain_unknown]
+    ret
+.tn_grass:
+    lea rax, [rel str_terrain_grass]
+    ret
+.tn_forest:
+    lea rax, [rel str_terrain_forest]
+    ret
+.tn_water:
+    lea rax, [rel str_terrain_water]
+    ret
+.tn_stone:
+    lea rax, [rel str_terrain_stone]
+    ret
+.tn_dirt:
+    lea rax, [rel str_terrain_dirt]
+    ret
+
+; void draw_banner(void)
+; Draw the VGA text-mode banner bar (row 0).
+draw_banner:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 32                     ; shadow
+    ; 1 push + sub 32 = 40. 40%16=8. ✓
+
+    ; vga_set_color(VGA_BLACK=0, VGA_CYAN=3)
+    xor ecx, ecx                    ; VGA_BLACK
+    mov edx, 3                      ; VGA_CYAN
+    call vga_set_color
+
+    ; vga_clear_row(ROW_BANNER=0)
+    xor ecx, ecx
+    call vga_clear_row
+
+    ; vga_print_at(0, 2, OS_TITLE)
+    xor ecx, ecx
+    mov edx, 2
+%ifdef KERNEL_MODE
+    lea r8, [rel str_os_title_km]
+%else
+    lea r8, [rel str_os_title]
+%endif
+    call vga_print_at
+
+    ; vga_print_at(0, 60, OS_SUBTITLE)
+    xor ecx, ecx
+    mov edx, 60
+%ifdef KERNEL_MODE
+    lea r8, [rel str_os_subtitle_km]
+%else
+    lea r8, [rel str_os_subtitle]
+%endif
+    call vga_print_at
+
+    add rsp, 32
+    pop rbp
+    ret
+
+; ============================================================
+; Phase D Step 5: Text Mode Draw Functions
+; ============================================================
+
+; Layout constants
+ROW_BANNER    equ 0
+ROW_STATS     equ 1
+ROW_LEGEND    equ 3
+ROW_TABLE_HDR equ 5
+ROW_TABLE     equ 6
+MAX_TABLE_ROWS equ 10
+ROW_SUMMARY   equ 17
+ROW_LOG       equ 23
+ROW_ERROR     equ 24
+
+; VGA color constants
+VGA_BLACK     equ 0x00
+VGA_BLUE      equ 0x01
+VGA_CYAN      equ 0x03
+VGA_RED       equ 0x04
+VGA_LRED      equ 0x0C
+VGA_YELLOW    equ 0x0E
+VGA_WHITE     equ 0x0F
+VGA_LGRAY     equ 0x07
+VGA_DGRAY     equ 0x08
+VGA_LGREEN    equ 0x0A
+VGA_LCYAN     equ 0x0B
+VGA_LMAGENTA  equ 0x0D
+
+; void draw_log(void)
+; Display last_action on ROW_LOG.
+draw_log:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 32
+    ; 1 push + sub 32 = 40. 40%16=8. ✓
+
+    mov ecx, VGA_LGREEN
+    xor edx, edx
+    call vga_set_color
+
+    mov ecx, ROW_LOG
+    call vga_clear_row
+
+    lea rax, [rel last_action]
+    cmp byte [rax], 0
+    je .dl_done
+    mov ecx, ROW_LOG
+    mov edx, 1
+    lea r8, [rel str_log_prefix]
+    call vga_print_at
+    lea rcx, [rel last_action]
+    call vga_print
+.dl_done:
+    add rsp, 32
+    pop rbp
+    ret
+
+; void draw_stats(void)
+; Draw the stats bar on ROW_STATS.
+; Stack frame: buf[16] at [rsp+48]
+draw_stats:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    sub rsp, 64                     ; shadow(32) + buf[16] + align padding(16)
+    ; 2 pushes + sub 64 = 16+64 = 80. 80%16=8. ✓ (8+16+64=88, 88%16=8. ✓)
+
+    ; vga_set_color(VGA_WHITE, VGA_BLUE)
+    mov ecx, VGA_WHITE
+    mov edx, VGA_BLUE
+    call vga_set_color
+
+    ; vga_clear_row(ROW_STATS)
+    mov ecx, ROW_STATS
+    call vga_clear_row
+
+    ; vga_print_at(ROW_STATS, 1, "Tick:")
+    mov ecx, ROW_STATS
+    mov edx, 1
+    lea r8, [rel str_tick]
+    call vga_print_at
+
+    ; vga_print_int(timer_count / 100)
+    mov eax, [rel timer_count]
+    cdq
+    mov ecx, 100
+    idiv ecx
+    mov ecx, eax
+    call vga_print_int
+
+    ; vga_print("  Ops:")
+    lea rcx, [rel str_ops_label]
+    call vga_print
+
+    ; vga_print_int(total_ops)
+    mov ecx, [rel total_ops]
+    call vga_print_int
+
+    ; vga_print("  Arena:")
+    lea rcx, [rel str_arena_label]
+    call vga_print
+
+    ; herb_snprintf(buf, 16, "%d", herb_arena_usage()/1024)
+    call herb_arena_usage
+    shr eax, 10                     ; /1024
+    lea rcx, [rsp + 48]
+    mov edx, 16
+    lea r8, [rel str_fmt_d]
+    mov r9d, eax
+    call herb_snprintf
+    ; vga_print(buf)
+    lea rcx, [rsp + 48]
+    call vga_print
+    ; vga_print("KB")
+    lea rcx, [rel str_kb]
+    call vga_print
+
+    ; n_proc = herb_container_count(CN_READY) + CN_CPU0 + CN_BLOCKED
+    lea rcx, [rel str_cn_ready]
+    call herb_container_count
+    mov ebx, eax                    ; accumulate
+    lea rcx, [rel str_cn_cpu0]
+    call herb_container_count
+    add ebx, eax
+    lea rcx, [rel str_cn_blocked]
+    call herb_container_count
+    add ebx, eax
+    ; clamp to 0
+    test ebx, ebx
+    jns .ds_procs_ok
+    xor ebx, ebx
+.ds_procs_ok:
+    lea rcx, [rel str_procs_label]
+    call vga_print
+    mov ecx, ebx
+    call vga_print_int
+
+%ifdef KERNEL_MODE
+    ; Sched: PRIORITY or ROUND-ROBIN
+    lea rcx, [rel str_sched_label]
+    call vga_print
+    ; cp = herb_entity_prop_int(shell_ctl_eid, "current_policy", 0)
+    mov ecx, [rel shell_ctl_eid]
+    cmp ecx, 0
+    jl .ds_sched_pri
+    lea rdx, [rel str_current_policy]
+    xor r8d, r8d                    ; default 0
+    call herb_entity_prop_int
+    test eax, eax
+    jnz .ds_sched_rr
+.ds_sched_pri:
+    lea rcx, [rel str_priority_pol]
+    call vga_print
+    jmp .ds_key_check
+.ds_sched_rr:
+    lea rcx, [rel str_roundrobin_pol]
+    call vga_print
+%endif
+
+.ds_key_check:
+    lea rax, [rel last_key_name]
+    cmp byte [rax], 0
+    je .ds_done
+    lea rcx, [rel str_key_open]
+    call vga_print
+    lea rcx, [rel last_key_name]
+    call vga_print
+    lea rcx, [rel str_key_close]
+    call vga_print
+
+.ds_done:
+    add rsp, 64
+    pop rbx
+    pop rbp
+    ret
+
+; void draw_legend(void)
+; Draw the command legend bar on ROW_LEGEND.
+draw_legend:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 296                    ; shadow(32) + ids[32*4=128] + orders[32*4=128] + 8(align)
+    ; 8 pushes + sub 296 = 64+296 = 360. 360%16=8. ✓
+    ; ids at [rsp+40], orders at [rsp+168]
+
+    mov ecx, ROW_LEGEND
+    call vga_clear_row
+
+%ifdef KERNEL_MODE
+    ; n = herb_container_count(CN_LEGEND)
+    lea rcx, [rel str_cn_legend]
+    call herb_container_count
+    test eax, eax
+    jle .dleg_done
+    mov r12d, eax                   ; n
+    xor r13d, r13d                  ; count = 0
+
+    ; Collect entity IDs and orders
+    xor ebx, ebx                    ; i = 0
+.dleg_collect:
+    cmp ebx, r12d
+    jge .dleg_sort
+    cmp r13d, 32
+    jge .dleg_sort
+    ; eid = herb_container_entity(CN_LEGEND, i)
+    lea rcx, [rel str_cn_legend]
+    mov edx, ebx
+    call herb_container_entity
+    test eax, eax
+    js .dleg_collect_next
+    ; ids[count] = eid
+    mov ecx, r13d
+    mov [rsp + 40 + rcx*4], eax
+    ; orders[count] = herb_entity_prop_int(eid, "order", 99)
+    mov ecx, eax
+    lea rdx, [rel str_order]
+    mov r8d, 99
+    call herb_entity_prop_int
+    mov ecx, r13d
+    mov [rsp + 168 + rcx*4], eax
+    inc r13d                        ; count++
+.dleg_collect_next:
+    inc ebx
+    jmp .dleg_collect
+
+.dleg_sort:
+    ; Insertion sort by order
+    cmp r13d, 2
+    jl .dleg_render
+    mov ebx, 1                      ; i = 1
+.dleg_sort_outer:
+    cmp ebx, r13d
+    jge .dleg_render
+    mov edi, [rsp + 168 + rbx*4]    ; key_o = orders[i]
+    mov esi, [rsp + 40 + rbx*4]     ; key_id = ids[i]
+    lea r14d, [ebx - 1]             ; j = i - 1
+.dleg_sort_inner:
+    cmp r14d, 0
+    jl .dleg_sort_insert
+    movsxd rax, r14d
+    cmp dword [rsp + 168 + rax*4], edi
+    jle .dleg_sort_insert
+    ; orders[j+1] = orders[j]; ids[j+1] = ids[j]
+    lea ecx, [r14d + 1]
+    movsxd rcx, ecx
+    mov eax, [rsp + 168 + rax*4]
+    mov [rsp + 168 + rcx*4], eax
+    movsxd rax, r14d
+    mov eax, [rsp + 40 + rax*4]
+    movsxd rcx, r14d
+    lea ecx, [ecx + 1]
+    movsxd rcx, ecx
+    mov [rsp + 40 + rcx*4], eax
+    dec r14d
+    jmp .dleg_sort_inner
+.dleg_sort_insert:
+    lea ecx, [r14d + 1]
+    movsxd rcx, ecx
+    mov [rsp + 168 + rcx*4], edi
+    mov [rsp + 40 + rcx*4], esi
+    inc ebx
+    jmp .dleg_sort_outer
+
+.dleg_render:
+    ; Render: yellow key + gray label + space
+    mov r14d, 1                     ; first = 1
+    xor r15d, r15d                  ; i = 0
+.dleg_render_loop:
+    cmp r15d, r13d
+    jge .dleg_done
+    ; key = herb_entity_prop_str(ids[i], "key_text", "?")
+    movsxd rax, r15d
+    mov ecx, [rsp + 40 + rax*4]
+    lea rdx, [rel str_key_text]
+    lea r8, [rel str_ques]
+    call herb_entity_prop_str
+    mov rbx, rax                    ; save key
+
+    ; label = herb_entity_prop_str(ids[i], "label_text", "")
+    movsxd rax, r15d
+    mov ecx, [rsp + 40 + rax*4]
+    lea rdx, [rel str_label_text]
+    lea r8, [rel str_empty]
+    call herb_entity_prop_str
+    mov rsi, rax                    ; save label
+
+    ; vga_set_color(VGA_YELLOW, VGA_BLACK)
+    mov ecx, VGA_YELLOW
+    xor edx, edx
+    call vga_set_color
+
+    ; if first: vga_print_at(ROW_LEGEND, 1, key); first=0
+    test r14d, r14d
+    jz .dleg_not_first
+    mov ecx, ROW_LEGEND
+    mov edx, 1
+    mov r8, rbx
+    call vga_print_at
+    xor r14d, r14d
+    jmp .dleg_label
+.dleg_not_first:
+    mov rcx, rbx
+    call vga_print
+
+.dleg_label:
+    ; vga_set_color(VGA_LGRAY, VGA_BLACK)
+    mov ecx, VGA_LGRAY
+    xor edx, edx
+    call vga_set_color
+    mov rcx, rsi
+    call vga_print
+    lea rcx, [rel str_space]
+    call vga_print
+    inc r15d
+    jmp .dleg_render_loop
+
+%else
+    ; Non-KERNEL_MODE: hardcoded legend
+    mov ecx, VGA_YELLOW
+    xor edx, edx
+    call vga_set_color
+    mov ecx, ROW_LEGEND
+    mov edx, 1
+    lea r8, [rel str_leg_N]
+    call vga_print_at
+    mov ecx, VGA_LGRAY
+    xor edx, edx
+    call vga_set_color
+    lea rcx, [rel str_leg_ew]
+    call vga_print
+
+    mov ecx, VGA_YELLOW
+    xor edx, edx
+    call vga_set_color
+    lea rcx, [rel str_leg_K]
+    call vga_print
+    mov ecx, VGA_LGRAY
+    xor edx, edx
+    call vga_set_color
+    lea rcx, [rel str_leg_ill]
+    call vga_print
+
+    mov ecx, VGA_YELLOW
+    xor edx, edx
+    call vga_set_color
+    lea rcx, [rel str_leg_B]
+    call vga_print
+    mov ecx, VGA_LGRAY
+    xor edx, edx
+    call vga_set_color
+    lea rcx, [rel str_leg_lk]
+    call vga_print
+
+    mov ecx, VGA_YELLOW
+    xor edx, edx
+    call vga_set_color
+    lea rcx, [rel str_leg_U]
+    call vga_print
+    mov ecx, VGA_LGRAY
+    xor edx, edx
+    call vga_set_color
+    lea rcx, [rel str_leg_nblk]
+    call vga_print
+
+    mov ecx, VGA_YELLOW
+    xor edx, edx
+    call vga_set_color
+    lea rcx, [rel str_leg_T]
+    call vga_print
+    mov ecx, VGA_LGRAY
+    xor edx, edx
+    call vga_set_color
+    lea rcx, [rel str_leg_mr]
+    call vga_print
+
+    mov ecx, VGA_YELLOW
+    xor edx, edx
+    call vga_set_color
+    lea rcx, [rel str_leg_Plus]
+    call vga_print
+    mov ecx, VGA_LGRAY
+    xor edx, edx
+    call vga_set_color
+    lea rcx, [rel str_leg_Boost]
+    call vga_print
+
+    mov ecx, VGA_YELLOW
+    xor edx, edx
+    call vga_set_color
+    lea rcx, [rel str_leg_Space]
+    call vga_print
+    mov ecx, VGA_LGRAY
+    xor edx, edx
+    call vga_set_color
+    lea rcx, [rel str_leg_Step]
+    call vga_print
+%endif
+
+.dleg_done:
+    add rsp, 296
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; void draw_process_row(int row, int entity_id, int index)
+; MS x64: ECX=row, EDX=entity_id, R8D=index
+; Draw one process row in the VGA text-mode process table.
+draw_process_row:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 40                     ; shadow(32) + 8(align)
+    ; 8 pushes + sub 40 = 104. 104%16=8. ✓
+
+    mov ebx, ecx                    ; row
+    mov esi, edx                    ; entity_id
+    mov edi, r8d                    ; index
+
+    ; name = herb_entity_name(entity_id)
+    mov ecx, esi
+    call herb_entity_name
+    mov r12, rax                    ; name
+
+    ; loc = herb_entity_location(entity_id)
+    mov ecx, esi
+    call herb_entity_location
+    mov r13, rax                    ; loc
+
+    ; pri = herb_entity_prop_int(entity_id, "priority", 0)
+    mov ecx, esi
+    lea rdx, [rel str_priority]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov r14d, eax                   ; pri
+
+    ; ts = herb_entity_prop_int(entity_id, "time_slice", 0)
+    mov ecx, esi
+    lea rdx, [rel str_time_slice]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov r15d, eax                   ; ts
+
+    ; Determine state color based on loc[0] (with proc. prefix handling)
+    movzx eax, byte [r13]
+    mov ecx, VGA_LGRAY              ; default fg
+    mov edx, '?'                    ; default state_char
+
+    ; Check direct prefix first: C=Running, R=Ready, B=Blocked, T=Terminated
+    cmp al, 'C'
+    je .dpr_running
+    cmp al, 'R'
+    je .dpr_ready
+    cmp al, 'B'
+    je .dpr_blocked
+    cmp al, 'T'
+    je .dpr_term
+%ifdef KERNEL_MODE
+    ; Check "proc." prefix: loc[0]='p', loc[4]='.', loc[5] determines state
+    cmp al, 'p'
+    jne .dpr_state_done
+    cmp byte [r13 + 4], '.'
+    jne .dpr_state_done
+    movzx eax, byte [r13 + 5]
+    cmp al, 'C'
+    je .dpr_running
+    cmp al, 'R'
+    je .dpr_ready
+    cmp al, 'B'
+    je .dpr_blocked
+    cmp al, 'T'
+    je .dpr_term
+%endif
+    jmp .dpr_state_done
+
+.dpr_running:
+    mov ecx, VGA_LGREEN
+    mov edx, 'R'
+    jmp .dpr_state_done
+.dpr_ready:
+    mov ecx, VGA_YELLOW
+    mov edx, 'S'
+    jmp .dpr_state_done
+.dpr_blocked:
+    mov ecx, VGA_LRED
+    mov edx, 'B'
+    jmp .dpr_state_done
+.dpr_term:
+    mov ecx, VGA_DGRAY
+    mov edx, 'X'
+
+.dpr_state_done:
+    ; Save fg color and state_char on stack
+    mov [rsp + 32], ecx             ; fg at [rsp+32]
+    mov [rsp + 36], edx             ; state_char at [rsp+36]
+
+    ; vga_set_color(VGA_LGRAY, VGA_BLACK)
+    mov ecx, VGA_LGRAY
+    xor edx, edx
+    call vga_set_color
+
+    ; vga_clear_row(row)
+    mov ecx, ebx
+    call vga_clear_row
+
+    ; Index: vga_print_at(row, 1, ""); vga_print_int(index)
+    mov ecx, ebx
+    mov edx, 1
+    lea r8, [rel str_empty]
+    call vga_print_at
+    mov ecx, edi
+    call vga_print_int
+
+    ; State indicator: vga_set_color(fg, VGA_BLACK)
+    mov ecx, [rsp + 32]
+    xor edx, edx
+    call vga_set_color
+    ; vga_print_at(row, 4, "")
+    mov ecx, ebx
+    mov edx, 4
+    lea r8, [rel str_empty]
+    call vga_print_at
+    mov ecx, '['
+    call vga_putchar
+    mov ecx, [rsp + 36]
+    call vga_putchar
+    mov ecx, ']'
+    call vga_putchar
+
+    ; Name: vga_set_color(VGA_WHITE, VGA_BLACK)
+    mov ecx, VGA_WHITE
+    xor edx, edx
+    call vga_set_color
+    mov ecx, ebx
+    mov edx, 9
+    lea r8, [rel str_empty]
+    call vga_print_at
+    mov rcx, r12
+    mov edx, 10
+    call vga_print_padded
+
+    ; Location: vga_set_color(fg, VGA_BLACK)
+    mov ecx, [rsp + 32]
+    xor edx, edx
+    call vga_set_color
+    mov ecx, ebx
+    mov edx, 20
+    lea r8, [rel str_empty]
+    call vga_print_at
+    ; Strip "proc." prefix for display
+    mov rcx, r13                    ; disp_loc = loc
+%ifdef KERNEL_MODE
+    cmp byte [r13], 'p'
+    jne .dpr_no_strip
+    cmp byte [r13+1], 'r'
+    jne .dpr_no_strip
+    cmp byte [r13+2], 'o'
+    jne .dpr_no_strip
+    cmp byte [r13+3], 'c'
+    jne .dpr_no_strip
+    cmp byte [r13+4], '.'
+    jne .dpr_no_strip
+    lea rcx, [r13 + 5]             ; skip "proc."
+.dpr_no_strip:
+%endif
+    mov edx, 12
+    call vga_print_padded
+
+    ; Priority: vga_set_color(VGA_LCYAN, VGA_BLACK)
+    mov ecx, VGA_LCYAN
+    xor edx, edx
+    call vga_set_color
+    mov ecx, ebx
+    mov edx, 33
+    lea r8, [rel str_p_eq]
+    call vga_print_at
+    mov ecx, r14d
+    call vga_print_int
+
+    ; Time slice
+    mov ecx, ebx
+    mov edx, 39
+    lea r8, [rel str_ts_eq]
+    call vga_print_at
+    mov ecx, r15d
+    call vga_print_int
+
+%ifdef KERNEL_MODE
+    ; Scoped resources
+    mov ecx, esi
+    lea rdx, [rel str_sc_mem_free]
+    call scoped_count
+    mov r14d, eax                   ; mf (reuse r14 - no longer need pri)
+
+    mov ecx, esi
+    lea rdx, [rel str_sc_mem_used]
+    call scoped_count
+    mov r15d, eax                   ; mu (reuse r15 - no longer need ts)
+
+    mov ecx, esi
+    lea rdx, [rel str_sc_fd_free]
+    call scoped_count
+    mov edi, eax                    ; ff (reuse edi - no longer need index)
+
+    mov ecx, esi
+    lea rdx, [rel str_sc_fd_open]
+    call scoped_count
+    mov [rsp + 36], eax             ; fo at [rsp+36] (reuse state_char slot)
+
+    mov ecx, VGA_LMAGENTA
+    xor edx, edx
+    call vga_set_color
+    mov ecx, ebx
+    mov edx, 46
+    lea r8, [rel str_m_colon]
+    call vga_print_at
+    mov ecx, r14d
+    call vga_print_int
+    mov ecx, '/'
+    call vga_putchar
+    mov ecx, r15d
+    call vga_print_int
+
+    lea rcx, [rel str_fd_label]
+    call vga_print
+    mov ecx, edi
+    call vga_print_int
+    mov ecx, '/'
+    call vga_putchar
+    mov ecx, [rsp + 36]
+    call vga_print_int
+%endif
+
+    add rsp, 40
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; void draw_process_table(void)
+; Draw the VGA process table header + all process rows.
+draw_process_table:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 40
+    ; 8 pushes + sub 40 = 104. 104%16=8. ✓
+
+    ; --- Header ---
+    mov ecx, VGA_CYAN
+    xor edx, edx
+    call vga_set_color
+    mov ecx, ROW_TABLE_HDR
+    call vga_clear_row
+    mov ecx, ROW_TABLE_HDR
+    mov edx, 1
+    lea r8, [rel str_hdr_hash]
+    call vga_print_at
+    mov ecx, ROW_TABLE_HDR
+    mov edx, 4
+    lea r8, [rel str_hdr_st]
+    call vga_print_at
+    mov ecx, ROW_TABLE_HDR
+    mov edx, 9
+    lea r8, [rel str_hdr_name]
+    call vga_print_at
+    mov ecx, ROW_TABLE_HDR
+    mov edx, 20
+    lea r8, [rel str_hdr_loc]
+    call vga_print_at
+    mov ecx, ROW_TABLE_HDR
+    mov edx, 33
+    lea r8, [rel str_hdr_pri]
+    call vga_print_at
+    mov ecx, ROW_TABLE_HDR
+    mov edx, 39
+    lea r8, [rel str_hdr_ts]
+    call vga_print_at
+%ifdef KERNEL_MODE
+    mov ecx, ROW_TABLE_HDR
+    mov edx, 46
+    lea r8, [rel str_hdr_mem]
+    call vga_print_at
+    mov ecx, ROW_TABLE_HDR
+    mov edx, 57
+    lea r8, [rel str_hdr_fd]
+    call vga_print_at
+%endif
+
+    ; row=ROW_TABLE, shown=0
+    mov ebx, ROW_TABLE              ; row
+    xor esi, esi                    ; shown
+
+    ; --- CPU0 ---
+    lea rcx, [rel str_cn_cpu0]
+    call herb_container_count
+    mov r12d, eax                   ; n_cpu0
+    xor edi, edi                    ; i = 0
+.dpt_cpu0:
+    cmp edi, r12d
+    jge .dpt_ready
+    cmp esi, MAX_TABLE_ROWS
+    jge .dpt_ready
+    lea rcx, [rel str_cn_cpu0]
+    mov edx, edi
+    call herb_container_entity
+    test eax, eax
+    js .dpt_cpu0_next
+    mov ecx, ebx
+    mov edx, eax
+    mov r8d, esi
+    call draw_process_row
+    inc ebx
+    inc esi
+.dpt_cpu0_next:
+    inc edi
+    jmp .dpt_cpu0
+
+    ; --- READY ---
+.dpt_ready:
+    lea rcx, [rel str_cn_ready]
+    call herb_container_count
+    mov r12d, eax
+    xor edi, edi
+.dpt_ready_loop:
+    cmp edi, r12d
+    jge .dpt_blocked
+    cmp esi, MAX_TABLE_ROWS
+    jge .dpt_blocked
+    lea rcx, [rel str_cn_ready]
+    mov edx, edi
+    call herb_container_entity
+    test eax, eax
+    js .dpt_ready_next
+    mov ecx, ebx
+    mov edx, eax
+    mov r8d, esi
+    call draw_process_row
+    inc ebx
+    inc esi
+.dpt_ready_next:
+    inc edi
+    jmp .dpt_ready_loop
+
+    ; --- BLOCKED ---
+.dpt_blocked:
+    lea rcx, [rel str_cn_blocked]
+    call herb_container_count
+    mov r12d, eax
+    xor edi, edi
+.dpt_blocked_loop:
+    cmp edi, r12d
+    jge .dpt_term
+    cmp esi, MAX_TABLE_ROWS
+    jge .dpt_term
+    lea rcx, [rel str_cn_blocked]
+    mov edx, edi
+    call herb_container_entity
+    test eax, eax
+    js .dpt_blocked_next
+    mov ecx, ebx
+    mov edx, eax
+    mov r8d, esi
+    call draw_process_row
+    inc ebx
+    inc esi
+.dpt_blocked_next:
+    inc edi
+    jmp .dpt_blocked_loop
+
+    ; --- TERMINATED ---
+.dpt_term:
+    lea rcx, [rel str_cn_terminated]
+    call herb_container_count
+    mov r12d, eax                   ; n_terminated
+    mov r13d, 3                     ; show_max = 3
+%ifdef KERNEL_MODE
+    cmp dword [rel display_ctl_eid], 0
+    jl .dpt_term_loop_init
+    mov ecx, [rel display_ctl_eid]
+    lea rdx, [rel str_max_terminated]
+    mov r8d, 3
+    call herb_entity_prop_int
+    mov r13d, eax                   ; show_max from DisplayCtl
+%endif
+.dpt_term_loop_init:
+    xor edi, edi
+.dpt_term_loop:
+    cmp edi, r12d
+    jge .dpt_term_overflow
+    cmp edi, r13d
+    jge .dpt_term_overflow
+    cmp esi, MAX_TABLE_ROWS
+    jge .dpt_term_overflow
+    lea rcx, [rel str_cn_terminated]
+    mov edx, edi
+    call herb_container_entity
+    test eax, eax
+    js .dpt_term_next
+    mov ecx, ebx
+    mov edx, eax
+    mov r8d, esi
+    call draw_process_row
+    inc ebx
+    inc esi
+.dpt_term_next:
+    inc edi
+    jmp .dpt_term_loop
+
+.dpt_term_overflow:
+    ; Show "(+N terminated)" if n > show_max
+    cmp r12d, r13d
+    jle .dpt_clear_rest
+    mov ecx, VGA_DGRAY
+    xor edx, edx
+    call vga_set_color
+    mov ecx, ebx
+    call vga_clear_row
+    mov ecx, ebx
+    mov edx, 5
+    lea r8, [rel str_plus_open]
+    call vga_print_at
+    mov ecx, r12d
+    sub ecx, r13d
+    call vga_print_int
+    lea rcx, [rel str_term_suffix]
+    call vga_print
+    inc ebx
+    inc esi
+
+    ; --- Clear remaining rows ---
+.dpt_clear_rest:
+    mov ecx, VGA_LGRAY
+    xor edx, edx
+    call vga_set_color
+.dpt_clear_loop:
+    lea eax, [ROW_TABLE + MAX_TABLE_ROWS]
+    cmp ebx, eax
+    jge .dpt_done
+    mov ecx, ebx
+    call vga_clear_row
+    inc ebx
+    jmp .dpt_clear_loop
+
+.dpt_done:
+    add rsp, 40
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; void draw_summary(void)
+; Draw container/resource summary.
+draw_summary:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 40
+    ; 8 pushes + sub 40 = 104. 104%16=8. ✓
+
+    ; Clear rows ROW_SUMMARY to ROW_SUMMARY+4
+    mov ecx, VGA_LGRAY
+    xor edx, edx
+    call vga_set_color
+    mov ebx, ROW_SUMMARY
+.dsum_clear:
+    cmp ebx, ROW_SUMMARY + 5
+    jge .dsum_hdr
+    mov ecx, ebx
+    call vga_clear_row
+    inc ebx
+    jmp .dsum_clear
+
+.dsum_hdr:
+    mov ecx, VGA_CYAN
+    xor edx, edx
+    call vga_set_color
+    mov ecx, ROW_SUMMARY
+    mov edx, 1
+    lea r8, [rel str_containers]
+    call vga_print_at
+
+    mov ecx, VGA_LGRAY
+    xor edx, edx
+    call vga_set_color
+
+    ; Get container counts
+    lea rcx, [rel str_cn_ready]
+    call herb_container_count
+    mov r12d, eax
+    test r12d, r12d
+    jns .dsum_r_ok
+    xor r12d, r12d
+.dsum_r_ok:
+    lea rcx, [rel str_cn_cpu0]
+    call herb_container_count
+    mov r13d, eax
+    test r13d, r13d
+    jns .dsum_c_ok
+    xor r13d, r13d
+.dsum_c_ok:
+    lea rcx, [rel str_cn_blocked]
+    call herb_container_count
+    mov r14d, eax
+    test r14d, r14d
+    jns .dsum_b_ok
+    xor r14d, r14d
+.dsum_b_ok:
+    lea rcx, [rel str_cn_terminated]
+    call herb_container_count
+    mov r15d, eax
+    test r15d, r15d
+    jns .dsum_t_ok
+    xor r15d, r15d
+.dsum_t_ok:
+    lea rcx, [rel str_cn_sig_done]
+    call herb_container_count
+    mov edi, eax
+    test edi, edi
+    jns .dsum_s_ok
+    xor edi, edi
+.dsum_s_ok:
+
+    ; Print: READY=N  CPU0=N  BLOCKED=N  TERM=N  SigDone=N
+    mov ecx, ROW_SUMMARY + 1
+    mov edx, 3
+    lea r8, [rel str_ready_eq]
+    call vga_print_at
+    mov ecx, r12d
+    call vga_print_int
+    lea rcx, [rel str_cpu0_eq]
+    call vga_print
+    mov ecx, r13d
+    call vga_print_int
+    lea rcx, [rel str_blocked_eq]
+    call vga_print
+    mov ecx, r14d
+    call vga_print_int
+    lea rcx, [rel str_term_eq]
+    call vga_print
+    mov ecx, r15d
+    call vga_print_int
+    lea rcx, [rel str_sigdone_eq]
+    call vga_print
+    mov ecx, edi
+    call vga_print_int
+
+%ifdef KERNEL_MODE
+    ; Per-process resource summary
+    mov ecx, VGA_CYAN
+    xor edx, edx
+    call vga_set_color
+    mov ecx, ROW_SUMMARY + 2
+    mov edx, 1
+    lea r8, [rel str_resources]
+    call vga_print_at
+
+    mov ebx, ROW_SUMMARY + 3        ; row
+    ; Iterate CPU0, READY, BLOCKED containers
+    xor r12d, r12d                   ; ci = 0 (container index)
+.dsum_res_cont:
+    cmp r12d, 3
+    jge .dsum_done
+    lea eax, [ROW_SUMMARY + 5]
+    cmp ebx, eax
+    jge .dsum_done
+    ; Select container name
+    cmp r12d, 0
+    jne .dsum_rc1
+    lea r13, [rel str_cn_cpu0]
+    jmp .dsum_rc_go
+.dsum_rc1:
+    cmp r12d, 1
+    jne .dsum_rc2
+    lea r13, [rel str_cn_ready]
+    jmp .dsum_rc_go
+.dsum_rc2:
+    lea r13, [rel str_cn_blocked]
+
+.dsum_rc_go:
+    mov rcx, r13
+    call herb_container_count
+    mov r14d, eax                    ; n
+    xor r15d, r15d                   ; i = 0
+.dsum_res_entity:
+    cmp r15d, r14d
+    jge .dsum_res_next_cont
+    lea eax, [ROW_SUMMARY + 5]
+    cmp ebx, eax
+    jge .dsum_done
+    ; eid = herb_container_entity(container, i)
+    mov rcx, r13
+    mov edx, r15d
+    call herb_container_entity
+    test eax, eax
+    js .dsum_res_ent_next
+    mov esi, eax                     ; eid
+
+    ; Get entity name
+    mov ecx, esi
+    call herb_entity_name
+    mov rdi, rax                     ; ename
+
+    ; Get scoped counts
+    ; Print name padded, then query+print each scoped count inline
+    mov ecx, VGA_LGRAY
+    xor edx, edx
+    call vga_set_color
+    mov ecx, ebx
+    mov edx, 3
+    lea r8, [rel str_empty]
+    call vga_print_at
+    mov rcx, rdi                     ; ename
+    mov edx, 8
+    call vga_print_padded
+
+    lea rcx, [rel str_mem_label2]
+    call vga_print
+    ; mf
+    mov ecx, esi
+    lea rdx, [rel str_sc_mem_free]
+    call scoped_count
+    mov ecx, eax
+    call vga_print_int
+    lea rcx, [rel str_fu_sep]
+    call vga_print
+    ; mu
+    mov ecx, esi
+    lea rdx, [rel str_sc_mem_used]
+    call scoped_count
+    mov ecx, eax
+    call vga_print_int
+    lea rcx, [rel str_u_suffix]
+    call vga_print
+    ; ff
+    mov ecx, esi
+    lea rdx, [rel str_sc_fd_free]
+    call scoped_count
+    mov ecx, eax
+    call vga_print_int
+    lea rcx, [rel str_fo_sep]
+    call vga_print
+    ; fo
+    mov ecx, esi
+    lea rdx, [rel str_sc_fd_open]
+    call scoped_count
+    mov ecx, eax
+    call vga_print_int
+    lea rcx, [rel str_o_suffix]
+    call vga_print
+    ; inbox
+    mov ecx, esi
+    lea rdx, [rel str_sc_inbox]
+    call scoped_count
+    mov ecx, eax
+    call vga_print_int
+
+    inc ebx                          ; row++
+
+.dsum_res_ent_next:
+    inc r15d
+    jmp .dsum_res_entity
+
+.dsum_res_next_cont:
+    inc r12d
+    jmp .dsum_res_cont
+%endif
+
+.dsum_done:
+    add rsp, 40
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; Phase D Step 6 — Graphics Draw Functions
+; ============================================================
+
+%ifdef GRAPHICS_MODE
+
+; ============================================================
+; gfx_draw_procs_in_region(rx, ry, rw, rh, container_name,
+;                          fallback_border, fallback_fill)
+;
+; 7 args: RCX=rx, RDX=ry, R8=rw, R9=rh
+;   [rbp+48]=container_name, [rbp+56]=fallback_border, [rbp+64]=fallback_fill
+;
+; Callee-saved: rbx=rx, rsi=ry, rdi=rw, r12=rh
+;   r13=container_name, r14=fallback_border, r15=fallback_fill
+;
+; Stack: push rbp + 7 pushes + sub rsp, 200
+;   8(ret)+8(rbp)+56(pushes)+200 = 272. 272%16=0 ✓
+;
+; Locals:
+;   [rsp+32..71]  shadow/spill area for callee args 5-9
+;   [rsp+72..75]  n (container count)
+;   [rsp+76..79]  cols
+;   [rsp+80..83]  max_per_region
+;   [rsp+84..87]  i (loop counter)
+;   [rsp+88..91]  eid
+;   [rsp+92..95]  px
+;   [rsp+96..99]  py
+;   [rsp+100..103] pri
+;   [rsp+104..107] ts
+;   [rsp+108..111] border_col (per-process, persists through iteration)
+;   [rsp+112..115] fill_col (per-process, persists through iteration)
+;   [rsp+116..123] name (ptr)
+;   [rsp+124..187] surf_cont[64] (KERNEL_MODE)
+;   [rsp+188..199] buf[12] (overflow msg uses surf_cont instead)
+; ============================================================
+
+gfx_draw_procs_in_region:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 200
+
+    mov ebx, ecx                    ; rx
+    mov esi, edx                    ; ry
+    mov edi, r8d                    ; rw
+    mov r12d, r9d                   ; rh
+    mov r13, [rbp + 48]             ; container_name
+    mov r14d, [rbp + 56]            ; fallback_border
+    mov r15d, [rbp + 64]            ; fallback_fill
+
+    ; n = herb_container_count(container_name)
+    mov rcx, r13
+    call herb_container_count
+    test eax, eax
+    jns .gdp_n_ok
+    xor eax, eax
+.gdp_n_ok:
+    mov dword [rsp + 72], eax
+
+    ; cols = (rw - 8) / 126. Min 1.
+    mov eax, edi
+    sub eax, 8
+    cdq
+    mov ecx, (GFX_PROC_W + GFX_PROC_PAD)
+    idiv ecx
+    test eax, eax
+    jg .gdp_cols_ok
+    mov eax, 1
+.gdp_cols_ok:
+    mov dword [rsp + 76], eax
+
+    ; max_per_region = 12
+    mov dword [rsp + 80], 12
+%ifdef KERNEL_MODE
+    mov eax, [rel display_ctl_eid]
+    test eax, eax
+    js .gdp_max_ok
+    mov ecx, eax
+    lea rdx, [rel str_gfx_max_procs]
+    mov r8, 12
+    call herb_entity_prop_int
+    mov dword [rsp + 80], eax
+.gdp_max_ok:
+%endif
+
+    mov dword [rsp + 84], 0         ; i = 0
+
+.gdp_loop:
+    mov eax, [rsp + 84]
+    cmp eax, [rsp + 72]             ; i < n
+    jge .gdp_overflow
+    cmp eax, [rsp + 80]             ; i < max_per_region
+    jge .gdp_overflow
+
+    ; eid = herb_container_entity(container_name, i)
+    mov rcx, r13
+    mov edx, [rsp + 84]
+    call herb_container_entity
+    test eax, eax
+    js .gdp_next
+    mov dword [rsp + 88], eax
+
+    ; name = herb_entity_name(eid)
+    mov ecx, eax
+    call herb_entity_name
+    mov [rsp + 116], rax
+
+    ; pri = herb_entity_prop_int(eid, "priority", 0)
+    mov ecx, [rsp + 88]
+    lea rdx, [rel str_priority]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 100], eax
+
+    ; ts = herb_entity_prop_int(eid, "time_slice", 0)
+    mov ecx, [rsp + 88]
+    lea rdx, [rel str_time_slice]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 104], eax
+
+    ; Initialize colors from fallbacks
+    mov dword [rsp + 108], r14d     ; border_col = fallback_border
+    mov dword [rsp + 112], r15d     ; fill_col = fallback_fill
+
+%ifdef KERNEL_MODE
+    ; Surface entity color lookup: "%s::SURFACE"
+    lea rcx, [rsp + 124]
+    mov edx, 64
+    lea r8, [rel str_gfx_surf_fmt]
+    mov r9, [rsp + 116]            ; pname
+    call herb_snprintf
+
+    lea rcx, [rsp + 124]
+    call herb_container_count
+    test eax, eax
+    jle .gdp_no_surf
+
+    lea rcx, [rsp + 124]
+    xor edx, edx
+    call herb_container_entity
+    test eax, eax
+    js .gdp_no_surf
+    mov dword [rsp + 188], eax      ; save sid
+
+    mov ecx, eax
+    lea rdx, [rel str_gfx_border_color]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    test eax, eax
+    jz .gdp_no_bc
+    mov dword [rsp + 108], eax
+.gdp_no_bc:
+    mov ecx, [rsp + 188]
+    lea rdx, [rel str_gfx_fill_color]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    test eax, eax
+    jz .gdp_no_surf
+    mov dword [rsp + 112], eax
+.gdp_no_surf:
+%endif
+
+    ; Compute px, py from i, cols
+    mov eax, [rsp + 84]
+    cdq
+    idiv dword [rsp + 76]           ; eax=row, edx=col
+    imul edx, (GFX_PROC_W + GFX_PROC_PAD)
+    add edx, ebx
+    add edx, 4                      ; px = rx + 4 + col*126
+    mov dword [rsp + 92], edx
+
+    imul eax, (GFX_PROC_H + GFX_PROC_PAD)
+    add eax, esi
+    add eax, 22                     ; py = ry + 22 + row*(H+6)
+    mov dword [rsp + 96], eax
+
+    ; Bounds check: py + GFX_PROC_H > ry + rh → break
+    lea ecx, [eax + GFX_PROC_H]
+    lea edx, [esi + r12d]
+    cmp ecx, edx
+    jg .gdp_overflow
+
+    ; fb_draw_process(px, py, GFX_PROC_W, GFX_PROC_H, name, pri, ts, border, fill)
+    ; 9 args: first 4 in regs, args 5-9 at [rsp+32..64]
+    mov rax, [rsp + 116]
+    mov [rsp + 32], rax             ; arg5 = name
+    movsxd rax, dword [rsp + 100]
+    mov [rsp + 40], rax             ; arg6 = pri
+    movsxd rax, dword [rsp + 104]
+    mov [rsp + 48], rax             ; arg7 = ts
+    mov eax, [rsp + 108]
+    mov [rsp + 56], rax             ; arg8 = border_col
+    mov eax, [rsp + 112]
+    mov [rsp + 64], rax             ; arg9 = fill_col
+    mov ecx, [rsp + 92]
+    mov edx, [rsp + 96]
+    mov r8d, GFX_PROC_W
+    mov r9d, GFX_PROC_H
+    call fb_draw_process
+
+%ifdef KERNEL_MODE
+    ; Selection highlight
+    mov ecx, [rsp + 88]
+    lea rdx, [rel str_gfx_selected]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    cmp eax, 1
+    jne .gdp_no_sel
+
+    mov ecx, [rsp + 92]
+    sub ecx, 2
+    mov edx, [rsp + 96]
+    sub edx, 2
+    mov r8d, GFX_PROC_W + 4
+    mov r9d, GFX_PROC_H + 4
+    mov dword [rsp + 32], COL_SELECTED
+    call fb_draw_rect2
+
+    mov ecx, [rsp + 92]
+    sub ecx, 3
+    mov edx, [rsp + 96]
+    sub edx, 3
+    mov r8d, GFX_PROC_W + 6
+    mov r9d, GFX_PROC_H + 6
+    mov dword [rsp + 32], COL_SELECTED
+    call fb_draw_rect
+.gdp_no_sel:
+
+    ; Resource indicators: 4x scoped_count then fb_draw_resources
+    mov ecx, [rsp + 88]
+    lea rdx, [rel str_scope_mem_free]
+    call scoped_count
+    mov dword [rsp + 188], eax      ; mf
+
+    mov ecx, [rsp + 88]
+    lea rdx, [rel str_scope_mem_used]
+    call scoped_count
+    mov dword [rsp + 192], eax      ; mu
+
+    mov ecx, [rsp + 88]
+    lea rdx, [rel str_scope_fd_free]
+    call scoped_count
+    mov dword [rsp + 196], eax      ; ff
+
+    mov ecx, [rsp + 88]
+    lea rdx, [rel str_scope_fd_open]
+    call scoped_count
+    ; eax = fo
+
+    ; fb_draw_resources(px+4, py+38, mf, mu, ff, fo)
+    mov dword [rsp + 40], eax       ; arg6 = fo
+    mov eax, [rsp + 196]
+    mov dword [rsp + 32], eax       ; arg5 = ff
+    mov ecx, [rsp + 92]
+    add ecx, 4
+    mov edx, [rsp + 96]
+    add edx, 38
+    mov r8d, [rsp + 188]
+    mov r9d, [rsp + 192]
+    call fb_draw_resources
+
+    ; Program state: produced or consumed
+    mov ecx, [rsp + 88]
+    lea rdx, [rel str_gfx_produced]
+    mov r8, -1
+    call herb_entity_prop_int
+    test rax, rax
+    js .gdp_try_cons
+
+    ; produced >= 0: format ">%d"
+    lea rcx, [rsp + 124]
+    mov edx, 20
+    lea r8, [rel str_gfx_prod_fmt]
+    mov r9d, eax
+    call herb_snprintf
+
+    mov ecx, [rsp + 92]
+    add ecx, 60
+    mov edx, [rsp + 96]
+    add edx, 38
+    lea r8, [rsp + 124]
+    mov r9d, 0x00FF9900
+    mov eax, [rsp + 112]            ; fill_col (not overwritten)
+    mov dword [rsp + 32], eax
+    call fb_draw_string
+    jmp .gdp_next
+
+.gdp_try_cons:
+    mov ecx, [rsp + 88]
+    lea rdx, [rel str_gfx_consumed]
+    mov r8, -1
+    call herb_entity_prop_int
+    test rax, rax
+    js .gdp_next
+
+    lea rcx, [rsp + 124]
+    mov edx, 20
+    lea r8, [rel str_gfx_cons_fmt]
+    mov r9d, eax
+    call herb_snprintf
+
+    mov ecx, [rsp + 92]
+    add ecx, 60
+    mov edx, [rsp + 96]
+    add edx, 38
+    lea r8, [rsp + 124]
+    mov r9d, 0x0066CCFF
+    mov eax, [rsp + 112]            ; fill_col
+    mov dword [rsp + 32], eax
+    call fb_draw_string
+%endif  ; KERNEL_MODE
+
+.gdp_next:
+    inc dword [rsp + 84]
+    jmp .gdp_loop
+
+.gdp_overflow:
+    ; if (n > max_per_region) show "+N more"
+    mov eax, [rsp + 72]
+    cmp eax, [rsp + 80]
+    jle .gdp_done
+
+    lea rcx, [rsp + 124]
+    mov edx, 32
+    lea r8, [rel str_gfx_more_fmt]
+    mov r9d, [rsp + 72]
+    sub r9d, [rsp + 80]
+    call herb_snprintf
+
+    ; fb_draw_string(rx+4, ry+rh-20, buf, COL_TEXT_DIM, 0)
+    lea ecx, [ebx + 4]
+    lea edx, [esi + r12d]
+    sub edx, 20
+    lea r8, [rsp + 124]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], 0
+    call fb_draw_string
+
+.gdp_done:
+    add rsp, 200
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; gfx_draw_tension_panel(void) — KERNEL_MODE only
+;
+; Renders the tension sidebar panel with per-row display.
+;
+; Callee-saved: rbx=enabled_count, rsi=nt, rdi=i, r12=row_y, r13=max_rows
+;
+; Stack: push rbp + 5 pushes + sub rsp, 72
+;   8(ret)+8(rbp)+40(pushes)+72 = 128. 128%16=0 ✓
+;
+; Locals:
+;   [rsp+32..39] shadow/arg5 for callees
+;   [rsp+40..47] arg6 for callees
+;   [rsp+48..55] buf[8] (small formatted strings)
+;   [rsp+56..72] nbuf[17] (truncated tension name)
+; ============================================================
+
+%ifdef KERNEL_MODE
+
+gfx_draw_tension_panel:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    sub rsp, 72
+
+    ; nt = herb_tension_count()
+    call herb_tension_count
+    mov esi, eax                    ; rsi = nt
+
+    ; Count enabled tensions
+    xor ebx, ebx                    ; rbx = enabled_count
+    xor edi, edi                    ; rdi = i
+.gtp_count_loop:
+    cmp edi, esi
+    jge .gtp_count_done
+    mov ecx, edi
+    call herb_tension_enabled
+    add ebx, eax                    ; enabled_count += (0 or 1)
+    inc edi
+    jmp .gtp_count_loop
+.gtp_count_done:
+
+    ; Panel background
+    mov ecx, GFX_TENS_X
+    mov edx, GFX_TENS_Y
+    mov r8d, GFX_TENS_W
+    mov r9d, GFX_TENS_H
+    mov dword [rsp + 32], COL_TENS_BG
+    call fb_fill_rect
+
+    ; Panel border
+    mov ecx, GFX_TENS_X
+    mov edx, GFX_TENS_Y
+    mov r8d, GFX_TENS_W
+    mov r9d, GFX_TENS_H
+    mov dword [rsp + 32], COL_TENS_BORDER
+    call fb_draw_rect
+
+    ; Title: "TENSIONS"
+    mov ecx, GFX_TENS_X + 6
+    mov edx, GFX_TENS_Y + 3
+    lea r8, [rel str_gfx_tensions]
+    mov r9d, COL_TENS_TITLE
+    mov dword [rsp + 32], COL_TENS_BG
+    call fb_draw_string
+    ; eax = returned x after title
+
+    ; Enabled count: " N/M"
+    lea rcx, [rsp + 48]
+    mov edx, 8
+    lea r8, [rel str_gfx_tens_cnt]
+    mov r9d, ebx                    ; enabled_count
+    mov dword [rsp + 32], esi       ; nt (5th arg)
+    call herb_snprintf
+
+    ; Draw count string (reuse returned x — but we lost it. Use fixed position)
+    ; Title "TENSIONS" = 8 chars * 8px = 64px. Start at GFX_TENS_X+6+64=GFX_TENS_X+70
+    mov ecx, GFX_TENS_X + 70
+    mov edx, GFX_TENS_Y + 3
+    lea r8, [rsp + 48]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_TENS_BG
+    call fb_draw_string
+
+    ; Separator line
+    mov ecx, GFX_TENS_X + 2
+    mov edx, GFX_TENS_Y + 18
+    mov r8d, GFX_TENS_W - 4
+    mov r9d, COL_TENS_BORDER
+    call fb_hline
+
+    ; Row iteration
+    mov r12d, GFX_TENS_Y + 22       ; row_y
+    mov r13d, (GFX_TENS_H - 26) / GFX_TENS_ROW_H  ; max_rows = 362/16 = 22
+    xor edi, edi                    ; i = 0
+
+.gtp_row_loop:
+    cmp edi, esi                    ; i < nt
+    jge .gtp_row_done
+    cmp edi, r13d                   ; i < max_rows
+    jge .gtp_row_done
+
+    ; y = row_y + i * GFX_TENS_ROW_H
+    mov eax, edi
+    imul eax, GFX_TENS_ROW_H
+    add eax, r12d
+    mov dword [rsp + 40], eax       ; save y in arg6 slot (temp)
+
+    ; en = herb_tension_enabled(i)
+    mov ecx, edi
+    call herb_tension_enabled
+    mov dword [rsp + 44], eax       ; save en
+
+    ; sel = (i == selected_tension_idx)
+    cmp edi, [rel selected_tension_idx]
+    sete al
+    movzx eax, al
+    ; sel in eax (0 or 1), not needed to save — just check later
+
+    ; pri = herb_tension_priority(i)
+    ; (sel not saved — re-check via selected_tension_idx later)
+
+    mov ecx, edi
+    call herb_tension_priority
+    mov dword [rsp + 48], eax       ; save pri in buf overlap (fine, reused)
+
+    ; name = herb_tension_name(i)
+    mov ecx, edi
+    call herb_tension_name
+    mov [rsp + 64], rax             ; save name ptr (use [rsp+64..71])
+
+    ; Row background
+    mov eax, [rsp + 44]             ; en
+    test eax, eax
+    mov ecx, COL_TENS_OFF_BG
+    mov eax, COL_TENS_ON_BG
+    cmovz eax, ecx                  ; row_bg = en ? ON_BG : OFF_BG
+    mov dword [rsp + 32], eax       ; save row_bg for multiple uses
+    ; fb_fill_rect(GFX_TENS_X+2, y, GFX_TENS_W-4, GFX_TENS_ROW_H-1, row_bg)
+    mov ecx, GFX_TENS_X + 2
+    mov edx, [rsp + 40]             ; y
+    mov r8d, GFX_TENS_W - 4
+    mov r9d, GFX_TENS_ROW_H - 1
+    ; arg5 already at [rsp+32] = row_bg
+    call fb_fill_rect
+
+    ; Recompute row_bg for later fb_draw_string calls
+    mov eax, [rsp + 44]
+    test eax, eax
+    mov ecx, COL_TENS_OFF_BG
+    mov eax, COL_TENS_ON_BG
+    cmovz eax, ecx
+    mov dword [rsp + 32], eax       ; row_bg
+
+    ; Selection highlight
+    cmp edi, [rel selected_tension_idx]
+    jne .gtp_no_sel
+    mov ecx, GFX_TENS_X + 1
+    mov edx, [rsp + 40]
+    sub edx, 1
+    mov r8d, GFX_TENS_W - 2
+    mov r9d, GFX_TENS_ROW_H + 1
+    mov dword [rsp + 32], COL_TENS_SEL
+    call fb_draw_rect
+    ; Restore row_bg
+    mov eax, [rsp + 44]
+    test eax, eax
+    mov ecx, COL_TENS_OFF_BG
+    mov eax, COL_TENS_ON_BG
+    cmovz eax, ecx
+    mov dword [rsp + 32], eax
+.gtp_no_sel:
+
+    ; Enabled indicator square (6x6)
+    mov eax, [rsp + 44]             ; en
+    test eax, eax
+    mov ecx, COL_TENS_OFF
+    mov eax, COL_TENS_ON
+    cmovz eax, ecx
+    mov dword [rsp + 32], eax       ; ind_col (5th arg for fb_fill_rect)
+
+    ; Check owner for orange override
+    ; Save ind_col
+    mov dword [rsp + 36], eax       ; temp save ind_col (borrowing unused bytes)
+    mov ecx, edi
+    call herb_tension_owner
+    test eax, eax
+    js .gtp_no_owner
+    ; Owner >= 0: override indicator color to orange
+    mov ecx, [rsp + 44]            ; en
+    test ecx, ecx
+    mov eax, 0x00664400             ; dim orange
+    mov ecx, 0x00FF9900             ; bright orange
+    cmovz ecx, eax
+    mov dword [rsp + 36], ecx       ; override ind_col
+.gtp_no_owner:
+    ; fb_fill_rect(GFX_TENS_X+6, y+4, 6, 6, ind_col)
+    mov ecx, GFX_TENS_X + 6
+    mov edx, [rsp + 40]
+    add edx, 4
+    mov r8d, 6
+    mov r9d, 6
+    mov eax, [rsp + 36]
+    mov dword [rsp + 32], eax
+    call fb_fill_rect
+
+    ; Strip module prefix from name: find last '.'
+    mov rax, [rsp + 64]             ; name ptr
+    mov rcx, rax                    ; display_name = name
+.gtp_prefix:
+    movzx edx, byte [rax]
+    test dl, dl
+    jz .gtp_prefix_done
+    cmp dl, '.'
+    jne .gtp_prefix_next
+    lea rcx, [rax + 1]             ; display_name = after '.'
+.gtp_prefix_next:
+    inc rax
+    jmp .gtp_prefix
+.gtp_prefix_done:
+    ; rcx = display_name
+
+    ; Truncate to 16 chars into nbuf at [rsp+56]
+    lea rdx, [rsp + 56]
+    xor r8d, r8d                    ; ni = 0
+.gtp_trunc:
+    cmp r8d, 16
+    jge .gtp_trunc_done
+    movzx eax, byte [rcx + r8]
+    test al, al
+    jz .gtp_trunc_done
+    mov byte [rdx + r8], al
+    inc r8d
+    jmp .gtp_trunc
+.gtp_trunc_done:
+    mov byte [rdx + r8], 0
+
+    ; Name color: en ? (owner>=0 ? 0xFFCC66 : COL_TENS_NAME) : COL_TENS_DIM
+    mov eax, [rsp + 44]             ; en
+    test eax, eax
+    jz .gtp_name_dim
+    ; Check owner
+    mov ecx, edi
+    call herb_tension_owner
+    test eax, eax
+    js .gtp_name_sys
+    mov r9d, 0x00FFCC66             ; owner-colored name
+    jmp .gtp_name_draw
+.gtp_name_sys:
+    mov r9d, COL_TENS_NAME
+    jmp .gtp_name_draw
+.gtp_name_dim:
+    mov r9d, COL_TENS_DIM
+.gtp_name_draw:
+    ; fb_draw_string(GFX_TENS_X+16, y+1, nbuf, name_col, row_bg)
+    mov ecx, GFX_TENS_X + 16
+    mov edx, [rsp + 40]
+    add edx, 1
+    lea r8, [rsp + 56]
+    ; r9d already set
+    ; Recompute row_bg for 5th arg
+    mov eax, [rsp + 44]
+    test eax, eax
+    mov eax, COL_TENS_OFF_BG
+    mov ecx, COL_TENS_ON_BG
+    cmovnz eax, ecx
+    mov dword [rsp + 32], eax
+    ; Restore first two args (clobbered by cmov)
+    mov ecx, GFX_TENS_X + 16
+    mov edx, [rsp + 40]
+    add edx, 1
+    call fb_draw_string
+
+    ; Priority number
+    ; herb_snprintf(buf, 8, "%d", pri)
+    ; Use [rsp+56] for buf (reuse nbuf since we're done with it)
+    lea rcx, [rsp + 56]
+    mov edx, 8
+    lea r8, [rel str_gfx_pri_fmt]
+    mov r9d, [rsp + 48]             ; pri
+    call herb_snprintf
+
+    ; fb_draw_string(GFX_TENS_X + GFX_TENS_W - 28, y+1, buf, COL_TENS_PRI, row_bg)
+    mov ecx, GFX_TENS_X + GFX_TENS_W - 28
+    mov edx, [rsp + 40]
+    add edx, 1
+    lea r8, [rsp + 56]
+    mov r9d, COL_TENS_PRI
+    ; row_bg
+    mov eax, [rsp + 44]
+    test eax, eax
+    mov eax, COL_TENS_OFF_BG
+    mov ecx, COL_TENS_ON_BG
+    cmovnz eax, ecx
+    mov dword [rsp + 32], eax
+    mov ecx, GFX_TENS_X + GFX_TENS_W - 28
+    mov edx, [rsp + 40]
+    add edx, 1
+    call fb_draw_string
+
+    inc edi
+    jmp .gtp_row_loop
+
+.gtp_row_done:
+    ; Legend at bottom
+    mov eax, GFX_TENS_Y + GFX_TENS_H - 16
+    ; fb_fill_rect(GFX_TENS_X+2, leg_y, GFX_TENS_W-4, 14, COL_TENS_BG)
+    mov ecx, GFX_TENS_X + 2
+    mov edx, eax
+    mov r8d, GFX_TENS_W - 4
+    mov r9d, 14
+    mov dword [rsp + 32], COL_TENS_BG
+    call fb_fill_rect
+
+    ; Legend text chain: "[" "]" "sel " "D" "=toggle"
+    mov eax, GFX_TENS_Y + GFX_TENS_H - 16
+    mov ecx, GFX_TENS_X + 6
+    lea edx, [eax + 1]
+    lea r8, [rel str_gfx_lbracket]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_TENS_BG
+    call fb_draw_string
+    ; eax = next x
+
+    mov ecx, eax
+    mov edx, GFX_TENS_Y + GFX_TENS_H - 15
+    lea r8, [rel str_gfx_rbracket]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_TENS_BG
+    call fb_draw_string
+
+    mov ecx, eax
+    mov edx, GFX_TENS_Y + GFX_TENS_H - 15
+    lea r8, [rel str_gfx_sel_lbl]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_TENS_BG
+    call fb_draw_string
+
+    mov ecx, eax
+    mov edx, GFX_TENS_Y + GFX_TENS_H - 15
+    lea r8, [rel str_gfx_d_key]
+    mov r9d, COL_TEXT_KEY
+    mov dword [rsp + 32], COL_TENS_BG
+    call fb_draw_string
+
+    mov ecx, eax
+    mov edx, GFX_TENS_Y + GFX_TENS_H - 15
+    lea r8, [rel str_gfx_toggle_lbl]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_TENS_BG
+    call fb_draw_string
+
+    add rsp, 72
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+%endif  ; KERNEL_MODE (gfx_draw_tension_panel)
+
+; ============================================================
+; gfx_draw_game(void) — KERNEL_MODE only
+;
+; Renders tile grid, trees, player, and info panel.
+;
+; Callee-saved: rbx=tile_count, rsi=spare, rdi=ix, r12=iy, r13=loop_i
+;
+; Stack: push rbp + 5 pushes + sub rsp, 72
+;   8(ret)+8(rbp)+40(pushes)+72 = 128. 128%16=0 ✓
+;
+; Locals:
+;   [rsp+32..39] shadow/arg5
+;   [rsp+40..47] spare
+;   [rsp+48..51] temp eid / px
+;   [rsp+52..55] temp tx / py
+;   [rsp+56..59] temp ty / terrain
+;   [rsp+60..63] temp color / misc
+;   [rsp+64..71] spare
+; ============================================================
+
+%ifdef KERNEL_MODE
+
+gfx_draw_game:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    sub rsp, 72
+
+    ; --- Tile grid ---
+    lea rcx, [rel str_cn_game_tiles]
+    call herb_container_count
+    mov ebx, eax                    ; rbx = tile_count
+    test ebx, ebx
+    jle .gdg_tiles_done
+    xor r13d, r13d
+
+.gdg_tile_loop:
+    cmp r13d, ebx
+    jge .gdg_tiles_done
+
+    lea rcx, [rel str_cn_game_tiles]
+    mov edx, r13d
+    call herb_container_entity
+    test eax, eax
+    js .gdg_tile_next
+    mov dword [rsp + 48], eax       ; eid
+
+    mov ecx, eax
+    lea rdx, [rel str_tile_x]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 52], eax       ; tx
+
+    mov ecx, [rsp + 48]
+    lea rdx, [rel str_tile_y]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 56], eax       ; ty
+
+    mov ecx, [rsp + 48]
+    lea rdx, [rel str_terrain]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 60], eax       ; terrain
+
+    ; terrain_color(terrain) — call first, save result
+    mov ecx, eax
+    call terrain_color
+    mov dword [rsp + 64], eax       ; save terrain color
+
+    ; px = GAME_GRID_X + tx * GAME_TILE_SIZE
+    mov eax, [rsp + 52]
+    imul eax, GAME_TILE_SIZE
+    add eax, GAME_GRID_X
+    mov dword [rsp + 48], eax       ; px (reuse slot)
+
+    ; py = GAME_GRID_Y + ty * GAME_TILE_SIZE
+    mov eax, [rsp + 56]
+    imul eax, GAME_TILE_SIZE
+    add eax, GAME_GRID_Y
+    mov dword [rsp + 52], eax       ; py (reuse slot)
+
+    ; fb_fill_rect(px+1, py+1, GAME_TILE_SIZE-2, GAME_TILE_SIZE-2, terrain_color)
+    mov ecx, [rsp + 48]
+    add ecx, 1
+    mov edx, [rsp + 52]
+    add edx, 1
+    mov r8d, GAME_TILE_SIZE - 2
+    mov r9d, GAME_TILE_SIZE - 2
+    mov eax, [rsp + 64]
+    mov dword [rsp + 32], eax
+    call fb_fill_rect
+
+    ; fb_draw_rect(px, py, GAME_TILE_SIZE, GAME_TILE_SIZE, COL_TILE_GRID)
+    mov ecx, [rsp + 48]
+    mov edx, [rsp + 52]
+    mov r8d, GAME_TILE_SIZE
+    mov r9d, GAME_TILE_SIZE
+    mov dword [rsp + 32], COL_TILE_GRID
+    call fb_draw_rect
+
+.gdg_tile_next:
+    inc r13d
+    jmp .gdg_tile_loop
+.gdg_tiles_done:
+
+    ; --- Tree markers ---
+    lea rcx, [rel str_cn_game_trees]
+    call herb_container_count
+    mov esi, eax                    ; rsi = tree_count
+    test esi, esi
+    jle .gdg_trees_done
+    xor r13d, r13d
+
+.gdg_tree_loop:
+    cmp r13d, esi
+    jge .gdg_trees_done
+
+    lea rcx, [rel str_cn_game_trees]
+    mov edx, r13d
+    call herb_container_entity
+    test eax, eax
+    js .gdg_tree_next
+    mov dword [rsp + 48], eax
+
+    mov ecx, eax
+    lea rdx, [rel str_tile_x]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 52], eax       ; tx
+
+    mov ecx, [rsp + 48]
+    lea rdx, [rel str_tile_y]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    ; ty = eax
+
+    ; px = GAME_GRID_X + tx * GAME_TILE_SIZE
+    mov ecx, [rsp + 52]
+    imul ecx, GAME_TILE_SIZE
+    add ecx, GAME_GRID_X
+    ; py = GAME_GRID_Y + ty * GAME_TILE_SIZE
+    imul eax, GAME_TILE_SIZE
+    add eax, GAME_GRID_Y
+    ; cx = px + GAME_TILE_SIZE/2, cy = py + GAME_TILE_SIZE/2
+    mov dword [rsp + 48], ecx       ; save px
+    mov dword [rsp + 52], eax       ; save py
+    add ecx, GAME_TILE_SIZE / 2     ; cx
+    add eax, GAME_TILE_SIZE / 2     ; cy
+    mov dword [rsp + 56], ecx       ; save cx
+    mov dword [rsp + 60], eax       ; save cy
+
+    ; Trunk: fb_fill_rect(cx-2, cy+2, 4, 10, COL_TREE_TRUNK)
+    sub ecx, 2
+    add eax, 2
+    mov edx, eax
+    mov r8d, 4
+    mov r9d, 10
+    mov dword [rsp + 32], COL_TREE_TRUNK
+    call fb_fill_rect
+
+    ; Canopy: fb_fill_rect(cx-8, cy-8, 16, 14, COL_TREE)
+    mov ecx, [rsp + 56]
+    sub ecx, 8
+    mov edx, [rsp + 60]
+    sub edx, 8
+    mov r8d, 16
+    mov r9d, 14
+    mov dword [rsp + 32], COL_TREE
+    call fb_fill_rect
+
+.gdg_tree_next:
+    inc r13d
+    jmp .gdg_tree_loop
+.gdg_trees_done:
+
+    ; --- Player marker ---
+    mov eax, [rel player_eid]
+    test eax, eax
+    js .gdg_player_done
+    mov dword [rsp + 48], eax       ; save player_eid
+
+    mov ecx, eax
+    lea rdx, [rel str_tile_x]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 52], eax       ; px_tile
+
+    mov ecx, [rsp + 48]
+    lea rdx, [rel str_tile_y]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    ; py_tile = eax
+
+    ; px = GAME_GRID_X + px_tile * GAME_TILE_SIZE
+    mov ecx, [rsp + 52]
+    imul ecx, GAME_TILE_SIZE
+    add ecx, GAME_GRID_X
+    ; py = GAME_GRID_Y + py_tile * GAME_TILE_SIZE
+    imul eax, GAME_TILE_SIZE
+    add eax, GAME_GRID_Y
+    mov dword [rsp + 52], ecx       ; save px
+    mov dword [rsp + 56], eax       ; save py
+
+    ; Player rect: margin=10
+    ; fb_fill_rect(px+10, py+10, GAME_TILE_SIZE-20, GAME_TILE_SIZE-20, COL_PLAYER)
+    add ecx, 10
+    add eax, 10
+    mov edx, eax
+    mov r8d, GAME_TILE_SIZE - 20
+    mov r9d, GAME_TILE_SIZE - 20
+    mov dword [rsp + 32], COL_PLAYER
+    call fb_fill_rect
+
+    ; fb_draw_rect(px+9, py+9, GAME_TILE_SIZE-18, GAME_TILE_SIZE-18, COL_PLAYER_BDR)
+    mov ecx, [rsp + 52]
+    add ecx, 9
+    mov edx, [rsp + 56]
+    add edx, 9
+    mov r8d, GAME_TILE_SIZE - 18
+    mov r9d, GAME_TILE_SIZE - 18
+    mov dword [rsp + 32], COL_PLAYER_BDR
+    call fb_draw_rect
+
+.gdg_player_done:
+
+    ; --- Info panel ---
+    ; Background
+    mov ecx, GAME_INFO_X
+    mov edx, GAME_GRID_Y
+    mov r8d, GAME_INFO_W
+    mov r9d, GAME_GRID_H
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_fill_rect
+
+    ; Border
+    mov ecx, GAME_INFO_X
+    mov edx, GAME_GRID_Y
+    mov r8d, GAME_INFO_W
+    mov r9d, GAME_GRID_H
+    mov dword [rsp + 32], COL_BORDER
+    call fb_draw_rect
+
+    mov edi, GAME_INFO_X + 12       ; ix
+    mov r12d, GAME_GRID_Y + 12      ; iy
+
+    ; "COMMON HERB"
+    mov ecx, edi
+    mov edx, r12d
+    lea r8, [rel str_gfx_common_herb]
+    mov r9d, COL_GAME_TITLE
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+    add r12d, 24
+
+    ; "Player"
+    mov ecx, edi
+    mov edx, r12d
+    lea r8, [rel str_gfx_player_lbl]
+    mov r9d, COL_TEXT_HI
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+    add r12d, 16
+
+    ; Player info (if player_eid >= 0)
+    mov eax, [rel player_eid]
+    test eax, eax
+    js .gdg_skip_player_info
+    mov dword [rsp + 48], eax
+
+    ; ptx = tile_x
+    mov ecx, eax
+    lea rdx, [rel str_tile_x]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 52], eax       ; ptx
+
+    ; pty = tile_y
+    mov ecx, [rsp + 48]
+    lea rdx, [rel str_tile_y]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 56], eax       ; pty
+
+    ; hp
+    mov ecx, [rsp + 48]
+    lea rdx, [rel str_hp]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 60], eax       ; hp
+
+    ; "Pos: (" x "," y ")"
+    mov ecx, edi
+    mov edx, r12d
+    lea r8, [rel str_gfx_pos_open]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+    ; eax = next x
+
+    mov ecx, eax
+    mov edx, r12d
+    mov r8d, [rsp + 52]             ; ptx
+    mov r9d, COL_TEXT_VAL
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_int
+
+    mov ecx, eax
+    mov edx, r12d
+    lea r8, [rel str_gfx_comma]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+
+    mov ecx, eax
+    mov edx, r12d
+    mov r8d, [rsp + 56]             ; pty
+    mov r9d, COL_TEXT_VAL
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_int
+
+    mov ecx, eax
+    mov edx, r12d
+    lea r8, [rel str_gfx_paren_close]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+    add r12d, 16
+
+    ; "HP: " hp
+    mov ecx, edi
+    mov edx, r12d
+    lea r8, [rel str_gfx_hp_lbl]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+
+    mov ecx, eax
+    mov edx, r12d
+    mov r8d, [rsp + 60]             ; hp
+    mov r9d, COL_RUNNING
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_int
+    add r12d, 16
+
+    ; Terrain under player: search tiles
+    xor r13d, r13d
+.gdg_terrain_search:
+    cmp r13d, ebx                   ; tile_count
+    jge .gdg_terrain_search_done
+
+    lea rcx, [rel str_cn_game_tiles]
+    mov edx, r13d
+    call herb_container_entity
+    test eax, eax
+    js .gdg_terrain_search_next
+    mov dword [rsp + 64], eax       ; tid
+
+    mov ecx, eax
+    lea rdx, [rel str_tile_x]
+    mov r8, -1
+    call herb_entity_prop_int
+    cmp eax, [rsp + 52]             ; ptx
+    jne .gdg_terrain_search_next
+
+    mov ecx, [rsp + 64]
+    lea rdx, [rel str_tile_y]
+    mov r8, -1
+    call herb_entity_prop_int
+    cmp eax, [rsp + 56]             ; pty
+    jne .gdg_terrain_search_next
+
+    ; Found matching tile
+    mov ecx, [rsp + 64]
+    lea rdx, [rel str_terrain]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 64], eax       ; terrain type
+
+    ; "On: "
+    mov ecx, edi
+    mov edx, r12d
+    lea r8, [rel str_gfx_on_lbl]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+    mov esi, eax                    ; save x pos
+
+    ; terrain_name(terrain)
+    mov ecx, [rsp + 64]
+    call terrain_name
+    mov r8, rax                     ; terrain name string
+
+    ; terrain_color(terrain)
+    mov ecx, [rsp + 64]
+    call terrain_color
+    ; eax = terrain color
+
+    mov ecx, esi                    ; x after "On: "
+    mov edx, r12d
+    ; r8 = terrain name (already set)
+    mov r9d, eax                    ; terrain color as fg
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+    jmp .gdg_terrain_search_done
+
+.gdg_terrain_search_next:
+    inc r13d
+    jmp .gdg_terrain_search
+.gdg_terrain_search_done:
+    add r12d, 16
+
+.gdg_skip_player_info:
+    add r12d, 8
+
+    ; "Inventory"
+    mov ecx, edi
+    mov edx, r12d
+    lea r8, [rel str_gfx_inventory]
+    mov r9d, COL_TEXT_HI
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+    add r12d, 16
+
+    ; Wood count
+    lea rcx, [rel str_cn_game_tree_gathered]
+    call herb_container_count
+    test eax, eax
+    jns .gdg_wood_ok
+    xor eax, eax
+.gdg_wood_ok:
+    mov dword [rsp + 48], eax       ; wood
+
+    mov ecx, edi
+    mov edx, r12d
+    lea r8, [rel str_gfx_wood_lbl]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+
+    mov ecx, eax
+    mov edx, r12d
+    mov r8d, [rsp + 48]
+    mov r9d, COL_TREE
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_int
+    add r12d, 16
+
+    ; Trees left
+    lea rcx, [rel str_cn_game_trees]
+    call herb_container_count
+    test eax, eax
+    jns .gdg_trees_ok
+    xor eax, eax
+.gdg_trees_ok:
+    mov dword [rsp + 48], eax
+
+    mov ecx, edi
+    mov edx, r12d
+    lea r8, [rel str_gfx_trees_lbl]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+
+    mov ecx, eax
+    mov edx, r12d
+    mov r8d, [rsp + 48]
+    mov r9d, COL_TEXT_VAL
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_int
+    add r12d, 24
+
+    ; Terrain legend
+    mov ecx, edi
+    mov edx, r12d
+    lea r8, [rel str_gfx_terrain_hdr]
+    mov r9d, COL_TEXT_HI
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+    add r12d, 16
+
+    ; Grass swatch + label
+    mov ecx, edi
+    lea edx, [r12d + 2]
+    mov r8d, 10
+    mov r9d, 10
+    mov dword [rsp + 32], COL_TILE_GRASS
+    call fb_fill_rect
+    lea ecx, [edi + 14]
+    mov edx, r12d
+    lea r8, [rel str_gfx_grass]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+    add r12d, 14
+
+    ; Forest swatch
+    mov ecx, edi
+    lea edx, [r12d + 2]
+    mov r8d, 10
+    mov r9d, 10
+    mov dword [rsp + 32], COL_TILE_FOREST
+    call fb_fill_rect
+    lea ecx, [edi + 14]
+    mov edx, r12d
+    lea r8, [rel str_gfx_forest]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+    add r12d, 14
+
+    ; Water swatch
+    mov ecx, edi
+    lea edx, [r12d + 2]
+    mov r8d, 10
+    mov r9d, 10
+    mov dword [rsp + 32], COL_TILE_WATER
+    call fb_fill_rect
+    lea ecx, [edi + 14]
+    mov edx, r12d
+    lea r8, [rel str_gfx_water]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+    add r12d, 14
+
+    ; Stone swatch
+    mov ecx, edi
+    lea edx, [r12d + 2]
+    mov r8d, 10
+    mov r9d, 10
+    mov dword [rsp + 32], COL_TILE_STONE
+    call fb_fill_rect
+    lea ecx, [edi + 14]
+    mov edx, r12d
+    lea r8, [rel str_gfx_stone]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+    add r12d, 24
+
+    ; Controls
+    mov ecx, edi
+    mov edx, r12d
+    lea r8, [rel str_gfx_controls]
+    mov r9d, COL_TEXT_HI
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+    add r12d, 16
+
+    mov ecx, edi
+    mov edx, r12d
+    lea r8, [rel str_gfx_ctrl_arrow]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+    add r12d, 14
+
+    mov ecx, edi
+    mov edx, r12d
+    lea r8, [rel str_gfx_ctrl_space]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+    add r12d, 14
+
+    mov ecx, edi
+    mov edx, r12d
+    lea r8, [rel str_gfx_ctrl_g]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+
+    add rsp, 72
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+%endif  ; KERNEL_MODE (gfx_draw_game)
+
+; ============================================================
+; GFX_DRAW_FULL — Full graphics mode redraw (Phase D Step 7b)
+;
+; void gfx_draw_full(void)
+; The largest single function: banner, stats, legend, containers,
+; tension panel, action log, summary, buffer/resource legend,
+; command line, flip + cursor.
+;
+; Stack frame: push rbp + 5 pushes (rbx,rsi,rdi,r12,r13) + sub rsp 456
+;   = 8 + 48 + 456 = 512 bytes (aligned: 512%16=0)
+; Locals:
+;   [rsp+48..111]   cmdbuf[64]   — command line text
+;   [rsp+112..239]  ids[32]      — legend entity IDs (32×4)
+;   [rsp+240..367]  orders[32]   — legend sort orders (32×4)
+;   [rsp+368..387]  bbuf[20]     — buffer snprintf
+;   [rsp+388..455]  scratch      — misc temps
+; ============================================================
+
+; Stack offsets
+%define GDF_CMDBUF   48
+%define GDF_IDS      112
+%define GDF_ORDERS   240
+%define GDF_BBUF     368
+%define GDF_BCOUNT   388
+%define GDF_BCAP     396
+%define GDF_VI       404
+%define GDF_NV       408
+%define GDF_SID      412
+%define GDF_RID      416
+%define GDF_RX       420
+%define GDF_RY       424
+%define GDF_RW       428
+%define GDF_RH       432
+%define GDF_BC       436
+%define GDF_FC       440
+
+gfx_draw_full:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    sub rsp, 456
+
+    ; ---- 1. Clear background ----
+    mov ecx, COL_BG
+    call fb_clear
+
+    ; ---- 2. Banner ----
+    xor ecx, ecx
+    mov edx, GFX_BANNER_Y
+    mov r8d, FB_WIDTH
+    mov r9d, GFX_BANNER_H
+    mov dword [rsp + 32], COL_BANNER_BG
+    call fb_fill_rect
+
+    ; fb_draw_string(12, 8, OS_TITLE, COL_TEXT_HI, COL_BANNER_BG)
+    mov ecx, 12
+    mov edx, GFX_BANNER_Y + 8
+%ifdef KERNEL_MODE
+    lea r8, [rel str_os_title_km]
+%else
+    lea r8, [rel str_os_title]
+%endif
+    mov r9d, COL_TEXT_HI
+    mov dword [rsp + 32], COL_BANNER_BG
+    call fb_draw_string
+
+    ; fb_draw_string(600, 8, OS_SUBTITLE, COL_TEXT_DIM, COL_BANNER_BG)
+    mov ecx, FB_WIDTH - 200
+    mov edx, GFX_BANNER_Y + 8
+%ifdef KERNEL_MODE
+    lea r8, [rel str_os_subtitle_km]
+%else
+    lea r8, [rel str_os_subtitle]
+%endif
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_BANNER_BG
+    call fb_draw_string
+
+    ; ---- 3. Stats bar ----
+    xor ecx, ecx
+    mov edx, GFX_STATS_Y
+    mov r8d, FB_WIDTH
+    mov r9d, GFX_STATS_H
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_fill_rect
+
+    mov ebx, 12                 ; x = 12
+
+    ; "Tick:"
+    mov ecx, ebx
+    mov edx, GFX_STATS_Y + 3
+    lea r8, [rel str_gfx_tick]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; timer_count / 100
+    mov eax, dword [rel timer_count]
+    cdq
+    mov esi, 100
+    idiv esi
+    mov ecx, ebx
+    mov edx, GFX_STATS_Y + 3
+    mov r8d, eax
+    mov r9d, COL_TEXT_VAL
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_int
+    mov ebx, eax
+
+    ; "Ops:"
+    lea ecx, [ebx + 12]
+    mov edx, GFX_STATS_Y + 3
+    lea r8, [rel str_gfx_ops]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; total_ops
+    mov ecx, ebx
+    mov edx, GFX_STATS_Y + 3
+    mov r8d, dword [rel total_ops]
+    mov r9d, COL_TEXT_VAL
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_int
+    mov ebx, eax
+
+    ; "Arena:"
+    lea ecx, [ebx + 12]
+    mov edx, GFX_STATS_Y + 3
+    lea r8, [rel str_gfx_arena]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; herb_arena_usage() / 1024
+    call herb_arena_usage
+    shr eax, 10                 ; / 1024
+    mov ecx, ebx
+    mov edx, GFX_STATS_Y + 3
+    mov r8d, eax
+    mov r9d, COL_TEXT_VAL
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_int
+    mov ebx, eax
+
+    ; "KB"
+    mov ecx, ebx
+    mov edx, GFX_STATS_Y + 3
+    lea r8, [rel str_gfx_kb]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; n_proc = ready + cpu0 + blocked
+    lea rcx, [rel str_cn_ready]
+    call herb_container_count
+    mov esi, eax
+
+    lea rcx, [rel str_cn_cpu0]
+    call herb_container_count
+    add esi, eax
+
+    lea rcx, [rel str_cn_blocked]
+    call herb_container_count
+    add esi, eax                ; esi = n_proc
+
+    ; "Procs:"
+    lea ecx, [ebx + 12]
+    mov edx, GFX_STATS_Y + 3
+    lea r8, [rel str_gfx_procs]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; clamp n_proc >= 0
+    xor edi, edi
+    test esi, esi
+    cmovs esi, edi
+
+    mov ecx, ebx
+    mov edx, GFX_STATS_Y + 3
+    mov r8d, esi
+    mov r9d, COL_TEXT_VAL
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_int
+    mov ebx, eax
+
+%ifdef KERNEL_MODE
+    ; Policy indicator
+    mov eax, dword [rel shell_ctl_eid]
+    test eax, eax
+    js .gdf_no_policy
+    mov ecx, eax
+    lea rdx, [rel str_current_policy]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov esi, eax
+    jmp .gdf_draw_policy
+.gdf_no_policy:
+    xor esi, esi
+.gdf_draw_policy:
+    lea ecx, [ebx + 12]
+    mov edx, GFX_STATS_Y + 3
+    lea r8, [rel str_gfx_sched]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    test esi, esi
+    jnz .gdf_rr
+    lea r8, [rel str_gfx_priority]
+    mov r9d, COL_RUNNING
+    jmp .gdf_draw_pol_str
+.gdf_rr:
+    lea r8, [rel str_gfx_roundrobin]
+    mov r9d, 0x00FF9900
+.gdf_draw_pol_str:
+    mov ecx, ebx
+    mov edx, GFX_STATS_Y + 3
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_string
+    mov ebx, eax
+%endif
+
+    ; Last key display
+    lea rdi, [rel last_key_name]
+    cmp byte [rdi], 0
+    je .gdf_no_lastkey
+
+    lea ecx, [ebx + 12]
+    mov edx, GFX_STATS_Y + 3
+    lea r8, [rel str_gfx_key_open]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    mov ecx, ebx
+    mov edx, GFX_STATS_Y + 3
+    mov r8, rdi                 ; last_key_name
+    mov r9d, COL_TEXT_KEY
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    mov ecx, ebx
+    mov edx, GFX_STATS_Y + 3
+    lea r8, [rel str_gfx_key_close]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_string
+
+.gdf_no_lastkey:
+
+%ifdef KERNEL_MODE
+    ; ---- 4. Game mode check + early return ----
+    mov eax, dword [rel game_ctl_eid]
+    test eax, eax
+    js .gdf_no_game
+
+    mov ecx, eax
+    lea rdx, [rel str_display_mode]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    cmp eax, 1
+    jne .gdf_no_game
+
+    ; Game mode active — draw game-specific UI
+
+    ; Game legend bar
+    xor ecx, ecx
+    mov edx, GFX_LEGEND_Y
+    mov r8d, FB_WIDTH
+    mov r9d, GFX_LEGEND_H
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_fill_rect
+
+    mov ebx, 12
+    ; "Arrows"
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    lea r8, [rel str_gfx_arrows]
+    mov r9d, COL_TEXT_KEY
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; "=Move "
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    lea r8, [rel str_gfx_eq_move]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; "Space"
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    lea r8, [rel str_gfx_space_key]
+    mov r9d, COL_TEXT_KEY
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; "=Gather "
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    lea r8, [rel str_gfx_eq_gather]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; "G"
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    lea r8, [rel str_gfx_g_key]
+    mov r9d, COL_TEXT_KEY
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; "=OS view"
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    lea r8, [rel str_gfx_eq_osview]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+
+    ; Separator
+    xor ecx, ecx
+    mov edx, GFX_LEGEND_Y + GFX_LEGEND_H + 2
+    mov r8d, FB_WIDTH
+    mov r9d, COL_BORDER
+    call fb_hline
+
+    ; gfx_draw_game()
+    call gfx_draw_game
+
+    ; Log bar
+    xor ecx, ecx
+    mov edx, GFX_LOG_Y
+    mov r8d, FB_WIDTH
+    mov r9d, GFX_LOG_H
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_fill_rect
+
+    lea rdi, [rel last_action]
+    cmp byte [rdi], 0
+    je .gdf_game_no_log
+
+    mov ecx, 12
+    mov edx, GFX_LOG_Y + 3
+    lea r8, [rel str_gfx_gt]
+    mov r9d, COL_RUNNING
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+
+    mov ecx, 28
+    mov edx, GFX_LOG_Y + 3
+    mov r8, rdi
+    mov r9d, COL_TEXT
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+
+.gdf_game_no_log:
+
+    ; Game summary bar
+    xor ecx, ecx
+    mov edx, GFX_SUMMARY_Y
+    mov r8d, FB_WIDTH
+    mov r9d, GFX_SUMMARY_H
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_fill_rect
+
+    ; wood = herb_container_count(CN_GAME_TREE_GATHERED)
+    lea rcx, [rel str_cn_game_tree_gathered]
+    call herb_container_count
+    xor ecx, ecx
+    test eax, eax
+    cmovs eax, ecx              ; if wood<0, wood=0
+    mov r12d, eax               ; r12 = wood
+
+    mov ebx, 12
+    ; "COMMON HERB"
+    mov ecx, ebx
+    mov edx, GFX_SUMMARY_Y + 3
+    lea r8, [rel str_gfx_common_herb]
+    mov r9d, COL_GAME_TITLE
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; "Wood:"
+    lea ecx, [ebx + 16]
+    mov edx, GFX_SUMMARY_Y + 3
+    lea r8, [rel str_gfx_wood_lbl2]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; wood value
+    mov ecx, ebx
+    mov edx, GFX_SUMMARY_Y + 3
+    mov r8d, r12d
+    mov r9d, COL_TREE
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_int
+    mov ebx, eax
+
+    ; "Trees:"
+    lea ecx, [ebx + 16]
+    mov edx, GFX_SUMMARY_Y + 3
+    lea r8, [rel str_gfx_trees_lbl2]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; trees count
+    lea rcx, [rel str_cn_game_trees]
+    call herb_container_count
+    xor ecx, ecx
+    test eax, eax
+    cmovs eax, ecx
+    mov ecx, ebx
+    mov edx, GFX_SUMMARY_Y + 3
+    mov r8d, eax
+    mov r9d, COL_TEXT_VAL
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_int
+
+    ; Bottom bars
+    xor ecx, ecx
+    mov edx, GFX_RESLEG_Y
+    mov r8d, FB_WIDTH
+    mov r9d, GFX_RESLEG_H
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_fill_rect
+
+    xor ecx, ecx
+    mov edx, GFX_RESLEG_Y + GFX_RESLEG_H + 4
+    mov r8d, FB_WIDTH
+    mov r9d, 22
+    mov dword [rsp + 32], 0x00161622
+    call fb_fill_rect
+
+    ; "G"
+    mov ecx, 8
+    mov edx, GFX_RESLEG_Y + GFX_RESLEG_H + 7
+    lea r8, [rel str_gfx_g_key]
+    mov r9d, COL_TEXT_KEY
+    mov dword [rsp + 32], 0x00161622
+    call fb_draw_string
+
+    ; "= return to OS"
+    mov ecx, 20
+    mov edx, GFX_RESLEG_Y + GFX_RESLEG_H + 7
+    lea r8, [rel str_gfx_os_return]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], 0x00161622
+    call fb_draw_string
+
+    ; flip + cursor + RETURN
+    call fb_flip
+    call fb_cursor_draw
+    jmp .gdf_epilogue
+
+.gdf_no_game:
+%endif  ; KERNEL_MODE (game mode)
+
+    ; ---- 5. Key legend ----
+    xor ecx, ecx
+    mov edx, GFX_LEGEND_Y
+    mov r8d, FB_WIDTH
+    mov r9d, GFX_LEGEND_H
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_fill_rect
+
+    mov ebx, 12                 ; x = 12
+
+%ifdef KERNEL_MODE
+    ; LEGEND entities from CN_LEGEND
+    lea rcx, [rel str_cn_legend]
+    call herb_container_count
+    test eax, eax
+    jle .gdf_legend_done
+
+    mov r12d, eax               ; r12 = n (total legend entities)
+    xor r13d, r13d              ; r13 = count (valid entities found)
+    xor esi, esi                ; esi = i (loop counter)
+
+.gdf_legend_fetch:
+    cmp esi, r12d
+    jge .gdf_legend_sort
+    cmp r13d, 32
+    jge .gdf_legend_sort
+
+    mov dword [rsp + GDF_VI], esi  ; save i
+    lea rcx, [rel str_cn_legend]
+    mov edx, esi
+    call herb_container_entity
+    test eax, eax
+    js .gdf_legend_next         ; eid < 0, skip
+
+    ; ids[count] = eid
+    mov edi, r13d
+    mov dword [rsp + GDF_IDS + rdi*4], eax
+
+    ; orders[count] = herb_entity_prop_int(eid, "order", 99)
+    mov ecx, eax
+    lea rdx, [rel str_order]
+    mov r8d, 99
+    call herb_entity_prop_int
+    mov edi, r13d
+    mov dword [rsp + GDF_ORDERS + rdi*4], eax
+    inc r13d                    ; count++
+
+.gdf_legend_next:
+    mov esi, dword [rsp + GDF_VI]
+    inc esi
+    jmp .gdf_legend_fetch
+
+.gdf_legend_sort:
+    ; Insertion sort: sort ids[] by orders[]
+    cmp r13d, 2
+    jl .gdf_legend_render       ; nothing to sort if count < 2
+
+    mov esi, 1                  ; i = 1
+.gdf_sort_outer:
+    cmp esi, r13d
+    jge .gdf_legend_render
+
+    mov eax, dword [rsp + GDF_ORDERS + rsi*4]  ; key_o = orders[i]
+    mov ecx, dword [rsp + GDF_IDS + rsi*4]     ; key_id = ids[i]
+    mov edi, esi
+    dec edi                     ; j = i - 1
+
+.gdf_sort_inner:
+    test edi, edi
+    js .gdf_sort_insert         ; j < 0
+    cmp dword [rsp + GDF_ORDERS + rdi*4], eax
+    jle .gdf_sort_insert        ; orders[j] <= key_o
+
+    ; Shift: orders[j+1] = orders[j], ids[j+1] = ids[j]
+    lea edx, [edi + 1]
+    mov r8d, dword [rsp + GDF_ORDERS + rdi*4]
+    mov dword [rsp + GDF_ORDERS + rdx*4], r8d
+    mov r8d, dword [rsp + GDF_IDS + rdi*4]
+    mov dword [rsp + GDF_IDS + rdx*4], r8d
+    dec edi
+    jmp .gdf_sort_inner
+
+.gdf_sort_insert:
+    lea edx, [edi + 1]
+    mov dword [rsp + GDF_ORDERS + rdx*4], eax
+    mov dword [rsp + GDF_IDS + rdx*4], ecx
+    inc esi
+    jmp .gdf_sort_outer
+
+.gdf_legend_render:
+    ; Render sorted legend items
+    xor esi, esi                ; i = 0
+.gdf_legend_draw_loop:
+    cmp esi, r13d
+    jge .gdf_legend_done
+
+    mov dword [rsp + GDF_VI], esi  ; save i
+
+    ; key = herb_entity_prop_str(ids[i], "key_text", "?")
+    mov ecx, dword [rsp + GDF_IDS + rsi*4]
+    lea rdx, [rel str_key_text]
+    lea r8, [rel str_ques]
+    call herb_entity_prop_str
+
+    ; fb_draw_string(x, ..., key, COL_TEXT_KEY, COL_LEGEND_BG)
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    mov r8, rax                 ; key string
+    mov r9d, COL_TEXT_KEY
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; label = herb_entity_prop_str(ids[i], "label_text", "")
+    mov esi, dword [rsp + GDF_VI]
+    mov ecx, dword [rsp + GDF_IDS + rsi*4]
+    lea rdx, [rel str_label_text]
+    lea r8, [rel str_empty]
+    call herb_entity_prop_str
+
+    ; fb_draw_string(x, ..., label, COL_TEXT_DIM, COL_LEGEND_BG)
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    mov r8, rax
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; fb_draw_string(x, ..., " ", COL_TEXT_DIM, COL_LEGEND_BG)
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    lea r8, [rel str_space]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    mov esi, dword [rsp + GDF_VI]
+    inc esi
+    jmp .gdf_legend_draw_loop
+
+%else
+    ; Non-KERNEL_MODE: hardcoded legend
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    lea r8, [rel str_leg_N]
+    mov r9d, COL_TEXT_KEY
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    lea r8, [rel str_leg_ew]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    lea r8, [rel str_leg_K]
+    mov r9d, COL_TEXT_KEY
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    lea r8, [rel str_leg_ill]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    lea r8, [rel str_leg_B]
+    mov r9d, COL_TEXT_KEY
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    lea r8, [rel str_leg_lk]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    lea r8, [rel str_leg_U]
+    mov r9d, COL_TEXT_KEY
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    lea r8, [rel str_leg_nblk]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    lea r8, [rel str_leg_T]
+    mov r9d, COL_TEXT_KEY
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    lea r8, [rel str_leg_mr]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    lea r8, [rel str_leg_Plus]
+    mov r9d, COL_TEXT_KEY
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    lea r8, [rel str_leg_Boost]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    lea r8, [rel str_leg_Space]
+    mov r9d, COL_TEXT_KEY
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    mov ecx, ebx
+    mov edx, GFX_LEGEND_Y + 3
+    lea r8, [rel str_leg_Step]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+%endif
+
+.gdf_legend_done:
+
+    ; ---- 6. Separator line ----
+    xor ecx, ecx
+    mov edx, GFX_LEGEND_Y + GFX_LEGEND_H + 2
+    mov r8d, FB_WIDTH
+    mov r9d, COL_BORDER
+    call fb_hline
+
+    ; ---- 7. Container regions ----
+%ifdef KERNEL_MODE
+    ; Iterate VISIBLE surfaces
+    lea rcx, [rel str_cn_visible]
+    call herb_container_count
+    mov dword [rsp + GDF_NV], eax
+    mov dword [rsp + GDF_VI], 0
+
+.gdf_vis_loop:
+    mov eax, dword [rsp + GDF_VI]
+    cmp eax, dword [rsp + GDF_NV]
+    jge .gdf_vis_done
+
+    ; sid = herb_container_entity(CN_VISIBLE, vi)
+    lea rcx, [rel str_cn_visible]
+    mov edx, eax
+    call herb_container_entity
+    test eax, eax
+    js .gdf_vis_next
+    mov dword [rsp + GDF_SID], eax
+
+    ; kind = herb_entity_prop_int(sid, "kind", -1)
+    mov ecx, eax
+    lea rdx, [rel str_kind]
+    mov r8d, -1
+    call herb_entity_prop_int
+    test eax, eax
+    jnz .gdf_vis_next           ; kind != 0, skip
+
+    ; rid = herb_entity_prop_int(sid, "region_id", -1)
+    mov ecx, dword [rsp + GDF_SID]
+    lea rdx, [rel str_gfx_region_id]
+    mov r8d, -1
+    call herb_entity_prop_int
+    cmp eax, 0
+    jl .gdf_vis_next
+    cmp eax, 3
+    jg .gdf_vis_next
+    mov dword [rsp + GDF_RID], eax
+
+    ; rx = herb_entity_prop_int(sid, "x", 0)
+    mov ecx, dword [rsp + GDF_SID]
+    lea rdx, [rel str_x]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + GDF_RX], eax
+
+    ; ry = herb_entity_prop_int(sid, "y", 0)
+    mov ecx, dword [rsp + GDF_SID]
+    lea rdx, [rel str_y]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + GDF_RY], eax
+
+    ; rw = herb_entity_prop_int(sid, "width", 100)
+    mov ecx, dword [rsp + GDF_SID]
+    lea rdx, [rel str_gfx_width]
+    mov r8d, 100
+    call herb_entity_prop_int
+    mov dword [rsp + GDF_RW], eax
+
+    ; rh = herb_entity_prop_int(sid, "height", 100)
+    mov ecx, dword [rsp + GDF_SID]
+    lea rdx, [rel str_gfx_height]
+    mov r8d, 100
+    call herb_entity_prop_int
+    mov dword [rsp + GDF_RH], eax
+
+    ; bc = herb_entity_prop_int(sid, "border_color", COL_TEXT_DIM)
+    mov ecx, dword [rsp + GDF_SID]
+    lea rdx, [rel str_border_color]
+    mov r8d, COL_TEXT_DIM
+    call herb_entity_prop_int
+    mov dword [rsp + GDF_BC], eax
+
+    ; fc = herb_entity_prop_int(sid, "fill_color", COL_BG)
+    mov ecx, dword [rsp + GDF_SID]
+    lea rdx, [rel str_fill_color]
+    mov r8d, COL_BG
+    call herb_entity_prop_int
+    mov dword [rsp + GDF_FC], eax
+
+    ; fb_draw_container(rx, ry, rw, rh, region_titles[rid], bc, fc)
+    ; 7 args: rcx=rx, rdx=ry, r8=rw, r9=rh, [rsp+32]=title, [rsp+40]=bc, [rsp+48]=fc
+    mov ecx, dword [rsp + GDF_RX]
+    mov edx, dword [rsp + GDF_RY]
+    mov r8d, dword [rsp + GDF_RW]
+    mov r9d, dword [rsp + GDF_RH]
+    mov eax, dword [rsp + GDF_RID]
+    lea rdi, [rel region_titles]
+    mov rdi, [rdi + rax*8]      ; region_titles[rid]
+    mov [rsp + 32], rdi
+    mov eax, dword [rsp + GDF_BC]
+    mov dword [rsp + 40], eax
+    mov eax, dword [rsp + GDF_FC]
+    mov dword [rsp + 48], eax
+    call fb_draw_container
+
+    ; gfx_draw_procs_in_region(rx, ry, rw, rh, region_containers[rid], bc, fc)
+    mov ecx, dword [rsp + GDF_RX]
+    mov edx, dword [rsp + GDF_RY]
+    mov r8d, dword [rsp + GDF_RW]
+    mov r9d, dword [rsp + GDF_RH]
+    mov eax, dword [rsp + GDF_RID]
+    lea rdi, [rel region_containers]
+    mov rdi, [rdi + rax*8]      ; region_containers[rid]
+    mov [rsp + 32], rdi
+    mov eax, dword [rsp + GDF_BC]
+    mov dword [rsp + 40], eax
+    mov eax, dword [rsp + GDF_FC]
+    mov dword [rsp + 48], eax
+    call gfx_draw_procs_in_region
+
+.gdf_vis_next:
+    inc dword [rsp + GDF_VI]
+    jmp .gdf_vis_loop
+
+.gdf_vis_done:
+
+%else
+    ; Non-KERNEL_MODE: hardcoded container positions
+    ; CPU0
+    mov ecx, GFX_CPU0_X
+    mov edx, GFX_CPU0_Y
+    mov r8d, GFX_CONT_W
+    mov r9d, GFX_CONT_H
+    lea rdi, [rel str_gfx_leg_cpu0]
+    mov [rsp + 32], rdi
+    mov dword [rsp + 40], COL_RUNNING
+    mov dword [rsp + 48], COL_RUNNING_BG
+    call fb_draw_container
+
+    mov ecx, GFX_CPU0_X
+    mov edx, GFX_CPU0_Y
+    mov r8d, GFX_CONT_W
+    mov r9d, GFX_CONT_H
+    lea rdi, [rel str_cn_cpu0]
+    mov [rsp + 32], rdi
+    mov dword [rsp + 40], COL_RUNNING
+    mov dword [rsp + 48], COL_RUNNING_BG
+    call gfx_draw_procs_in_region
+
+    ; READY
+    mov ecx, GFX_READY_X
+    mov edx, GFX_READY_Y
+    mov r8d, GFX_CONT_W
+    mov r9d, GFX_CONT_H
+    lea rdi, [rel str_gfx_leg_ready]
+    mov [rsp + 32], rdi
+    mov dword [rsp + 40], COL_READY_COL
+    mov dword [rsp + 48], COL_READY_BG
+    call fb_draw_container
+
+    mov ecx, GFX_READY_X
+    mov edx, GFX_READY_Y
+    mov r8d, GFX_CONT_W
+    mov r9d, GFX_CONT_H
+    lea rdi, [rel str_cn_ready]
+    mov [rsp + 32], rdi
+    mov dword [rsp + 40], COL_READY_COL
+    mov dword [rsp + 48], COL_READY_BG
+    call gfx_draw_procs_in_region
+
+    ; BLOCKED
+    mov ecx, GFX_BLOCK_X
+    mov edx, GFX_BLOCK_Y
+    mov r8d, GFX_CONT_W
+    mov r9d, GFX_CONT_H
+    lea rdi, [rel str_gfx_leg_blocked]
+    mov [rsp + 32], rdi
+    mov dword [rsp + 40], COL_BLOCKED_COL
+    mov dword [rsp + 48], COL_BLOCKED_BG
+    call fb_draw_container
+
+    mov ecx, GFX_BLOCK_X
+    mov edx, GFX_BLOCK_Y
+    mov r8d, GFX_CONT_W
+    mov r9d, GFX_CONT_H
+    lea rdi, [rel str_cn_blocked]
+    mov [rsp + 32], rdi
+    mov dword [rsp + 40], COL_BLOCKED_COL
+    mov dword [rsp + 48], COL_BLOCKED_BG
+    call gfx_draw_procs_in_region
+
+    ; TERMINATED
+    mov ecx, GFX_TERM_X
+    mov edx, GFX_TERM_Y
+    mov r8d, GFX_CONT_W
+    mov r9d, GFX_CONT_H
+    lea rdi, [rel str_gfx_leg_term]
+    mov [rsp + 32], rdi
+    mov dword [rsp + 40], COL_TERM_COL
+    mov dword [rsp + 48], COL_TERM_BG
+    call fb_draw_container
+
+    mov ecx, GFX_TERM_X
+    mov edx, GFX_TERM_Y
+    mov r8d, GFX_CONT_W
+    mov r9d, GFX_CONT_H
+    lea rdi, [rel str_cn_terminated]
+    mov [rsp + 32], rdi
+    mov dword [rsp + 40], COL_TERM_COL
+    mov dword [rsp + 48], COL_TERM_BG
+    call gfx_draw_procs_in_region
+%endif
+
+    ; ---- 8. Tension panel ----
+%ifdef KERNEL_MODE
+    call gfx_draw_tension_panel
+%endif
+
+    ; ---- 9. Action log ----
+    xor ecx, ecx
+    mov edx, GFX_LOG_Y
+    mov r8d, FB_WIDTH
+    mov r9d, GFX_LOG_H
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_fill_rect
+
+    lea rdi, [rel last_action]
+    cmp byte [rdi], 0
+    je .gdf_no_log
+
+    mov ecx, 12
+    mov edx, GFX_LOG_Y + 3
+    lea r8, [rel str_gfx_gt]
+    mov r9d, COL_RUNNING
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+
+    mov ecx, 28
+    mov edx, GFX_LOG_Y + 3
+    mov r8, rdi
+    mov r9d, COL_TEXT
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+
+.gdf_no_log:
+
+    ; ---- 10. Container summary ----
+    xor ecx, ecx
+    mov edx, GFX_SUMMARY_Y
+    mov r8d, FB_WIDTH
+    mov r9d, GFX_SUMMARY_H
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_fill_rect
+
+    ; Get counts
+    lea rcx, [rel str_cn_ready]
+    call herb_container_count
+    xor ecx, ecx
+    test eax, eax
+    cmovs eax, ecx
+    mov r12d, eax               ; r12 = ready_n
+
+    lea rcx, [rel str_cn_cpu0]
+    call herb_container_count
+    xor ecx, ecx
+    test eax, eax
+    cmovs eax, ecx
+    mov r13d, eax               ; r13 = cpu_n
+
+    lea rcx, [rel str_cn_blocked]
+    call herb_container_count
+    xor ecx, ecx
+    test eax, eax
+    cmovs eax, ecx
+    mov esi, eax                ; esi = blk_n
+
+    lea rcx, [rel str_cn_terminated]
+    call herb_container_count
+    xor ecx, ecx
+    test eax, eax
+    cmovs eax, ecx
+    mov edi, eax                ; edi = term_n
+
+    mov ebx, 12
+
+    ; "READY="
+    mov ecx, ebx
+    mov edx, GFX_SUMMARY_Y + 3
+    lea r8, [rel str_gfx_ready_eq]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; Save blk_n and term_n
+    mov dword [rsp + GDF_VI], esi    ; save blk_n
+    mov dword [rsp + GDF_NV], edi    ; save term_n
+
+    mov ecx, ebx
+    mov edx, GFX_SUMMARY_Y + 3
+    mov r8d, r12d
+    mov r9d, COL_READY_COL
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_int
+    mov ebx, eax
+
+    ; "CPU0="
+    lea ecx, [ebx + 8]
+    mov edx, GFX_SUMMARY_Y + 3
+    lea r8, [rel str_gfx_cpu0_eq]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    mov ecx, ebx
+    mov edx, GFX_SUMMARY_Y + 3
+    mov r8d, r13d
+    mov r9d, COL_RUNNING
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_int
+    mov ebx, eax
+
+    ; "BLOCKED="
+    lea ecx, [ebx + 8]
+    mov edx, GFX_SUMMARY_Y + 3
+    lea r8, [rel str_gfx_blocked_eq]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    mov ecx, ebx
+    mov edx, GFX_SUMMARY_Y + 3
+    mov r8d, dword [rsp + GDF_VI]   ; blk_n
+    mov r9d, COL_BLOCKED_COL
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_int
+    mov ebx, eax
+
+    ; "TERM="
+    lea ecx, [ebx + 8]
+    mov edx, GFX_SUMMARY_Y + 3
+    lea r8, [rel str_gfx_term_eq]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    mov ecx, ebx
+    mov edx, GFX_SUMMARY_Y + 3
+    mov r8d, dword [rsp + GDF_NV]   ; term_n
+    mov r9d, COL_TERM_COL
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_int
+
+%ifdef KERNEL_MODE
+    ; ---- 11. Buffer indicator / Resource legend ----
+    mov eax, dword [rel buffer_eid]
+    test eax, eax
+    js .gdf_no_buffer
+
+    ; Buffer exists — draw fill bar
+    ; bcount = herb_entity_prop_int(buffer_eid, "count", 0)
+    mov ecx, eax
+    lea rdx, [rel str_count]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov [rsp + GDF_BCOUNT], rax     ; int64_t bcount
+
+    ; bcap = herb_entity_prop_int(buffer_eid, "capacity", 1)
+    mov ecx, dword [rel buffer_eid]
+    lea rdx, [rel str_capacity]
+    mov r8d, 1
+    call herb_entity_prop_int
+    mov [rsp + GDF_BCAP], rax       ; int64_t bcap
+
+    ; fb_fill_rect(0, GFX_RESLEG_Y, FB_WIDTH, GFX_RESLEG_H, COL_LEGEND_BG)
+    xor ecx, ecx
+    mov edx, GFX_RESLEG_Y
+    mov r8d, FB_WIDTH
+    mov r9d, GFX_RESLEG_H
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_fill_rect
+
+    ; fb_draw_string(12, bar_y, "BUF", ...)
+    mov ecx, 12
+    mov edx, GFX_RESLEG_Y + 3
+    lea r8, [rel str_gfx_buf_lbl]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+
+    mov ebx, 40                 ; bar_x = 12 + 28 = 40
+
+    ; fb_draw_rect(bar_x, bar_y, 120, 12, COL_TEXT_DIM)
+    mov ecx, ebx
+    mov edx, GFX_RESLEG_Y + 3
+    mov r8d, 120
+    mov r9d, 12
+    mov dword [rsp + 32], COL_TEXT_DIM
+    call fb_draw_rect
+
+    ; if bcount > 0 && bcap > 0: draw fill
+    mov rax, [rsp + GDF_BCOUNT]
+    test rax, rax
+    jle .gdf_buf_no_fill
+    mov rcx, [rsp + GDF_BCAP]
+    test rcx, rcx
+    jle .gdf_buf_no_fill
+
+    ; fill_w = bcount * 118 / bcap (bar_w-2=118)
+    imul rax, 118
+    cqo
+    idiv rcx
+    cmp eax, 118
+    jle .gdf_buf_clamp_ok
+    mov eax, 118
+.gdf_buf_clamp_ok:
+    mov r12d, eax               ; r12 = fill_w
+
+    ; Color selection: green/yellow/orange
+    mov r13d, 0x0044CC44        ; green default
+    mov rax, [rsp + GDF_BCOUNT]
+    mov rcx, [rsp + GDF_BCAP]
+
+    ; if bcount*3 > bcap*2: orange
+    mov rdx, rax
+    imul rdx, 3
+    mov rsi, rcx
+    imul rsi, 2
+    cmp rdx, rsi
+    jg .gdf_buf_orange
+
+    ; if bcount*2 > bcap: yellow
+    mov rdx, rax
+    imul rdx, 2
+    cmp rdx, rcx
+    jg .gdf_buf_yellow
+    jmp .gdf_buf_draw_fill
+
+.gdf_buf_orange:
+    mov r13d, 0x00FF9900
+    jmp .gdf_buf_draw_fill
+.gdf_buf_yellow:
+    mov r13d, 0x00CCCC00
+
+.gdf_buf_draw_fill:
+    ; fb_fill_rect(bar_x+1, bar_y+1, fill_w, 10, fill_col)
+    lea ecx, [ebx + 1]
+    mov edx, GFX_RESLEG_Y + 4
+    mov r8d, r12d
+    mov r9d, 10
+    mov dword [rsp + 32], r13d
+    call fb_fill_rect
+
+.gdf_buf_no_fill:
+    ; bar_x += 120 + 6 = 166
+    mov ebx, 166
+
+    ; Numeric display: snprintf(bbuf, 20, "%d/%d", bcount, bcap)
+    lea rcx, [rsp + GDF_BBUF]
+    mov edx, 20
+    lea r8, [rel str_gfx_buf_fmt]
+    mov r9d, dword [rsp + GDF_BCOUNT]
+    mov eax, dword [rsp + GDF_BCAP]
+    mov dword [rsp + 32], eax
+    call herb_snprintf
+
+    lea r8, [rsp + GDF_BBUF]
+    mov ecx, ebx
+    mov edx, GFX_RESLEG_Y + 3
+    mov r9d, COL_TEXT_VAL
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+
+    ; Producer/consumer legend
+    mov ebx, 226                ; bar_x + 60 = 166 + 60
+    ; ">"
+    mov ecx, ebx
+    mov edx, GFX_RESLEG_Y + 3
+    lea r8, [rel str_gfx_gt_prod]
+    mov r9d, 0x00FF9900
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+
+    ; "producer  "
+    lea ecx, [ebx + 12]
+    mov edx, GFX_RESLEG_Y + 3
+    lea r8, [rel str_gfx_producer]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+
+    ; "<"
+    lea ecx, [ebx + 12 + 80]    ; +92
+    mov edx, GFX_RESLEG_Y + 3
+    lea r8, [rel str_gfx_lt_cons]
+    mov r9d, 0x0066CCFF
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+
+    ; "consumer"
+    lea ecx, [ebx + 12 + 80 + 12]  ; +104
+    mov edx, GFX_RESLEG_Y + 3
+    lea r8, [rel str_gfx_consumer]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    jmp .gdf_buf_done
+
+.gdf_no_buffer:
+    ; Resource legend (no buffer)
+    xor ecx, ecx
+    mov edx, GFX_RESLEG_Y
+    mov r8d, FB_WIDTH
+    mov r9d, GFX_RESLEG_H
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_fill_rect
+
+    mov ebx, 12
+
+    ; MEM free swatch
+    mov ecx, ebx
+    mov edx, GFX_RESLEG_Y + 7
+    mov r8d, 6
+    mov r9d, 6
+    mov dword [rsp + 32], COL_RES_FREE
+    call fb_fill_rect
+
+    lea ecx, [ebx + 10]
+    mov edx, GFX_RESLEG_Y + 3
+    lea r8, [rel str_gfx_mem_free_lbl]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; MEM used swatch
+    mov ecx, ebx
+    mov edx, GFX_RESLEG_Y + 7
+    mov r8d, 6
+    mov r9d, 6
+    mov dword [rsp + 32], COL_RES_USED
+    call fb_fill_rect
+
+    lea ecx, [ebx + 10]
+    mov edx, GFX_RESLEG_Y + 3
+    lea r8, [rel str_gfx_mem_used_lbl]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; FD free swatch
+    mov ecx, ebx
+    mov edx, GFX_RESLEG_Y + 7
+    mov r8d, 6
+    mov r9d, 6
+    mov dword [rsp + 32], COL_RES_FD_F
+    call fb_fill_rect
+
+    lea ecx, [ebx + 10]
+    mov edx, GFX_RESLEG_Y + 3
+    lea r8, [rel str_gfx_fd_free_lbl]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; FD open swatch
+    mov ecx, ebx
+    mov edx, GFX_RESLEG_Y + 7
+    mov r8d, 6
+    mov r9d, 6
+    mov dword [rsp + 32], COL_RES_FD_U
+    call fb_fill_rect
+
+    lea ecx, [ebx + 10]
+    mov edx, GFX_RESLEG_Y + 3
+    lea r8, [rel str_gfx_fd_open_lbl]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_LEGEND_BG
+    call fb_draw_string
+
+.gdf_buf_done:
+
+    ; ---- 12. Command line ----
+    ; input_mode = 0
+    xor esi, esi
+    mov eax, dword [rel input_ctl_eid]
+    test eax, eax
+    js .gdf_cmdline_draw
+
+    ; input_mode = herb_entity_prop_int(input_ctl_eid, "mode", 0)
+    mov ecx, eax
+    lea rdx, [rel str_mode]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov esi, eax                ; esi = input_mode
+
+.gdf_cmdline_draw:
+    ; cmd_y = GFX_RESLEG_Y + GFX_RESLEG_H + 4 = 558
+    %define CMD_Y (GFX_RESLEG_Y + GFX_RESLEG_H + 4)
+
+    ; fb_fill_rect(0, cmd_y, FB_WIDTH, 22, 0x00161622)
+    xor ecx, ecx
+    mov edx, CMD_Y
+    mov r8d, FB_WIDTH
+    mov r9d, 22
+    mov dword [rsp + 32], 0x00161622
+    call fb_fill_rect
+
+    cmp esi, 1
+    jne .gdf_cmd_hint
+
+    ; Text mode: read cmdline
+    lea rcx, [rsp + GDF_CMDBUF]
+    mov edx, 64
+    call read_cmdline
+    mov r12d, eax               ; r12 = clen
+
+    ; Draw ":"
+    mov ecx, 8
+    mov edx, CMD_Y + 3
+    lea r8, [rel str_gfx_colon]
+    mov r9d, 0x0066FF66
+    mov dword [rsp + 32], 0x00161622
+    call fb_draw_string
+
+    ; if clen > 0: draw text
+    test r12d, r12d
+    jle .gdf_cmd_cursor
+
+    mov ecx, 20
+    mov edx, CMD_Y + 3
+    lea r8, [rsp + GDF_CMDBUF]
+    mov r9d, COL_TEXT_HI
+    mov dword [rsp + 32], 0x00161622
+    call fb_draw_string
+
+.gdf_cmd_cursor:
+    ; cursor_px = 20 + clen * 8
+    mov eax, r12d
+    shl eax, 3
+    add eax, 20
+
+    ; fb_fill_rect(cursor_px, cmd_y+14, 8, 2, 0x0066FF66)
+    mov ecx, eax
+    mov edx, CMD_Y + 14
+    mov r8d, 8
+    mov r9d, 2
+    mov dword [rsp + 32], 0x0066FF66
+    call fb_fill_rect
+    jmp .gdf_cmd_done
+
+.gdf_cmd_hint:
+    ; Command mode: show hint
+    mov ecx, 8
+    mov edx, CMD_Y + 3
+    lea r8, [rel str_gfx_slash_cmd]
+    mov r9d, 0x00666688
+    mov dword [rsp + 32], 0x00161622
+    call fb_draw_string
+
+    mov ecx, 20
+    mov edx, CMD_Y + 3
+    lea r8, [rel str_gfx_type_cmd]
+    mov r9d, 0x00444466
+    mov dword [rsp + 32], 0x00161622
+    call fb_draw_string
+
+.gdf_cmd_done:
+%endif  ; KERNEL_MODE (command line)
+
+    ; ---- 13. Flip + cursor ----
+    call fb_flip
+    call fb_cursor_draw
+
+.gdf_epilogue:
+    add rsp, 456
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; GFX_DRAW_STATS_ONLY — Quick stats bar refresh (Phase D Step 7a)
+;
+; void gfx_draw_stats_only(void)
+; Redraws just the stats bar + flip + cursor (periodic quick update).
+; ============================================================
+
+gfx_draw_stats_only:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    sub rsp, 40                 ; shadow + alignment: 8+24+40=72, 72%16=8... need 8+3*8+40=72. 72%16=8. Fix: sub rsp 32 → 8+24+32=64, 64%16=0
+                                ; Wait: push rbp(8) + 3 pushes(24) = 32 bytes on stack. RSP is at -32 from entry.
+                                ; entry RSP%16=8 (after CALL). -32 → RSP%16=8-32%16=8-0=8. Still misaligned.
+                                ; sub rsp, 40: RSP -= 40 → (8-32-40)%16 = -64%16 = 0. Aligned. ✓
+
+    ; fb_fill_rect(0, GFX_STATS_Y, FB_WIDTH, GFX_STATS_H, COL_STATS_BG)
+    xor ecx, ecx               ; x=0
+    mov edx, GFX_STATS_Y       ; y=30
+    mov r8d, FB_WIDTH           ; w=800
+    mov r9d, GFX_STATS_H       ; h=20
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_fill_rect
+
+    ; x = 12
+    mov ebx, 12
+
+    ; x = fb_draw_string(x, GFX_STATS_Y+3, "Tick:", COL_TEXT_DIM, COL_STATS_BG)
+    mov ecx, ebx
+    mov edx, GFX_STATS_Y + 3
+    lea r8, [rel str_gfx_tick]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; x = fb_draw_int(x, GFX_STATS_Y+3, timer_count/100, COL_TEXT_VAL, COL_STATS_BG)
+    mov eax, dword [rel timer_count]
+    cdq
+    mov esi, 100
+    idiv esi                    ; eax = timer_count / 100
+    mov ecx, ebx
+    mov edx, GFX_STATS_Y + 3
+    mov r8d, eax
+    mov r9d, COL_TEXT_VAL
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_int
+    mov ebx, eax
+
+    ; x = fb_draw_string(x+12, ..., "Ops:", ...)
+    lea ecx, [ebx + 12]
+    mov edx, GFX_STATS_Y + 3
+    lea r8, [rel str_gfx_ops]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; x = fb_draw_int(x, ..., total_ops, ...)
+    mov ecx, ebx
+    mov edx, GFX_STATS_Y + 3
+    mov r8d, dword [rel total_ops]
+    mov r9d, COL_TEXT_VAL
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_int
+    mov ebx, eax
+
+    ; n_proc = herb_container_count(CN_READY) + herb_container_count(CN_CPU0) + herb_container_count(CN_BLOCKED)
+    lea rcx, [rel str_cn_ready]
+    call herb_container_count
+    mov esi, eax                ; esi = ready count
+
+    lea rcx, [rel str_cn_cpu0]
+    call herb_container_count
+    add esi, eax                ; esi += cpu0 count
+
+    lea rcx, [rel str_cn_blocked]
+    call herb_container_count
+    add esi, eax                ; esi = total n_proc
+
+    ; x = fb_draw_string(x+12, ..., "Procs:", ...)
+    lea ecx, [ebx + 12]
+    mov edx, GFX_STATS_Y + 3
+    lea r8, [rel str_gfx_procs]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; n_proc < 0 ? 0 : n_proc
+    test esi, esi
+    cmovs esi, edi              ; if negative, use 0 (edi is likely not 0, use xor)
+    xor edi, edi
+    test esi, esi
+    cmovs esi, edi              ; if esi<0, esi=0
+
+    ; x = fb_draw_int(x, ..., n_proc, ...)
+    mov ecx, ebx
+    mov edx, GFX_STATS_Y + 3
+    mov r8d, esi
+    mov r9d, COL_TEXT_VAL
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_int
+    mov ebx, eax
+
+%ifdef KERNEL_MODE
+    ; Policy indicator — read from ShellCtl.current_policy
+    mov eax, dword [rel shell_ctl_eid]
+    test eax, eax
+    js .gdso_no_policy          ; shell_ctl_eid < 0
+
+    mov ecx, eax                ; entity_id
+    lea rdx, [rel str_current_policy]
+    xor r8d, r8d                ; default_val = 0
+    call herb_entity_prop_int
+    mov esi, eax                ; esi = current_policy (0=priority, 1=rr)
+    jmp .gdso_draw_policy
+
+.gdso_no_policy:
+    xor esi, esi                ; cp = 0
+
+.gdso_draw_policy:
+    ; x = fb_draw_string(x+12, ..., "Sched:", ...)
+    lea ecx, [ebx + 12]
+    mov edx, GFX_STATS_Y + 3
+    lea r8, [rel str_gfx_sched]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_string
+    mov ebx, eax
+
+    ; fb_draw_string(x, ..., cp==0 ? "PRIORITY" : "ROUND-ROBIN", cp==0 ? COL_RUNNING : 0x00FF9900, COL_STATS_BG)
+    test esi, esi
+    jnz .gdso_rr_label
+    lea r8, [rel str_gfx_priority]
+    mov r9d, COL_RUNNING
+    jmp .gdso_draw_sched
+.gdso_rr_label:
+    lea r8, [rel str_gfx_roundrobin]
+    mov r9d, 0x00FF9900
+.gdso_draw_sched:
+    mov ecx, ebx
+    mov edx, GFX_STATS_Y + 3
+    mov dword [rsp + 32], COL_STATS_BG
+    call fb_draw_string
+%endif
+
+    ; fb_flip()
+    call fb_flip
+
+    ; fb_cursor_draw()
+    call fb_cursor_draw
+
+    add rsp, 40
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+%endif  ; GRAPHICS_MODE
+
+; ============================================================
+; DRAW_FULL — Top-level draw dispatcher (Phase D Step 7c)
+;
+; void draw_full(void)
+; Graphics mode → gfx_draw_full(), text mode → draw_* sequence + cmdline
+;
+; Stack: push rbp + 3 pushes (rbx,rsi,rdi) + sub rsp 72
+;   = 8 + 24 + 72 = 104 bytes... wait: 8+3*8=32 after pushes.
+;   32%16=0. After sub rsp 72: 32+72=104. 104%16=8. Not aligned.
+;   Fix: sub rsp 80: 32+80=112. 112%16=0. ✓
+;   cmdbuf[64] at [rsp+32..95]
+; ============================================================
+
+draw_full:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    sub rsp, 80
+
+%ifdef GRAPHICS_MODE
+    cmp dword [rel fb_active], 0
+    je .df_text_mode
+
+    call gfx_draw_full
+    jmp .df_done
+
+.df_text_mode:
+%endif
+
+    ; Text mode path: sequential draw calls
+    call draw_banner
+    call draw_stats
+    call draw_legend
+    call draw_process_table
+    call draw_summary
+    call draw_log
+
+%ifdef KERNEL_MODE
+    ; Command line (VGA text mode)
+    mov eax, dword [rel input_ctl_eid]
+    test eax, eax
+    js .df_done
+
+    ; mode = herb_entity_prop_int(input_ctl_eid, "mode", 0)
+    mov ecx, eax
+    lea rdx, [rel str_mode]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov esi, eax                ; esi = mode
+
+    ; vga_set_color(VGA_LGRAY, VGA_BLACK)
+    mov ecx, 0x7                ; VGA_LGRAY
+    xor edx, edx               ; VGA_BLACK
+    call vga_set_color
+
+    ; vga_clear_row(ROW_ERROR=24)
+    mov ecx, 24
+    call vga_clear_row
+
+    cmp esi, 1
+    jne .df_cmd_hint
+
+    ; Text mode: read cmdline
+    lea rcx, [rsp + 32]        ; cmdbuf
+    mov edx, 64
+    call read_cmdline
+    mov ebx, eax                ; ebx = clen
+
+    ; vga_set_color(VGA_LGREEN, VGA_BLACK)
+    mov ecx, 0xA                ; VGA_LGREEN
+    xor edx, edx
+    call vga_set_color
+
+    ; vga_print_at(ROW_ERROR, 0, ":")
+    mov ecx, 24
+    xor edx, edx
+    lea r8, [rel str_vga_colon]
+    call vga_print_at
+
+    ; vga_set_color(VGA_WHITE, VGA_BLACK)
+    mov ecx, 0xF                ; VGA_WHITE
+    xor edx, edx
+    call vga_set_color
+
+    ; if clen > 0: vga_print(cmdbuf)
+    test ebx, ebx
+    jle .df_cmd_cursor
+
+    lea rcx, [rsp + 32]
+    call vga_print
+
+.df_cmd_cursor:
+    ; vga_set_color(VGA_LGREEN, VGA_BLACK)
+    mov ecx, 0xA
+    xor edx, edx
+    call vga_set_color
+
+    ; vga_putchar('_')
+    mov ecx, '_'
+    call vga_putchar
+    jmp .df_done
+
+.df_cmd_hint:
+    ; vga_set_color(VGA_DGRAY, VGA_BLACK)
+    mov ecx, 0x8                ; VGA_DGRAY
+    xor edx, edx
+    call vga_set_color
+
+    ; vga_print_at(ROW_ERROR, 0, "/ to type command")
+    mov ecx, 24
+    xor edx, edx
+    lea r8, [rel str_vga_slash_cmd]
+    call vga_print_at
+%endif  ; KERNEL_MODE
+
+.df_done:
+    add rsp, 80
     pop rdi
     pop rsi
     pop rbx
