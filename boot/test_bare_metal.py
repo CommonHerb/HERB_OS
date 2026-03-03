@@ -297,23 +297,23 @@ def run_tests(image_path):
         print(f"  Mode detected: {mode_str}")
 
         # ============================================================
-        # In-Kernel Compiler Tests (boot-time)
-        # The compiler tests run during boot before interactive mode.
-        # Check that all 7 fragment programs compiled byte-identically.
+        # Boot-Time Compilation Tests
+        # The in-kernel compiler compiles all .herb source at boot.
+        # Check that all 8 programs compiled successfully.
         # ============================================================
         print("\n" + "=" * 60)
-        print("In-Kernel Compiler Tests")
+        print("Boot-Time Compilation Tests")
         print("=" * 60)
 
         serial_so_far = t.get_serial()
         compiler_programs = [
-            "schedule_priority", "schedule_roundrobin",
-            "worker", "producer", "consumer", "beacon", "shell"
+            "interactive_kernel", "shell", "producer", "consumer",
+            "worker", "beacon", "schedule_priority", "schedule_roundrobin"
         ]
         for prog in compiler_programs:
-            pattern = rf"\[COMPILER PASS\] {prog} byte-identical"
+            pattern = rf"\[COMPILE\] {prog}: \d+ bytes"
             m_comp = re.search(pattern, serial_so_far)
-            t.check(f"Compiler: {prog} byte-identical", m_comp is not None)
+            t.check(f"Boot compile: {prog} succeeded", m_comp is not None)
 
         # Wait for interrupts to be set up
         time.sleep(1)

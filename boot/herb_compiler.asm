@@ -33,14 +33,25 @@ global herb_compile_source
 ; COMPILER CONSTANTS
 ; ============================================================
 
-%define COMP_MAX_STRINGS     512
+%define COMP_MAX_STRINGS     1024
 %define COMP_MAX_STR_LEN     128
-%define COMP_MAX_EXPRS       512
+%define COMP_MAX_EXPRS       1024
 %define COMP_MAX_TENSIONS    64
 %define COMP_MAX_MATCHES     8
 %define COMP_MAX_EMITS       8
-%define COMP_LINE_BUF_SIZE   256
-%define COMP_TOK_BUF_SIZE    128
+%define COMP_LINE_BUF_SIZE   512
+%define COMP_TOK_BUF_SIZE    256
+
+; Full program IR capacities
+%define COMP_MAX_ENTITY_TYPES  32
+%define COMP_MAX_SCOPED_PER_ET 12
+%define COMP_MAX_CONTAINERS    64
+%define COMP_MAX_MOVES         32
+%define COMP_MAX_MOVE_LOCS     20
+%define COMP_MAX_ENTITIES      256
+%define COMP_MAX_PROPS_PER_ENT 16
+%define COMP_MAX_CHANNELS      4
+%define COMP_MAX_PROPS_TOTAL   4096
 
 ; Binary format section tags
 %define BSEC_ENTITY_TYPES  0x01
@@ -71,16 +82,23 @@ global herb_compile_source
 ; Binary match kinds
 %define BMC_ENTITY_IN       0x00
 %define BMC_EMPTY_IN        0x01
+%define BMC_CONTAINER_IS    0x02
+%define BMC_GUARD           0x03
 
 ; Binary emit kinds
 %define BEC_MOVE            0x00
 %define BEC_SET             0x01
 %define BEC_SEND            0x02
+%define BEC_RECEIVE         0x03
 
 ; Binary ref kinds
 %define BREF_NORMAL         0x00
 %define BREF_SCOPED         0x01
 %define BREF_NONE           0x02
+
+; Container kinds
+%define BCK_SIMPLE          0x00
+%define BCK_SLOT            0x01
 
 ; Select modes
 %define BSEL_FIRST          0
@@ -106,7 +124,7 @@ global herb_compile_source
 %define CIREX_COUNT         3
 
 ; Compiler IR match clause (80 bytes)
-%define CIR_MC_KIND         0       ; 0=entity_in, 1=empty_in
+%define CIR_MC_KIND         0       ; 0=entity_in, 1=empty_in, 3=guard
 %define CIR_MC_BIND         4       ; parse string idx
 %define CIR_MC_CONTAINER    8       ; parse string idx (for entity_in)
 %define CIR_MC_SELECT       12      ; select mode
@@ -117,14 +135,18 @@ global herb_compile_source
 %define CIR_MC_EMPTY_CNTS   32      ; int[8] — parse string indices for empty_in containers
 %define CIR_MC_EMPTY_CNT_N  64      ; count of empty_in containers
 %define CIR_MC_REQUIRED     68      ; 1=required, 0=optional
+%define CIR_MC_IN_TYPE      72      ; 0=normal, 1=scoped, 2=channel
+%define CIR_MC_SCOPE        76      ; parse string idx for scope (scoped refs)
 %define SIZEOF_CIR_MATCH    80
 
 ; Compiler IR emit clause (48 bytes)
-%define CIR_EC_KIND         0       ; 0=move, 1=set, 2=send
-%define CIR_EC_STR1         4       ; move_name / entity(set) / channel(send)
-%define CIR_EC_STR2         8       ; entity(move) / property(set) / entity(send)
-%define CIR_EC_STR3         12      ; to_target(move) / unused
+%define CIR_EC_KIND         0       ; 0=move, 1=set, 2=send, 3=receive
+%define CIR_EC_STR1         4       ; move_name / entity(set) / channel(send/recv)
+%define CIR_EC_STR2         8       ; entity(move) / property(set) / entity(send/recv)
+%define CIR_EC_STR3         12      ; to_target(move/recv) / unused
 %define CIR_EC_EXPR         16      ; value expr idx (for set)
+%define CIR_EC_TO_KIND      20      ; 0=normal, 1=scoped
+%define CIR_EC_SCOPE        24      ; scope string idx for scoped to-ref
 %define SIZEOF_CIR_EMIT     48
 
 ; Compiler IR tension (size = 24 + MATCHES*80 + 4 + EMITS*48 + 4 = 1000)
@@ -135,6 +157,52 @@ global herb_compile_source
 %define CIR_TEN_EMIT_COUNT  652     ; int (12 + 8*80)
 %define CIR_TEN_EMITS       656     ; CIR_EMIT[8] = 384 bytes
 %define SIZEOF_CIR_TENSION  1040    ; 656 + 384
+
+; Entity type IR layout
+%define CIR_ET_NAME          0
+%define CIR_ET_SCOPED_COUNT  4
+%define CIR_ET_SCOPED        8      ; array of (name:4, kind:4, etype:4) = 12 bytes each
+%define SIZEOF_CIR_ET_SCOPED 12
+%define SIZEOF_CIR_ET        152    ; 8 + 12*12
+
+; Container IR layout
+%define CIR_CT_NAME          0
+%define CIR_CT_KIND          4
+%define CIR_CT_ETYPE         8
+%define SIZEOF_CIR_CT        12
+
+; Move IR layout
+%define CIR_MV_NAME          0
+%define CIR_MV_ETYPE         4
+%define CIR_MV_IS_SCOPED     8
+%define CIR_MV_FROM_COUNT    12
+%define CIR_MV_FROM          16     ; 20 * 4 = 80 bytes
+%define CIR_MV_TO_COUNT      96
+%define CIR_MV_TO            100    ; 20 * 4 = 80 bytes
+%define SIZEOF_CIR_MV        180
+
+; Entity IR layout
+%define CIR_EN_NAME          0
+%define CIR_EN_TYPE          4
+%define CIR_EN_IN_KIND       8      ; 0=normal, 1=scoped
+%define CIR_EN_IN_CONTAINER  12
+%define CIR_EN_IN_SCOPE      16
+%define CIR_EN_PROP_COUNT    20
+%define CIR_EN_PROP_START    24     ; index into property pool
+%define SIZEOF_CIR_EN        28
+
+; Property pool entry layout
+%define CIR_PR_KEY           0
+%define CIR_PR_VTYPE         4      ; 0=int, 1=float, 2=string
+%define CIR_PR_VALUE         8      ; i64 / f64 / parse string idx
+%define SIZEOF_CIR_PR        16
+
+; Channel IR layout
+%define CIR_CH_NAME          0
+%define CIR_CH_FROM          4
+%define CIR_CH_TO            8
+%define CIR_CH_ETYPE         12
+%define SIZEOF_CIR_CH        16
 
 ; ============================================================
 ; BSS — Compiler-internal data (no runtime state modified)
@@ -160,6 +228,33 @@ comp_expr_count:     resd 1
 ; Tension IR array
 comp_tensions:       resb COMP_MAX_TENSIONS * SIZEOF_CIR_TENSION
 comp_ten_count:      resd 1
+
+; Entity type IR array
+comp_entity_types:   resb COMP_MAX_ENTITY_TYPES * SIZEOF_CIR_ET
+comp_et_count:       resd 1
+
+; Container IR array
+comp_containers:     resb COMP_MAX_CONTAINERS * SIZEOF_CIR_CT
+comp_cont_count:     resd 1
+
+; Move IR array
+comp_moves:          resb COMP_MAX_MOVES * SIZEOF_CIR_MV
+comp_move_count:     resd 1
+
+; Entity IR array
+comp_entities:       resb COMP_MAX_ENTITIES * SIZEOF_CIR_EN
+comp_ent_count:      resd 1
+
+; Property pool
+comp_properties:     resb COMP_MAX_PROPS_TOTAL * SIZEOF_CIR_PR
+comp_prop_count:     resd 1
+
+; Channel IR array
+comp_channels:       resb COMP_MAX_CHANNELS * SIZEOF_CIR_CH
+comp_chan_count:      resd 1
+
+; Config
+comp_config_nesting: resd 1
 
 ; Output buffer tracking
 comp_out_ptr:        resq 1
@@ -204,6 +299,21 @@ kw_send:       db "send", 0
 kw_to:         db "to", 0
 kw_guard:      db "guard", 0
 kw_count:      db "count", 0
+kw_type:       db "type", 0
+kw_container:  db "container", 0
+kw_simple:     db "simple", 0
+kw_slot:       db "slot", 0
+kw_entity:     db "entity", 0
+kw_prop:       db "prop", 0
+kw_channel:    db "channel", 0
+kw_config:     db "config", 0
+kw_scoped:     db "scoped", 0
+kw_scope:      db "scope", 0
+kw_from:       db "from", 0
+kw_receive:    db "receive", 0
+kw_scoped_from: db "scoped_from", 0
+kw_scoped_to:  db "scoped_to", 0
+kw_max_nesting_depth: db "max_nesting_depth", 0
 
 ; Operator strings for binary format (source → binary mapping)
 op_and_src:    db "&&", 0
@@ -286,6 +396,15 @@ comp_reset:
     mov     dword [comp_out_str_count], 0
     mov     dword [comp_expr_count], 0
     mov     dword [comp_ten_count], 0
+
+    ; Zero new IR counters
+    mov     dword [comp_et_count], 0
+    mov     dword [comp_cont_count], 0
+    mov     dword [comp_move_count], 0
+    mov     dword [comp_ent_count], 0
+    mov     dword [comp_prop_count], 0
+    mov     dword [comp_chan_count], 0
+    mov     dword [comp_config_nesting], -1
 
     ; Zero idx map
     lea     rcx, [comp_idx_map]
@@ -404,6 +523,11 @@ comp_str_get:
 ; Returns: EAX = output string index
 ; ============================================================
 comp_out_str_add:
+    ; Skip None strings (parse idx -1)
+    cmp     ecx, -1
+    jne     .osa_start
+    ret
+.osa_start:
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -801,6 +925,12 @@ comp_next_token:
     jmp     .cnt_skip_ws
 
 .cnt_start:
+    ; Check for quoted string
+    lea     rax, [comp_line_buf]
+    movzx   ecx, byte [rax + rbx]
+    cmp     cl, '"'
+    je      .cnt_quoted
+
     ; Copy token to comp_tok_buf
     xor     edx, edx            ; edx = tok len
 .cnt_copy_tok:
@@ -825,6 +955,32 @@ comp_next_token:
     lea     rax, [comp_tok_buf]
     mov     byte [rax + rdx], 0
     ; Return: RAX=tok_ptr, EDX=tok_len, ECX=new_pos
+    mov     ecx, ebx
+    jmp     .cnt_done
+
+.cnt_quoted:
+    ; Skip opening quote
+    inc     ebx
+    xor     edx, edx            ; tok len
+.cnt_quoted_copy:
+    cmp     ebx, esi
+    jge     .cnt_quoted_done
+    lea     rax, [comp_line_buf]
+    movzx   ecx, byte [rax + rbx]
+    cmp     cl, '"'
+    je      .cnt_quoted_end
+    cmp     edx, COMP_TOK_BUF_SIZE - 1
+    jge     .cnt_quoted_end
+    lea     rax, [comp_tok_buf]
+    mov     [rax + rdx], cl
+    inc     edx
+    inc     ebx
+    jmp     .cnt_quoted_copy
+.cnt_quoted_end:
+    inc     ebx                 ; skip closing quote
+.cnt_quoted_done:
+    lea     rax, [comp_tok_buf]
+    mov     byte [rax + rdx], 0
     mov     ecx, ebx
     jmp     .cnt_done
 
@@ -1455,10 +1611,79 @@ comp_parse_program:
     lea     rdx, [kw_tension]
     call    comp_token_eq
     test    eax, eax
-    jz      .cpp_loop
+    jnz     .cpp_tension
 
-    ; Parse this tension
+    ; Check "type"
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_type]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpp_type
+
+    ; Check "container"
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_container]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpp_container
+
+    ; Check "move"
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_move]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpp_move
+
+    ; Check "entity"
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_entity]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpp_entity
+
+    ; Check "channel"
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_channel]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpp_channel
+
+    ; Check "config"
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_config]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpp_config
+
+    ; Unknown keyword — skip
+    jmp     .cpp_loop
+
+.cpp_tension:
     call    comp_parse_tension
+    jmp     .cpp_loop
+
+.cpp_type:
+    call    comp_parse_type
+    jmp     .cpp_loop
+
+.cpp_container:
+    call    comp_parse_container_decl
+    jmp     .cpp_loop
+
+.cpp_move:
+    call    comp_parse_move
+    jmp     .cpp_loop
+
+.cpp_entity:
+    call    comp_parse_entity
+    jmp     .cpp_loop
+
+.cpp_channel:
+    call    comp_parse_channel
+    jmp     .cpp_loop
+
+.cpp_config:
+    call    comp_parse_config
     jmp     .cpp_loop
 
 .cpp_done:
@@ -1577,6 +1802,13 @@ comp_parse_tension:
     test    eax, eax
     jnz     .cpt_parse_emit
 
+    ; Check "guard"
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_guard]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpt_parse_guard
+
     ; Unknown keyword at indent 1 — skip
     jmp     .cpt_body_loop
 
@@ -1588,6 +1820,11 @@ comp_parse_tension:
 .cpt_parse_emit:
     mov     rcx, r13            ; tension ptr
     call    comp_parse_emit_clause
+    jmp     .cpt_body_loop
+
+.cpt_parse_guard:
+    mov     rcx, r13            ; tension ptr
+    call    comp_parse_guard_clause
     jmp     .cpt_body_loop
 
 .cpt_unread_line:
@@ -1687,15 +1924,60 @@ comp_parse_match_clause:
 
     ; Assume "in" — parse entity_in match
     mov     dword [r12 + CIR_MC_KIND], 0        ; entity_in
+    mov     dword [r12 + CIR_MC_IN_TYPE], 0     ; normal by default
 
-    ; Token: <container>
+    ; Token: <container> or "scoped" or "channel"
     mov     ecx, ebx
     call    comp_next_token
     test    rax, rax
     jz      .cpmc_check_where
     mov     ebx, ecx
+
+    ; Check for "scoped"
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_scoped]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpmc_scoped_in
+
+    ; Check for "channel"
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_channel]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpmc_channel_in
+
+    ; Normal container ref
     call    comp_tok_to_str
     mov     [r12 + CIR_MC_CONTAINER], eax
+    jmp     .cpmc_opts
+
+.cpmc_scoped_in:
+    ; match <bind> in scoped <scope> <container>
+    mov     dword [r12 + CIR_MC_IN_TYPE], 1     ; scoped
+    ; Parse scope name
+    mov     ecx, ebx
+    call    comp_next_token
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r12 + CIR_MC_SCOPE], eax
+    ; Parse container name
+    mov     ecx, ebx
+    call    comp_next_token
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r12 + CIR_MC_CONTAINER], eax
+    jmp     .cpmc_opts
+
+.cpmc_channel_in:
+    ; match <bind> in channel <channel_name>
+    mov     dword [r12 + CIR_MC_IN_TYPE], 2     ; channel
+    ; Parse channel name
+    mov     ecx, ebx
+    call    comp_next_token
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r12 + CIR_MC_CONTAINER], eax        ; reuse CONTAINER field
 
     ; Parse optional: select, optional
 .cpmc_opts:
@@ -1936,11 +2218,18 @@ comp_parse_emit_clause:
     test    eax, eax
     jnz     .cpec_send
 
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_receive]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpec_receive
+
     jmp     .cpec_done
 
 .cpec_move:
-    ; emit move <move_name> <entity> to <target>
+    ; emit move <move_name> <entity> to [scoped <scope>] <target>
     mov     dword [r12 + CIR_EC_KIND], BEC_MOVE
+    mov     dword [r12 + CIR_EC_TO_KIND], 0     ; normal by default
 
     ; <move_name>
     mov     ecx, ebx
@@ -1961,7 +2250,33 @@ comp_parse_emit_clause:
     call    comp_next_token
     mov     ebx, ecx
 
-    ; <target>
+    ; Check for "scoped" after "to"
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpec_done
+    mov     ebx, ecx
+
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_scoped]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpec_move_scoped
+
+    ; Normal target
+    call    comp_tok_to_str
+    mov     [r12 + CIR_EC_STR3], eax
+    jmp     .cpec_done
+
+.cpec_move_scoped:
+    mov     dword [r12 + CIR_EC_TO_KIND], 1     ; scoped
+    ; <scope>
+    mov     ecx, ebx
+    call    comp_next_token
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r12 + CIR_EC_SCOPE], eax
+    ; <container>
     mov     ecx, ebx
     call    comp_next_token
     mov     ebx, ecx
@@ -2010,6 +2325,64 @@ comp_parse_emit_clause:
     mov     ebx, ecx
     call    comp_tok_to_str
     mov     [r12 + CIR_EC_STR2], eax
+    jmp     .cpec_done
+
+.cpec_receive:
+    ; emit receive <channel> <entity> to [scoped <scope>] <container>
+    mov     dword [r12 + CIR_EC_KIND], BEC_RECEIVE
+    mov     dword [r12 + CIR_EC_TO_KIND], 0
+
+    ; <channel>
+    mov     ecx, ebx
+    call    comp_next_token
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r12 + CIR_EC_STR1], eax
+
+    ; <entity>
+    mov     ecx, ebx
+    call    comp_next_token
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r12 + CIR_EC_STR2], eax
+
+    ; "to"
+    mov     ecx, ebx
+    call    comp_next_token
+    mov     ebx, ecx
+
+    ; Check for "scoped" after "to"
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpec_done
+    mov     ebx, ecx
+
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_scoped]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpec_recv_scoped
+
+    ; Normal target
+    call    comp_tok_to_str
+    mov     [r12 + CIR_EC_STR3], eax
+    jmp     .cpec_done
+
+.cpec_recv_scoped:
+    mov     dword [r12 + CIR_EC_TO_KIND], 1
+    ; <scope>
+    mov     ecx, ebx
+    call    comp_next_token
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r12 + CIR_EC_SCOPE], eax
+    ; <container>
+    mov     ecx, ebx
+    call    comp_next_token
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r12 + CIR_EC_STR3], eax
 
 .cpec_done:
     add     rsp, 48
@@ -2018,6 +2391,755 @@ comp_parse_emit_clause:
     pop     r12
     pop     rdi
     pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+
+; ============================================================
+; comp_parse_guard_clause(ten_ptr in RCX) — parse guard as match
+; ============================================================
+comp_parse_guard_clause:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 40
+    ; ret(8)+rbp(8)+5*push(40)+sub(40)=96, 96%16=0 ✓
+
+    mov     r13, rcx            ; tension ptr
+
+    ; Allocate match slot
+    mov     eax, [r13 + CIR_TEN_MATCH_COUNT]
+    cmp     eax, COMP_MAX_MATCHES
+    jge     .cpgc_done
+    mov     r14d, eax
+    inc     dword [r13 + CIR_TEN_MATCH_COUNT]
+
+    ; Compute match IR pointer
+    imul    eax, r14d, SIZEOF_CIR_MATCH
+    lea     r12, [r13 + CIR_TEN_MATCHES + rax]
+
+    ; Zero it
+    mov     rcx, r12
+    xor     edx, edx
+    mov     r8d, SIZEOF_CIR_MATCH
+    call    herb_memset
+
+    ; Set kind = guard (3)
+    mov     dword [r12 + CIR_MC_KIND], BMC_GUARD
+
+    ; Re-tokenize to get past "guard"
+    xor     ecx, ecx
+    call    comp_next_token     ; skip "guard"
+    ; Parse rest of line as expression
+    mov     ecx, ecx            ; pos after "guard"
+    call    comp_parse_expr
+    mov     [r12 + CIR_MC_WHERE_EXPR], eax
+    mov     dword [r12 + CIR_MC_HAS_WHERE], 1
+
+.cpgc_done:
+    add     rsp, 40
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+
+; ============================================================
+; comp_parse_type — parse: type <name> [scope sub-lines]
+; ============================================================
+comp_parse_type:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    push    r13
+    sub     rsp, 40
+    ; ret(8)+rbp(8)+5*push(40)+sub(40)=96, 96%16=0 ✓
+
+    ; Allocate entity type slot
+    mov     eax, [comp_et_count]
+    cmp     eax, COMP_MAX_ENTITY_TYPES
+    jge     .cpty_done
+    mov     r12d, eax
+    inc     dword [comp_et_count]
+
+    ; Compute pointer
+    imul    eax, r12d, SIZEOF_CIR_ET
+    lea     r13, [comp_entity_types + rax]
+
+    ; Zero it
+    mov     rcx, r13
+    xor     edx, edx
+    mov     r8d, SIZEOF_CIR_ET
+    call    herb_memset
+
+    ; Re-tokenize: skip "type", get name
+    xor     ecx, ecx
+    call    comp_next_token     ; skip "type"
+    mov     ebx, ecx
+    mov     ecx, ebx
+    call    comp_next_token     ; <name>
+    test    rax, rax
+    jz      .cpty_done
+    call    comp_tok_to_str
+    mov     [r13 + CIR_ET_NAME], eax
+
+    ; Parse scope sub-lines
+.cpty_scope_loop:
+    mov     esi, [comp_src_pos]
+    call    comp_next_line
+    test    eax, eax
+    jz      .cpty_done
+
+    cmp     dword [comp_line_indent], 0
+    je      .cpty_unread
+
+    cmp     dword [comp_line_indent], 1
+    jne     .cpty_scope_loop
+
+    ; Check "scope"
+    xor     ecx, ecx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpty_scope_loop
+
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_scope]
+    call    comp_token_eq
+    test    eax, eax
+    jz      .cpty_scope_loop    ; unknown sub-keyword, skip
+
+    ; Parse: scope <name> <kind> <entity_type>
+    ; Re-tokenize from start
+    xor     ecx, ecx
+    call    comp_next_token     ; skip "scope"
+    mov     ebx, ecx
+
+    ; <scope_name>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpty_scope_loop
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     edi, eax            ; edi = scope name str idx
+
+    ; <kind>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpty_scope_loop
+    mov     ebx, ecx
+    ; Check "slot" vs "simple"
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_slot]
+    call    comp_token_eq
+    ; eax=1 if slot, 0 if not
+    mov     [rsp+32], eax           ; save kind to stack (edx gets clobbered)
+
+    ; <entity_type>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpty_scope_loop
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    ; eax = entity_type str idx
+
+    ; Store in scoped array
+    mov     ecx, [r13 + CIR_ET_SCOPED_COUNT]
+    cmp     ecx, COMP_MAX_SCOPED_PER_ET
+    jge     .cpty_scope_loop
+
+    mov     edx, [rsp+32]              ; restore kind
+    imul    ecx, ecx, SIZEOF_CIR_ET_SCOPED
+    add     ecx, CIR_ET_SCOPED
+    mov     [r13 + rcx], edi        ; name
+    mov     [r13 + rcx + 4], edx    ; kind
+    mov     [r13 + rcx + 8], eax    ; entity_type
+    inc     dword [r13 + CIR_ET_SCOPED_COUNT]
+    jmp     .cpty_scope_loop
+
+.cpty_unread:
+    mov     [comp_src_pos], esi
+.cpty_done:
+    add     rsp, 40
+    pop     r13
+    pop     r12
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+
+; ============================================================
+; comp_parse_container_decl — parse: container <name> <kind> <etype>
+; ============================================================
+comp_parse_container_decl:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    r12
+    push    r13
+    sub     rsp, 32
+    ; ret(8)+rbp(8)+4*push(32)+sub(32)=80, 80%16=0 ✓
+
+    ; Allocate container slot
+    mov     eax, [comp_cont_count]
+    cmp     eax, COMP_MAX_CONTAINERS
+    jge     .cpcd_done
+    mov     r12d, eax
+    inc     dword [comp_cont_count]
+
+    imul    eax, r12d, SIZEOF_CIR_CT
+    lea     r13, [comp_containers + rax]
+
+    ; Re-tokenize: skip "container"
+    xor     ecx, ecx
+    call    comp_next_token
+    mov     ebx, ecx
+
+    ; <name>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpcd_done
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r13 + CIR_CT_NAME], eax
+
+    ; <kind> ("simple" or "slot")
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpcd_done
+    mov     ebx, ecx
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_slot]
+    call    comp_token_eq
+    mov     [r13 + CIR_CT_KIND], eax
+
+    ; <entity_type>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpcd_done
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r13 + CIR_CT_ETYPE], eax
+
+.cpcd_done:
+    add     rsp, 32
+    pop     r13
+    pop     r12
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+
+; ============================================================
+; comp_parse_move — parse: move <name> <etype> from/scoped_from ...
+; ============================================================
+comp_parse_move:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 48
+    ; ret(8)+rbp(8)+6*push(48)+sub(48)=112, 112%16=0 ✓
+
+    ; Allocate move slot
+    mov     eax, [comp_move_count]
+    cmp     eax, COMP_MAX_MOVES
+    jge     .cpmv_done
+    mov     r12d, eax
+    inc     dword [comp_move_count]
+
+    imul    eax, r12d, SIZEOF_CIR_MV
+    lea     r13, [comp_moves + rax]
+
+    ; Zero it
+    mov     rcx, r13
+    xor     edx, edx
+    mov     r8d, SIZEOF_CIR_MV
+    call    herb_memset
+
+    ; Re-tokenize: skip "move"
+    xor     ecx, ecx
+    call    comp_next_token
+    mov     ebx, ecx
+
+    ; <name>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpmv_done
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r13 + CIR_MV_NAME], eax
+
+    ; <entity_type>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpmv_done
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r13 + CIR_MV_ETYPE], eax
+
+    ; "from" or "scoped_from"
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpmv_done
+    mov     ebx, ecx
+
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_scoped_from]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpmv_scoped
+
+    ; Normal: from <locs> to <locs>
+    mov     dword [r13 + CIR_MV_IS_SCOPED], 0
+
+    ; Parse from locations until "to"
+    xor     edi, edi            ; from count
+.cpmv_from_loop:
+    mov     esi, ebx
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpmv_from_done
+    mov     ebx, ecx
+
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_to]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpmv_from_done_to
+
+    ; It's a from location
+    call    comp_tok_to_str
+    cmp     edi, COMP_MAX_MOVE_LOCS
+    jge     .cpmv_from_loop
+    mov     [r13 + CIR_MV_FROM + rdi*4], eax
+    inc     edi
+    jmp     .cpmv_from_loop
+
+.cpmv_from_done_to:
+    mov     [r13 + CIR_MV_FROM_COUNT], edi
+    ; Parse to locations
+    xor     edi, edi
+.cpmv_to_loop:
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpmv_to_done
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    cmp     edi, COMP_MAX_MOVE_LOCS
+    jge     .cpmv_to_loop
+    mov     [r13 + CIR_MV_TO + rdi*4], eax
+    inc     edi
+    jmp     .cpmv_to_loop
+
+.cpmv_to_done:
+    mov     [r13 + CIR_MV_TO_COUNT], edi
+    jmp     .cpmv_done
+
+.cpmv_from_done:
+    mov     [r13 + CIR_MV_FROM_COUNT], edi
+    jmp     .cpmv_done
+
+.cpmv_scoped:
+    ; scoped_from <locs> scoped_to <locs>
+    mov     dword [r13 + CIR_MV_IS_SCOPED], 1
+
+    xor     edi, edi
+.cpmv_sfrom_loop:
+    mov     esi, ebx
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpmv_sfrom_done
+    mov     ebx, ecx
+
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_scoped_to]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpmv_sfrom_done_to
+
+    call    comp_tok_to_str
+    cmp     edi, COMP_MAX_MOVE_LOCS
+    jge     .cpmv_sfrom_loop
+    mov     [r13 + CIR_MV_FROM + rdi*4], eax
+    inc     edi
+    jmp     .cpmv_sfrom_loop
+
+.cpmv_sfrom_done_to:
+    mov     [r13 + CIR_MV_FROM_COUNT], edi
+    xor     edi, edi
+.cpmv_sto_loop:
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpmv_sto_done
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    cmp     edi, COMP_MAX_MOVE_LOCS
+    jge     .cpmv_sto_loop
+    mov     [r13 + CIR_MV_TO + rdi*4], eax
+    inc     edi
+    jmp     .cpmv_sto_loop
+
+.cpmv_sto_done:
+    mov     [r13 + CIR_MV_TO_COUNT], edi
+    jmp     .cpmv_done
+
+.cpmv_sfrom_done:
+    mov     [r13 + CIR_MV_FROM_COUNT], edi
+
+.cpmv_done:
+    add     rsp, 48
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+
+; ============================================================
+; comp_parse_entity — parse entity with optional prop sub-lines
+; ============================================================
+comp_parse_entity:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 48
+    ; ret(8)+rbp(8)+6*push(48)+sub(48)=112, 112%16=0 ✓
+
+    ; Allocate entity slot
+    mov     eax, [comp_ent_count]
+    cmp     eax, COMP_MAX_ENTITIES
+    jge     .cpen_done
+    mov     r12d, eax
+    inc     dword [comp_ent_count]
+
+    imul    eax, r12d, SIZEOF_CIR_EN
+    lea     r13, [comp_entities + rax]
+
+    ; Zero it
+    mov     rcx, r13
+    xor     edx, edx
+    mov     r8d, SIZEOF_CIR_EN
+    call    herb_memset
+
+    ; Set prop_start to current prop_count
+    mov     eax, [comp_prop_count]
+    mov     [r13 + CIR_EN_PROP_START], eax
+    mov     dword [r13 + CIR_EN_PROP_COUNT], 0
+
+    ; Re-tokenize: skip "entity"
+    xor     ecx, ecx
+    call    comp_next_token
+    mov     ebx, ecx
+
+    ; <name>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpen_done
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r13 + CIR_EN_NAME], eax
+
+    ; <type>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpen_done
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r13 + CIR_EN_TYPE], eax
+
+    ; "in"
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpen_done
+    mov     ebx, ecx
+
+    ; Check for "scoped" after "in"
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpen_done
+    mov     ebx, ecx
+
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_scoped]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpen_scoped
+
+    ; Normal in-spec
+    mov     dword [r13 + CIR_EN_IN_KIND], 0
+    call    comp_tok_to_str
+    mov     [r13 + CIR_EN_IN_CONTAINER], eax
+    jmp     .cpen_props
+
+.cpen_scoped:
+    mov     dword [r13 + CIR_EN_IN_KIND], 1
+    ; <scope>
+    mov     ecx, ebx
+    call    comp_next_token
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r13 + CIR_EN_IN_SCOPE], eax
+    ; <container>
+    mov     ecx, ebx
+    call    comp_next_token
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r13 + CIR_EN_IN_CONTAINER], eax
+
+.cpen_props:
+    ; Parse prop sub-lines
+    mov     esi, [comp_src_pos]
+    call    comp_next_line
+    test    eax, eax
+    jz      .cpen_done
+
+    cmp     dword [comp_line_indent], 0
+    je      .cpen_unread
+
+    cmp     dword [comp_line_indent], 1
+    jne     .cpen_props
+
+    ; Check "prop"
+    xor     ecx, ecx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpen_props
+
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_prop]
+    call    comp_token_eq
+    test    eax, eax
+    jz      .cpen_unread        ; unknown sub-keyword
+
+    ; Parse: prop <key> <value>
+    xor     ecx, ecx
+    call    comp_next_token     ; skip "prop"
+    mov     ebx, ecx
+
+    ; <key>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpen_props
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     edi, eax            ; edi = key str idx
+
+    ; <value> — detect type
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpen_props
+    mov     ebx, ecx
+
+    ; Allocate property slot
+    mov     eax, [comp_prop_count]
+    cmp     eax, COMP_MAX_PROPS_TOTAL
+    jge     .cpen_props
+    mov     r14d, eax
+    inc     dword [comp_prop_count]
+    inc     dword [r13 + CIR_EN_PROP_COUNT]
+
+    imul    eax, r14d, SIZEOF_CIR_PR
+    lea     r14, [comp_properties + rax]
+
+    ; Store key
+    mov     [r14 + CIR_PR_KEY], edi
+
+    ; Detect value type: digit or '-' → int, else → string
+    lea     rcx, [comp_tok_buf]
+    movzx   eax, byte [rcx]
+    cmp     al, '-'
+    je      .cpen_prop_int
+    cmp     al, '0'
+    jl      .cpen_prop_str
+    cmp     al, '9'
+    jg      .cpen_prop_str
+
+.cpen_prop_int:
+    mov     dword [r14 + CIR_PR_VTYPE], 0       ; int
+    lea     rcx, [comp_tok_buf]
+    call    herb_atoll
+    mov     [r14 + CIR_PR_VALUE], rax
+    jmp     .cpen_props
+
+.cpen_prop_str:
+    mov     dword [r14 + CIR_PR_VTYPE], 2       ; string
+    call    comp_tok_to_str
+    mov     dword [r14 + CIR_PR_VALUE], eax
+    mov     dword [r14 + CIR_PR_VALUE + 4], 0
+    jmp     .cpen_props
+
+.cpen_unread:
+    mov     [comp_src_pos], esi
+.cpen_done:
+    add     rsp, 48
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+
+; ============================================================
+; comp_parse_channel — parse: channel <name> <from> <to> <etype>
+; ============================================================
+comp_parse_channel:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    r12
+    push    r13
+    sub     rsp, 32
+    ; ret(8)+rbp(8)+4*push(32)+sub(32)=80, 80%16=0 ✓
+
+    mov     eax, [comp_chan_count]
+    cmp     eax, COMP_MAX_CHANNELS
+    jge     .cpch_done
+    mov     r12d, eax
+    inc     dword [comp_chan_count]
+
+    imul    eax, r12d, SIZEOF_CIR_CH
+    lea     r13, [comp_channels + rax]
+
+    ; Re-tokenize: skip "channel"
+    xor     ecx, ecx
+    call    comp_next_token
+    mov     ebx, ecx
+
+    ; <name>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpch_done
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r13 + CIR_CH_NAME], eax
+
+    ; <from>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpch_done
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r13 + CIR_CH_FROM], eax
+
+    ; <to>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpch_done
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r13 + CIR_CH_TO], eax
+
+    ; <entity_type>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpch_done
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r13 + CIR_CH_ETYPE], eax
+
+.cpch_done:
+    add     rsp, 32
+    pop     r13
+    pop     r12
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+
+; ============================================================
+; comp_parse_config — parse: config max_nesting_depth <N>
+; ============================================================
+comp_parse_config:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 40
+    ; ret(8)+rbp(8)+push(8)+sub(40)=64, 64%16=0 ✓
+
+    ; Re-tokenize: skip "config"
+    xor     ecx, ecx
+    call    comp_next_token
+    mov     ebx, ecx
+
+    ; <key>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpcf_done
+    mov     ebx, ecx
+
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_max_nesting_depth]
+    call    comp_token_eq
+    test    eax, eax
+    jz      .cpcf_done
+
+    ; <value>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpcf_done
+    lea     rcx, [comp_tok_buf]
+    call    herb_atoll
+    mov     [comp_config_nesting], eax
+
+.cpcf_done:
+    add     rsp, 40
     pop     rbx
     pop     rbp
     ret
@@ -2043,57 +3165,221 @@ comp_collect_strings:
     sub     rsp, 40
     ; ret(8)+rbp(8)+7*push(56)+sub(40)=112, 112%16=0 ✓
 
-    ; For fragment programs, collect_strings walks:
-    ; 1. tensions[].name
-    ; 2. tensions[].match[] — via _collect_match_strings
-    ; 3. tensions[].emit[] — via _collect_emit_strings
-    ; (No entity_types, containers, moves, pools, transfers, channels, entities)
+    ; Full program walk order (matches Python collect_strings exactly):
+    ; 1. entity_types  2. containers  3. moves
+    ; 4. pools (empty) 5. transfers (empty) 6. channels
+    ; 7. tensions      8. entities
 
-    xor     r14d, r14d          ; r14d = tension index
+    ; === 1. Entity types ===
+    xor     r14d, r14d
+    mov     r15d, [comp_et_count]
+.ccs_et_loop:
+    cmp     r14d, r15d
+    jge     .ccs_et_done
+    imul    eax, r14d, SIZEOF_CIR_ET
+    lea     r13, [comp_entity_types + rax]
+    ; name
+    mov     ecx, [r13 + CIR_ET_NAME]
+    call    comp_out_str_add
+    ; scoped containers
+    xor     r12d, r12d
+    mov     ebx, [r13 + CIR_ET_SCOPED_COUNT]
+.ccs_et_sc_loop:
+    cmp     r12d, ebx
+    jge     .ccs_et_sc_done
+    imul    eax, r12d, SIZEOF_CIR_ET_SCOPED
+    ; scoped name (offset 0)
+    mov     ecx, [r13 + CIR_ET_SCOPED + rax]
+    call    comp_out_str_add
+    ; scoped entity_type (offset 8)
+    imul    eax, r12d, SIZEOF_CIR_ET_SCOPED
+    mov     ecx, [r13 + CIR_ET_SCOPED + rax + 8]
+    call    comp_out_str_add
+    inc     r12d
+    jmp     .ccs_et_sc_loop
+.ccs_et_sc_done:
+    inc     r14d
+    jmp     .ccs_et_loop
+.ccs_et_done:
+
+    ; === 2. Containers ===
+    xor     r14d, r14d
+    mov     r15d, [comp_cont_count]
+.ccs_ct_loop:
+    cmp     r14d, r15d
+    jge     .ccs_ct_done
+    imul    eax, r14d, SIZEOF_CIR_CT
+    lea     r13, [comp_containers + rax]
+    ; name
+    mov     ecx, [r13 + CIR_CT_NAME]
+    call    comp_out_str_add
+    ; entity_type
+    mov     ecx, [r13 + CIR_CT_ETYPE]
+    call    comp_out_str_add
+    inc     r14d
+    jmp     .ccs_ct_loop
+.ccs_ct_done:
+
+    ; === 3. Moves ===
+    xor     r14d, r14d
+    mov     r15d, [comp_move_count]
+.ccs_mv_loop:
+    cmp     r14d, r15d
+    jge     .ccs_mv_done
+    imul    eax, r14d, SIZEOF_CIR_MV
+    lea     r13, [comp_moves + rax]
+    ; name
+    mov     ecx, [r13 + CIR_MV_NAME]
+    call    comp_out_str_add
+    ; entity_type
+    mov     ecx, [r13 + CIR_MV_ETYPE]
+    call    comp_out_str_add
+    ; from locations
+    xor     r12d, r12d
+    mov     ebx, [r13 + CIR_MV_FROM_COUNT]
+.ccs_mv_from:
+    cmp     r12d, ebx
+    jge     .ccs_mv_from_done
+    mov     ecx, [r13 + CIR_MV_FROM + r12*4]
+    call    comp_out_str_add
+    inc     r12d
+    jmp     .ccs_mv_from
+.ccs_mv_from_done:
+    ; to locations
+    xor     r12d, r12d
+    mov     ebx, [r13 + CIR_MV_TO_COUNT]
+.ccs_mv_to:
+    cmp     r12d, ebx
+    jge     .ccs_mv_to_done
+    mov     ecx, [r13 + CIR_MV_TO + r12*4]
+    call    comp_out_str_add
+    inc     r12d
+    jmp     .ccs_mv_to
+.ccs_mv_to_done:
+    inc     r14d
+    jmp     .ccs_mv_loop
+.ccs_mv_done:
+
+    ; === 4. Pools (empty, skip) ===
+    ; === 5. Transfers (empty, skip) ===
+
+    ; === 6. Channels ===
+    xor     r14d, r14d
+    mov     r15d, [comp_chan_count]
+.ccs_ch_loop:
+    cmp     r14d, r15d
+    jge     .ccs_ch_done
+    imul    eax, r14d, SIZEOF_CIR_CH
+    lea     r13, [comp_channels + rax]
+    ; name, from, to, entity_type
+    mov     ecx, [r13 + CIR_CH_NAME]
+    call    comp_out_str_add
+    mov     ecx, [r13 + CIR_CH_FROM]
+    call    comp_out_str_add
+    mov     ecx, [r13 + CIR_CH_TO]
+    call    comp_out_str_add
+    mov     ecx, [r13 + CIR_CH_ETYPE]
+    call    comp_out_str_add
+    inc     r14d
+    jmp     .ccs_ch_loop
+.ccs_ch_done:
+
+    ; === 7. Tensions ===
+    xor     r14d, r14d
     mov     r15d, [comp_ten_count]
-
 .ccs_ten_loop:
     cmp     r14d, r15d
-    jge     .ccs_done
-
-    ; Tension IR pointer
+    jge     .ccs_ten_done
     imul    eax, r14d, SIZEOF_CIR_TENSION
     lea     r13, [comp_tensions + rax]
-
-    ; 1. Tension name
+    ; Tension name
     mov     ecx, [r13 + CIR_TEN_NAME]
     call    comp_out_str_add
-
-    ; 2. Match clauses
+    ; Match clauses
     xor     r12d, r12d
     mov     ebx, [r13 + CIR_TEN_MATCH_COUNT]
 .ccs_match_loop:
     cmp     r12d, ebx
     jge     .ccs_emits
-
     imul    eax, r12d, SIZEOF_CIR_MATCH
     lea     rsi, [r13 + CIR_TEN_MATCHES + rax]
     call    comp_collect_match_strings
     inc     r12d
     jmp     .ccs_match_loop
-
 .ccs_emits:
-    ; 3. Emit clauses
+    ; Emit clauses
     xor     r12d, r12d
     mov     ebx, [r13 + CIR_TEN_EMIT_COUNT]
 .ccs_emit_loop:
     cmp     r12d, ebx
     jge     .ccs_next_ten
-
     imul    eax, r12d, SIZEOF_CIR_EMIT
     lea     rsi, [r13 + CIR_TEN_EMITS + rax]
     call    comp_collect_emit_strings
     inc     r12d
     jmp     .ccs_emit_loop
-
 .ccs_next_ten:
     inc     r14d
     jmp     .ccs_ten_loop
+.ccs_ten_done:
+
+    ; === 8. Entities ===
+    xor     r14d, r14d
+    mov     r15d, [comp_ent_count]
+.ccs_en_loop:
+    cmp     r14d, r15d
+    jge     .ccs_en_done
+    imul    eax, r14d, SIZEOF_CIR_EN
+    lea     r13, [comp_entities + rax]
+    ; name
+    mov     ecx, [r13 + CIR_EN_NAME]
+    call    comp_out_str_add
+    ; type
+    mov     ecx, [r13 + CIR_EN_TYPE]
+    call    comp_out_str_add
+    ; in-spec
+    cmp     dword [r13 + CIR_EN_IN_KIND], 1
+    je      .ccs_en_scoped
+    ; normal: add container
+    mov     ecx, [r13 + CIR_EN_IN_CONTAINER]
+    call    comp_out_str_add
+    jmp     .ccs_en_props
+.ccs_en_scoped:
+    ; scoped: add scope, add container
+    mov     ecx, [r13 + CIR_EN_IN_SCOPE]
+    call    comp_out_str_add
+    mov     ecx, [r13 + CIR_EN_IN_CONTAINER]
+    call    comp_out_str_add
+.ccs_en_props:
+    ; Properties
+    mov     ebx, [r13 + CIR_EN_PROP_COUNT]
+    test    ebx, ebx
+    jz      .ccs_en_next
+    mov     r12d, [r13 + CIR_EN_PROP_START]
+    xor     edi, edi
+.ccs_en_prop_loop:
+    cmp     edi, ebx
+    jge     .ccs_en_next
+    ; Property pointer = comp_properties + (prop_start + i) * SIZEOF_CIR_PR
+    mov     eax, r12d
+    add     eax, edi
+    imul    eax, SIZEOF_CIR_PR
+    lea     rsi, [comp_properties + rax]
+    ; key
+    mov     ecx, [rsi + CIR_PR_KEY]
+    call    comp_out_str_add
+    ; value if string type (VTYPE==2)
+    cmp     dword [rsi + CIR_PR_VTYPE], 2
+    jne     .ccs_en_prop_next
+    mov     ecx, [rsi + CIR_PR_VALUE]
+    call    comp_out_str_add
+.ccs_en_prop_next:
+    inc     edi
+    jmp     .ccs_en_prop_loop
+.ccs_en_next:
+    inc     r14d
+    jmp     .ccs_en_loop
+.ccs_en_done:
 
 .ccs_done:
     add     rsp, 40
@@ -2136,9 +3422,26 @@ comp_collect_match_strings:
     ; But Python's walk also checks mc.get("container") which is None for our fragments
     ; So we skip this (Python add_string(None) returns NONE_IDX, no string added)
 
-    ; in_spec (for entity_in)
+    ; in_spec (for entity_in — handle normal, scoped, channel)
     cmp     dword [r12 + CIR_MC_KIND], 0
     jne     .ccms_no_in
+    cmp     dword [r12 + CIR_MC_IN_TYPE], 1
+    je      .ccms_in_scoped
+    cmp     dword [r12 + CIR_MC_IN_TYPE], 2
+    je      .ccms_in_channel
+    ; normal: container
+    mov     ecx, [r12 + CIR_MC_CONTAINER]
+    call    comp_out_str_add
+    jmp     .ccms_no_in
+.ccms_in_scoped:
+    ; scoped: scope, container
+    mov     ecx, [r12 + CIR_MC_SCOPE]
+    call    comp_out_str_add
+    mov     ecx, [r12 + CIR_MC_CONTAINER]
+    call    comp_out_str_add
+    jmp     .ccms_no_in
+.ccms_in_channel:
+    ; channel: channel_name (stored in CONTAINER)
     mov     ecx, [r12 + CIR_MC_CONTAINER]
     call    comp_out_str_add
 .ccms_no_in:
@@ -2201,6 +3504,8 @@ comp_collect_emit_strings:
     je      .cces_set
     cmp     eax, BEC_SEND
     je      .cces_send
+    cmp     eax, BEC_RECEIVE
+    je      .cces_receive
     jmp     .cces_done
 
 .cces_move:
@@ -2209,8 +3514,17 @@ comp_collect_emit_strings:
     call    comp_out_str_add
     mov     ecx, [r12 + CIR_EC_STR2]
     call    comp_out_str_add
-    ; to ref (string) — in Python: _collect_ref_strings(ec.get("to"))
-    ; For our fragments, "to" is always a plain string (REF_NORMAL)
+    ; to-ref: Python _collect_ref_strings(ec.get("to"))
+    cmp     dword [r12 + CIR_EC_TO_KIND], 1
+    je      .cces_move_scoped
+    ; normal: target string
+    mov     ecx, [r12 + CIR_EC_STR3]
+    call    comp_out_str_add
+    jmp     .cces_done
+.cces_move_scoped:
+    ; scoped: scope, container
+    mov     ecx, [r12 + CIR_EC_SCOPE]
+    call    comp_out_str_add
     mov     ecx, [r12 + CIR_EC_STR3]
     call    comp_out_str_add
     jmp     .cces_done
@@ -2230,6 +3544,25 @@ comp_collect_emit_strings:
     mov     ecx, [r12 + CIR_EC_STR1]
     call    comp_out_str_add
     mov     ecx, [r12 + CIR_EC_STR2]
+    call    comp_out_str_add
+    jmp     .cces_done
+
+.cces_receive:
+    ; receive: channel, entity, to_ref
+    mov     ecx, [r12 + CIR_EC_STR1]
+    call    comp_out_str_add
+    mov     ecx, [r12 + CIR_EC_STR2]
+    call    comp_out_str_add
+    ; to-ref
+    cmp     dword [r12 + CIR_EC_TO_KIND], 1
+    je      .cces_recv_scoped
+    mov     ecx, [r12 + CIR_EC_STR3]
+    call    comp_out_str_add
+    jmp     .cces_done
+.cces_recv_scoped:
+    mov     ecx, [r12 + CIR_EC_SCOPE]
+    call    comp_out_str_add
+    mov     ecx, [r12 + CIR_EC_STR3]
     call    comp_out_str_add
 
 .cces_done:
@@ -2386,53 +3719,251 @@ comp_emit_binary:
 
 .ceb_str_done:
 
-    ; === Empty sections 0x01-0x07 ===
-    ; entity_types
+    ; === Section 0x01: Entity Types ===
     mov     ecx, BSEC_ENTITY_TYPES
     call    comp_emit_u8
-    xor     ecx, ecx
+    mov     ecx, [comp_et_count]
     call    comp_emit_u16
 
-    ; containers
+    xor     r14d, r14d
+.ceb_et_loop:
+    cmp     r14d, [comp_et_count]
+    jge     .ceb_et_done
+    imul    eax, r14d, SIZEOF_CIR_ET
+    lea     r13, [comp_entity_types + rax]
+    ; name
+    mov     ecx, [r13 + CIR_ET_NAME]
+    call    comp_emit_str_idx
+    ; scoped_count
+    mov     ebx, [r13 + CIR_ET_SCOPED_COUNT]
+    mov     ecx, ebx
+    call    comp_emit_u8
+    ; scoped containers
+    xor     r12d, r12d
+.ceb_et_sc_loop:
+    cmp     r12d, ebx
+    jge     .ceb_et_sc_done
+    imul    eax, r12d, SIZEOF_CIR_ET_SCOPED
+    ; scoped name
+    mov     ecx, [r13 + CIR_ET_SCOPED + rax]
+    call    comp_emit_str_idx
+    ; scoped kind
+    imul    eax, r12d, SIZEOF_CIR_ET_SCOPED
+    mov     ecx, [r13 + CIR_ET_SCOPED + rax + 4]
+    call    comp_emit_u8
+    ; scoped entity_type
+    imul    eax, r12d, SIZEOF_CIR_ET_SCOPED
+    mov     ecx, [r13 + CIR_ET_SCOPED + rax + 8]
+    call    comp_emit_str_idx
+    inc     r12d
+    jmp     .ceb_et_sc_loop
+.ceb_et_sc_done:
+    inc     r14d
+    jmp     .ceb_et_loop
+.ceb_et_done:
+
+    ; === Section 0x02: Containers ===
     mov     ecx, BSEC_CONTAINERS
     call    comp_emit_u8
-    xor     ecx, ecx
+    mov     ecx, [comp_cont_count]
     call    comp_emit_u16
 
-    ; moves
+    xor     r14d, r14d
+.ceb_ct_loop:
+    cmp     r14d, [comp_cont_count]
+    jge     .ceb_ct_done
+    imul    eax, r14d, SIZEOF_CIR_CT
+    lea     r13, [comp_containers + rax]
+    ; name
+    mov     ecx, [r13 + CIR_CT_NAME]
+    call    comp_emit_str_idx
+    ; kind
+    mov     ecx, [r13 + CIR_CT_KIND]
+    call    comp_emit_u8
+    ; entity_type
+    mov     ecx, [r13 + CIR_CT_ETYPE]
+    call    comp_emit_str_idx
+    inc     r14d
+    jmp     .ceb_ct_loop
+.ceb_ct_done:
+
+    ; === Section 0x03: Moves ===
     mov     ecx, BSEC_MOVES
     call    comp_emit_u8
-    xor     ecx, ecx
+    mov     ecx, [comp_move_count]
     call    comp_emit_u16
 
-    ; pools
+    xor     r14d, r14d
+.ceb_mv_loop:
+    cmp     r14d, [comp_move_count]
+    jge     .ceb_mv_done
+    imul    eax, r14d, SIZEOF_CIR_MV
+    lea     r13, [comp_moves + rax]
+    ; name
+    mov     ecx, [r13 + CIR_MV_NAME]
+    call    comp_emit_str_idx
+    ; entity_type
+    mov     ecx, [r13 + CIR_MV_ETYPE]
+    call    comp_emit_str_idx
+    ; is_scoped
+    mov     ecx, [r13 + CIR_MV_IS_SCOPED]
+    call    comp_emit_u8
+    ; from_count
+    mov     ebx, [r13 + CIR_MV_FROM_COUNT]
+    mov     ecx, ebx
+    call    comp_emit_u8
+    ; from locations
+    xor     r12d, r12d
+.ceb_mv_from:
+    cmp     r12d, ebx
+    jge     .ceb_mv_from_done
+    mov     ecx, [r13 + CIR_MV_FROM + r12*4]
+    call    comp_emit_str_idx
+    inc     r12d
+    jmp     .ceb_mv_from
+.ceb_mv_from_done:
+    ; to_count
+    mov     ebx, [r13 + CIR_MV_TO_COUNT]
+    mov     ecx, ebx
+    call    comp_emit_u8
+    ; to locations
+    xor     r12d, r12d
+.ceb_mv_to:
+    cmp     r12d, ebx
+    jge     .ceb_mv_to_done
+    mov     ecx, [r13 + CIR_MV_TO + r12*4]
+    call    comp_emit_str_idx
+    inc     r12d
+    jmp     .ceb_mv_to
+.ceb_mv_to_done:
+    inc     r14d
+    jmp     .ceb_mv_loop
+.ceb_mv_done:
+
+    ; === Section 0x04: Pools (empty) ===
     mov     ecx, BSEC_POOLS
     call    comp_emit_u8
     xor     ecx, ecx
     call    comp_emit_u16
 
-    ; transfers
+    ; === Section 0x05: Transfers (empty) ===
     mov     ecx, BSEC_TRANSFERS
     call    comp_emit_u8
     xor     ecx, ecx
     call    comp_emit_u16
 
-    ; entities
+    ; === Section 0x06: Entities ===
     mov     ecx, BSEC_ENTITIES
     call    comp_emit_u8
-    xor     ecx, ecx
+    mov     ecx, [comp_ent_count]
     call    comp_emit_u16
 
-    ; channels
+    xor     r14d, r14d
+.ceb_en_loop:
+    cmp     r14d, [comp_ent_count]
+    jge     .ceb_en_done
+    imul    eax, r14d, SIZEOF_CIR_EN
+    lea     r13, [comp_entities + rax]
+    ; name
+    mov     ecx, [r13 + CIR_EN_NAME]
+    call    comp_emit_str_idx
+    ; type
+    mov     ecx, [r13 + CIR_EN_TYPE]
+    call    comp_emit_str_idx
+    ; in_kind
+    mov     ecx, [r13 + CIR_EN_IN_KIND]
+    call    comp_emit_u8
+    cmp     dword [r13 + CIR_EN_IN_KIND], 1
+    je      .ceb_en_scoped
+    ; normal: container
+    mov     ecx, [r13 + CIR_EN_IN_CONTAINER]
+    call    comp_emit_str_idx
+    jmp     .ceb_en_props
+.ceb_en_scoped:
+    ; scoped: scope, container
+    mov     ecx, [r13 + CIR_EN_IN_SCOPE]
+    call    comp_emit_str_idx
+    mov     ecx, [r13 + CIR_EN_IN_CONTAINER]
+    call    comp_emit_str_idx
+.ceb_en_props:
+    ; prop_count
+    mov     ebx, [r13 + CIR_EN_PROP_COUNT]
+    mov     ecx, ebx
+    call    comp_emit_u8
+    test    ebx, ebx
+    jz      .ceb_en_next
+    mov     r12d, [r13 + CIR_EN_PROP_START]
+    xor     edi, edi
+.ceb_en_prop_loop:
+    cmp     edi, ebx
+    jge     .ceb_en_next
+    ; Property pointer
+    mov     eax, r12d
+    add     eax, edi
+    imul    eax, SIZEOF_CIR_PR
+    lea     rsi, [comp_properties + rax]
+    ; key
+    mov     ecx, [rsi + CIR_PR_KEY]
+    call    comp_emit_str_idx
+    ; vtype
+    mov     ecx, [rsi + CIR_PR_VTYPE]
+    call    comp_emit_u8
+    cmp     dword [rsi + CIR_PR_VTYPE], 0
+    je      .ceb_en_prop_int
+    cmp     dword [rsi + CIR_PR_VTYPE], 1
+    je      .ceb_en_prop_float
+    cmp     dword [rsi + CIR_PR_VTYPE], 2
+    je      .ceb_en_prop_str
+    jmp     .ceb_en_prop_next
+.ceb_en_prop_int:
+    mov     rcx, [rsi + CIR_PR_VALUE]
+    call    comp_emit_i64
+    jmp     .ceb_en_prop_next
+.ceb_en_prop_float:
+    ; f64 — copy raw 8 bytes
+    mov     rcx, [rsi + CIR_PR_VALUE]
+    call    comp_emit_i64       ; same bits, different interpretation
+    jmp     .ceb_en_prop_next
+.ceb_en_prop_str:
+    mov     ecx, [rsi + CIR_PR_VALUE]
+    call    comp_emit_str_idx
+.ceb_en_prop_next:
+    inc     edi
+    jmp     .ceb_en_prop_loop
+.ceb_en_next:
+    inc     r14d
+    jmp     .ceb_en_loop
+.ceb_en_done:
+
+    ; === Section 0x07: Channels ===
     mov     ecx, BSEC_CHANNELS
     call    comp_emit_u8
-    xor     ecx, ecx
+    mov     ecx, [comp_chan_count]
     call    comp_emit_u16
 
-    ; === Config ===
+    xor     r14d, r14d
+.ceb_ch_loop:
+    cmp     r14d, [comp_chan_count]
+    jge     .ceb_ch_done
+    imul    eax, r14d, SIZEOF_CIR_CH
+    lea     r13, [comp_channels + rax]
+    ; name, from, to, entity_type
+    mov     ecx, [r13 + CIR_CH_NAME]
+    call    comp_emit_str_idx
+    mov     ecx, [r13 + CIR_CH_FROM]
+    call    comp_emit_str_idx
+    mov     ecx, [r13 + CIR_CH_TO]
+    call    comp_emit_str_idx
+    mov     ecx, [r13 + CIR_CH_ETYPE]
+    call    comp_emit_str_idx
+    inc     r14d
+    jmp     .ceb_ch_loop
+.ceb_ch_done:
+
+    ; === Section 0x08: Config ===
     mov     ecx, BSEC_CONFIG
     call    comp_emit_u8
-    mov     ecx, -1             ; max_nesting_depth = -1
+    mov     ecx, [comp_config_nesting]
     call    comp_emit_i16
 
     ; === Tensions ===
@@ -2528,6 +4059,8 @@ comp_emit_match:
 
     mov     r12, rsi
 
+    cmp     dword [r12 + CIR_MC_KIND], 3
+    je      .cem_guard
     cmp     dword [r12 + CIR_MC_KIND], 1
     je      .cem_empty_in
 
@@ -2558,14 +4091,34 @@ comp_emit_match:
     call    comp_emit_u16
 .cem_key_done:
 
-    ; in_type = 0 (normal string)
-    xor     ecx, ecx
+    ; in_type (0=normal, 1=scoped, 2=channel)
+    mov     ecx, [r12 + CIR_MC_IN_TYPE]
     call    comp_emit_u8
 
-    ; in_container
+    cmp     dword [r12 + CIR_MC_IN_TYPE], 1
+    je      .cem_in_scoped
+    cmp     dword [r12 + CIR_MC_IN_TYPE], 2
+    je      .cem_in_channel
+
+    ; normal: container
+    mov     ecx, [r12 + CIR_MC_CONTAINER]
+    call    comp_emit_str_idx
+    jmp     .cem_in_done
+
+.cem_in_scoped:
+    ; scoped: scope, container
+    mov     ecx, [r12 + CIR_MC_SCOPE]
+    call    comp_emit_str_idx
+    mov     ecx, [r12 + CIR_MC_CONTAINER]
+    call    comp_emit_str_idx
+    jmp     .cem_in_done
+
+.cem_in_channel:
+    ; channel: channel_name (in CONTAINER)
     mov     ecx, [r12 + CIR_MC_CONTAINER]
     call    comp_emit_str_idx
 
+.cem_in_done:
     ; has_where
     mov     ecx, [r12 + CIR_MC_HAS_WHERE]
     call    comp_emit_u8
@@ -2573,6 +4126,14 @@ comp_emit_match:
     ; where expression
     cmp     dword [r12 + CIR_MC_HAS_WHERE], 0
     je      .cem_done
+    mov     ecx, [r12 + CIR_MC_WHERE_EXPR]
+    call    comp_emit_expr_binary
+    jmp     .cem_done
+
+.cem_guard:
+    ; === MC_GUARD (0x03) ===
+    mov     ecx, BMC_GUARD
+    call    comp_emit_u8
     mov     ecx, [r12 + CIR_MC_WHERE_EXPR]
     call    comp_emit_expr_binary
     jmp     .cem_done
@@ -2631,6 +4192,8 @@ comp_emit_emit:
     je      .cee_set
     cmp     eax, BEC_SEND
     je      .cee_send
+    cmp     eax, BEC_RECEIVE
+    je      .cee_receive
     jmp     .cee_done
 
 .cee_move:
@@ -2643,9 +4206,21 @@ comp_emit_emit:
     ; entity
     mov     ecx, [r12 + CIR_EC_STR2]
     call    comp_emit_str_idx
-    ; to ref: REF_NORMAL + string
+    ; to-ref
+    cmp     dword [r12 + CIR_EC_TO_KIND], 1
+    je      .cee_move_scoped
+    ; normal: REF_NORMAL + string
     xor     ecx, ecx            ; REF_NORMAL = 0
     call    comp_emit_u8
+    mov     ecx, [r12 + CIR_EC_STR3]
+    call    comp_emit_str_idx
+    jmp     .cee_done
+.cee_move_scoped:
+    ; scoped: REF_SCOPED + scope + container
+    mov     ecx, 1              ; REF_SCOPED = 1
+    call    comp_emit_u8
+    mov     ecx, [r12 + CIR_EC_SCOPE]
+    call    comp_emit_str_idx
     mov     ecx, [r12 + CIR_EC_STR3]
     call    comp_emit_str_idx
     jmp     .cee_done
@@ -2674,6 +4249,35 @@ comp_emit_emit:
     call    comp_emit_str_idx
     ; entity
     mov     ecx, [r12 + CIR_EC_STR2]
+    call    comp_emit_str_idx
+    jmp     .cee_done
+
+.cee_receive:
+    ; EC_RECEIVE (0x03)
+    mov     ecx, BEC_RECEIVE
+    call    comp_emit_u8
+    ; channel
+    mov     ecx, [r12 + CIR_EC_STR1]
+    call    comp_emit_str_idx
+    ; entity
+    mov     ecx, [r12 + CIR_EC_STR2]
+    call    comp_emit_str_idx
+    ; to-ref
+    cmp     dword [r12 + CIR_EC_TO_KIND], 1
+    je      .cee_recv_scoped
+    ; normal
+    xor     ecx, ecx
+    call    comp_emit_u8
+    mov     ecx, [r12 + CIR_EC_STR3]
+    call    comp_emit_str_idx
+    jmp     .cee_done
+.cee_recv_scoped:
+    ; scoped
+    mov     ecx, 1
+    call    comp_emit_u8
+    mov     ecx, [r12 + CIR_EC_SCOPE]
+    call    comp_emit_str_idx
+    mov     ecx, [r12 + CIR_EC_STR3]
     call    comp_emit_str_idx
 
 .cee_done:
