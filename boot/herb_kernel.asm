@@ -134,6 +134,29 @@ extern fb_draw_padded
 extern fb_draw_container
 extern fb_draw_process
 extern fb_draw_resources
+
+; Window manager (from herb_wm.asm)
+extern wm_init
+extern wm_create_window
+extern wm_destroy_window
+extern wm_window_ptr
+extern wm_draw_all
+extern wm_draw_window_frame
+extern wm_hit_test
+extern wm_bring_to_front
+extern wm_set_focus
+extern wm_begin_drag
+extern wm_update_drag
+extern wm_end_drag
+extern wm_init_default_windows
+extern wm_windows
+extern wm_z_order
+extern wm_window_count
+extern wm_focused_id
+extern wm_drag_mode
+extern wm_drag_win_id
+extern wm_drag_offset_x
+extern wm_drag_offset_y
 %endif
 
 ; ============================================================
@@ -144,7 +167,7 @@ extern fb_draw_resources
 global timer_count, total_ops, signal_counter, process_counter
 global buffer_eid, last_action, last_key_name
 global mouse_x, mouse_y, mouse_cycle, mouse_packet
-global mouse_buttons, mouse_left_clicked, mouse_moved
+global mouse_buttons, mouse_left_clicked, mouse_left_released, mouse_moved
 global cursor_eid, selected_tension_idx
 global scancode_to_ascii
 
@@ -159,18 +182,18 @@ global selected_eid
 %endif
 
 ; ============================================================
-; Program data globals (embedded via incbin — Phase D Step 7e)
+; Boot-compiled program globals (BSS buffers filled at boot)
 ; ============================================================
 
-global program_data, program_data_len
+global bin_interactive_kernel, bin_ik_len
 %ifdef KERNEL_MODE
-global program_shell, program_shell_len
-global program_producer, program_producer_len
-global program_consumer, program_consumer_len
-global program_worker, program_worker_len
-global program_beacon, program_beacon_len
-global program_schedule_priority, program_schedule_priority_len
-global program_schedule_roundrobin, program_schedule_roundrobin_len
+global bin_shell, bin_shell_len
+global bin_producer, bin_producer_len
+global bin_consumer, bin_consumer_len
+global bin_worker, bin_worker_len
+global bin_beacon, bin_beacon_len
+global bin_schedule_priority, bin_sched_pri_len
+global bin_schedule_roundrobin, bin_sched_rr_len
 %endif
 
 ; ============================================================
@@ -248,6 +271,8 @@ global gfx_draw_procs_in_region
 %ifdef KERNEL_MODE
 global gfx_draw_tension_panel
 global gfx_draw_game
+global wm_draw_region_adapter
+global wm_draw_tension_adapter
 %endif
 %endif
 
@@ -266,7 +291,23 @@ alignb 4
 last_action:     resb 80        ; char[80]
 last_key_name:   resb 16        ; char[16]
 mouse_packet:    resb 4         ; uint8_t[3] + padding
-comp_test_buf:   resb 2048      ; compiler test output buffer
+; Boot-compiled program binaries (compiled from .herb source at boot)
+bin_interactive_kernel: resb 20480    ; 20KB (actual ~16KB)
+bin_ik_len:            resd 1
+bin_shell:             resb 2048
+bin_shell_len:         resd 1
+bin_producer:          resb 512
+bin_producer_len:      resd 1
+bin_consumer:          resb 512
+bin_consumer_len:      resd 1
+bin_worker:            resb 512
+bin_worker_len:        resd 1
+bin_beacon:            resb 512
+bin_beacon_len:        resd 1
+bin_schedule_priority: resb 512
+bin_sched_pri_len:     resd 1
+bin_schedule_roundrobin: resb 512
+bin_sched_rr_len:      resd 1
 
 ; ============================================================
 ; DATA — Initialized globals (Phase D Step 7d)
@@ -280,6 +321,7 @@ mouse_y:            dd 300
 mouse_cycle:        dd 0
 mouse_buttons:      dd 0
 mouse_left_clicked: dd 0
+mouse_left_released: dd 0
 mouse_moved:        dd 0
 cursor_eid:         dd -1
 selected_tension_idx: dd -1
@@ -330,59 +372,15 @@ scancode_to_ascii:
     db  0,   0,   0,   0,   0,   0,   0,   0     ; 0x70-0x77
     db  0,   0,   0,   0,   0,   0,   0,   0     ; 0x78-0x7F
 
-; Embedded .herb program data (Phase D Step 7e — replaces C headers)
+; Embedded .herb SOURCE text — compiled to binary at boot
 align 4
-program_data:
-    incbin "interactive_kernel.herb"
-program_data_end:
-program_data_len: dd program_data_end - program_data
+src_interactive_kernel:
+    incbin "../programs/interactive_kernel.herb"
+    db 0
+src_interactive_kernel_end:
+src_interactive_kernel_len: dd src_interactive_kernel_end - src_interactive_kernel - 1
 
 %ifdef KERNEL_MODE
-align 4
-program_shell:
-    incbin "shell.herb"
-program_shell_end:
-program_shell_len: dd program_shell_end - program_shell
-
-align 4
-program_producer:
-    incbin "producer.herb"
-program_producer_end:
-program_producer_len: dd program_producer_end - program_producer
-
-align 4
-program_consumer:
-    incbin "consumer.herb"
-program_consumer_end:
-program_consumer_len: dd program_consumer_end - program_consumer
-
-align 4
-program_worker:
-    incbin "worker.herb"
-program_worker_end:
-program_worker_len: dd program_worker_end - program_worker
-
-align 4
-program_beacon:
-    incbin "beacon.herb"
-program_beacon_end:
-program_beacon_len: dd program_beacon_end - program_beacon
-
-align 4
-program_schedule_priority:
-    incbin "schedule_priority.herb"
-program_schedule_priority_end:
-program_schedule_priority_len: dd program_schedule_priority_end - program_schedule_priority
-
-align 4
-program_schedule_roundrobin:
-    incbin "schedule_roundrobin.herb"
-program_schedule_roundrobin_end:
-program_schedule_roundrobin_len: dd program_schedule_roundrobin_end - program_schedule_roundrobin
-%endif
-
-%ifdef KERNEL_MODE
-; Embedded .herb SOURCE text for compiler tests
 align 4
 src_schedule_priority:
     incbin "../programs/schedule_priority.herb"
@@ -431,7 +429,7 @@ src_shell:
     db 0
 src_shell_end:
 src_shell_len: dd src_shell_end - src_shell - 1
-%endif  ; KERNEL_MODE — compiler test sources
+%endif  ; KERNEL_MODE — source text
 
 %ifdef KERNEL_MODE
 str_boot_banner:    db "HERB OS v3 - Four-Module Kernel", 10, 0
@@ -472,23 +470,18 @@ str_boot_action:    db "Booted with %d ops. Press / to type commands.", 0
 str_err_prefix:     db "ERR: ", 0
 str_err_serial:     db "[ERROR] ", 0
 
-; Compiler test strings
-str_comp_test_hdr:    db 10, "--- Compiler Tests ---", 10, 0
-str_comp_pass:        db "[COMPILER PASS] ", 0
-str_comp_fail:        db "[COMPILER FAIL] ", 0
-str_comp_name_sp:     db "schedule_priority", 0
-str_comp_name_sr:     db "schedule_roundrobin", 0
-str_comp_name_wk:     db "worker", 0
-str_comp_name_pr:     db "producer", 0
-str_comp_name_cn:     db "consumer", 0
-str_comp_name_bc:     db "beacon", 0
-str_comp_name_sh:     db "shell", 0
-str_comp_byte_id:     db " byte-identical", 10, 0
-str_comp_mismatch:    db " mismatch at byte ", 0
-str_comp_got:         db " got=0x", 0
-str_comp_exp:         db " exp=0x", 0
-str_comp_len_mm:      db " length mismatch got=", 0
-str_comp_len_exp:     db " exp=", 0
+; Boot compilation strings
+str_compile_hdr:      db "=== Boot-time compilation ===", 10, 0
+str_compile_bytes:    db " bytes", 10, 0
+str_compile_fail:     db "[COMPILE] FATAL: compilation failed!", 10, 0
+str_compile_ik:       db "[COMPILE] interactive_kernel: ", 0
+str_compile_sh:       db "[COMPILE] shell: ", 0
+str_compile_pr:       db "[COMPILE] producer: ", 0
+str_compile_cn:       db "[COMPILE] consumer: ", 0
+str_compile_wk:       db "[COMPILE] worker: ", 0
+str_compile_bc:       db "[COMPILE] beacon: ", 0
+str_compile_sp:       db "[COMPILE] schedule_priority: ", 0
+str_compile_sr:       db "[COMPILE] schedule_roundrobin: ", 0
 
 ; Phase D Step 4 — terrain name strings
 str_terrain_grass:  db "Grass", 0
@@ -1413,23 +1406,44 @@ kernel_main:
     call serial_print
 
     ; ================================================================
+    ; COMPILE .herb SOURCE TO BINARY
+    ; ================================================================
+    call boot_compile_programs
+    test eax, eax
+    jnz .compile_failed
+    jmp .compile_ok
+.compile_failed:
+    ; Fatal: compilation failed — halt
+    mov ecx, 0x04
+    xor edx, edx
+    call vga_set_color
+    lea rcx, [rel str_compile_fail]
+    call vga_print
+    lea rcx, [rel str_compile_fail]
+    call serial_print
+.compile_halt:
+    call hw_hlt
+    jmp .compile_halt
+.compile_ok:
+
+    ; ================================================================
     ; LOAD EMBEDDED PROGRAM
     ; ================================================================
 
     lea rcx, [rel str_loading]
     call vga_print
 
-    ; vga_print_int((int)program_data_len)
-    lea rax, [rel program_data_len]
+    ; vga_print_int((int)bin_ik_len)
+    lea rax, [rel bin_ik_len]
     mov ecx, dword [rax]
     call vga_print_int
 
     lea rcx, [rel str_bytes_msg]
     call vga_print
 
-    ; rc = herb_load((const char*)program_data, program_data_len)
-    lea rcx, [rel program_data]
-    lea rax, [rel program_data_len]
+    ; rc = herb_load((const char*)bin_interactive_kernel, bin_ik_len)
+    lea rcx, [rel bin_interactive_kernel]
+    lea rax, [rel bin_ik_len]
     mov edx, dword [rax]
     call herb_load
 
@@ -1707,10 +1721,10 @@ kernel_main:
 
 .shell_surf_done:
 
-    ; ---- Load shell behavior from .herb binary ----
-    ; herb_load_program(program_shell, program_shell_len, shell_eid, "")
-    lea rcx, [rel program_shell]
-    lea rax, [rel program_shell_len]
+    ; ---- Load shell behavior from boot-compiled binary ----
+    ; herb_load_program(bin_shell, bin_shell_len, shell_eid, "")
+    lea rcx, [rel bin_shell]
+    lea rax, [rel bin_shell_len]
     mov edx, dword [rax]
     mov r8d, r12d                   ; shell_eid
     lea r9, [rel str_empty]         ; run_container = ""
@@ -1942,6 +1956,14 @@ kernel_main:
 %endif  ; KERNEL_MODE
 
     ; ================================================================
+    ; WINDOW MANAGER INIT
+    ; ================================================================
+%ifdef GRAPHICS_MODE
+    call wm_init
+    call wm_init_default_windows
+%endif
+
+    ; ================================================================
     ; BOOT MESSAGE
     ; ================================================================
 
@@ -1951,13 +1973,6 @@ kernel_main:
     lea r8, [rel str_boot_action]
     mov r9d, [rsp + BOOT_OPS]
     call herb_snprintf
-
-    ; ================================================================
-    ; COMPILER TESTS — verify assembly compiler matches Python output
-    ; ================================================================
-%ifdef KERNEL_MODE
-    call compiler_run_tests
-%endif
 
     lea rcx, [rel str_start_msg]
     call vga_print
@@ -2223,8 +2238,152 @@ kernel_main:
     lea rax, [rel mouse_left_clicked]
     mov dword [rax], 0
 
+    ; --- Window Manager hit test (GRAPHICS_MODE) ---
+    cmp dword [rel fb_active], 0
+    je .wm_click_passthrough
+
+    ; wm_hit_test(mouse_x, mouse_y) -> eax=win_id, edx=region
+    mov ecx, dword [rel mouse_x]
+    mov edx, dword [rel mouse_y]
+    call wm_hit_test
+    mov r14d, eax                   ; r14 = hit win_id
+    mov r15d, edx                   ; r15 = hit region
+
+    cmp r14d, -1
+    je .wm_click_passthrough        ; no window hit — fall through
+
+    ; Click-to-focus + bring to front
+    mov ecx, r14d
+    call wm_bring_to_front
+    mov ecx, r14d
+    call wm_set_focus
+
+    ; Dispatch based on hit region
+    cmp r15d, 1                     ; HIT_CLOSE
+    je .wm_click_close
+    cmp r15d, 2                     ; HIT_MAXIMIZE
+    je .wm_click_maximize
+    cmp r15d, 3                     ; HIT_TITLEBAR
+    je .wm_click_titlebar
+    cmp r15d, 4                     ; HIT_RESIZE
+    je .wm_click_resize_start
+    cmp r15d, 5                     ; HIT_CLIENT
+    je .wm_click_client
+    jmp .wm_click_done
+
+.wm_click_close:
+    ; Destroy the window
+    mov ecx, r14d
+    call wm_destroy_window
+    jmp .wm_click_done
+
+.wm_click_maximize:
+    ; Toggle maximize/restore
+    mov ecx, r14d
+    call wm_window_ptr
+    test rax, rax
+    jz .wm_click_done
+
+    ; Check if currently maximized
+    mov edx, dword [rax + 4]        ; WIN_FLAGS
+    test edx, (1 << 2)              ; WF_MAXIMIZED
+    jnz .wm_restore
+
+    ; Maximize: save current bounds, set to full main area
+    mov ecx, dword [rax + 8]        ; WIN_X
+    mov dword [rax + 64], ecx       ; restore_x
+    mov ecx, dword [rax + 12]       ; WIN_Y
+    mov dword [rax + 68], ecx       ; restore_y
+    mov ecx, dword [rax + 16]       ; WIN_W
+    mov dword [rax + 72], ecx       ; restore_w
+    mov ecx, dword [rax + 20]       ; WIN_H
+    mov dword [rax + 76], ecx       ; restore_h
+    ; Set to fill main area (0, 76, 800, 410)
+    mov dword [rax + 8], 0          ; x
+    mov dword [rax + 12], 76        ; y (GFX_MAIN_Y)
+    mov dword [rax + 16], 800       ; w (FB_WIDTH)
+    mov dword [rax + 20], 410       ; h (GFX_MAIN_H + some extra)
+    or dword [rax + 4], (1 << 2)    ; set WF_MAXIMIZED
+    jmp .wm_click_done
+
+.wm_restore:
+    ; Restore saved bounds
+    mov ecx, dword [rax + 64]
+    mov dword [rax + 8], ecx        ; x = restore_x
+    mov ecx, dword [rax + 68]
+    mov dword [rax + 12], ecx       ; y = restore_y
+    mov ecx, dword [rax + 72]
+    mov dword [rax + 16], ecx       ; w = restore_w
+    mov ecx, dword [rax + 76]
+    mov dword [rax + 20], ecx       ; h = restore_h
+    and dword [rax + 4], ~(1 << 2)  ; clear WF_MAXIMIZED
+    jmp .wm_click_done
+
+.wm_click_titlebar:
+    ; Begin drag-to-move
+    mov ecx, r14d
+    mov edx, 1                      ; DRAG_MOVE
+    mov r8d, dword [rel mouse_x]
+    mov r9d, dword [rel mouse_y]
+    call wm_begin_drag
+    jmp .wm_click_done
+
+.wm_click_resize_start:
+    ; Begin drag-to-resize
+    mov ecx, r14d
+    mov edx, 2                      ; DRAG_RESIZE
+    mov r8d, dword [rel mouse_x]
+    mov r9d, dword [rel mouse_y]
+    call wm_begin_drag
+    jmp .wm_click_done
+
+.wm_click_client:
+    ; Client area — pass through to existing content handlers
+    ; Get window pointer to determine content type
+    mov ecx, r14d
+    call wm_window_ptr
+    test rax, rax
+    jz .wm_click_passthrough
+    mov r13d, dword [rax + 32]      ; WIN_CONTENT_TYPE
+
+    ; WCT_TENSIONS (1): handle tension panel click
+    cmp r13d, 1
+    jne .wm_click_passthrough
+
 %ifdef KERNEL_MODE
-    ; cmd_click(mouse_x, mouse_y)
+    ; Tension panel client click: compute row from mouse_y
+    ; The tension panel draws at its window position
+    ; row = (mouse_y - (win_y + WM_TITLEBAR_H)) / 16
+    mov ecx, r14d
+    call wm_window_ptr
+    test rax, rax
+    jz .wm_click_done
+    mov ecx, dword [rax + 12]       ; WIN_Y
+    add ecx, 22                     ; + WM_TITLEBAR_H
+    mov eax, dword [rel mouse_y]
+    sub eax, ecx
+    cdq
+    mov ecx, 16
+    idiv ecx
+
+    test eax, eax
+    js .wm_click_done
+
+    mov r14d, eax
+    push r14
+    call herb_tension_count
+    pop r14
+    cmp r14d, eax
+    jge .wm_click_done
+
+    mov dword [rel selected_tension_idx], r14d
+    call cmd_tension_toggle
+%endif
+    jmp .wm_click_done
+
+.wm_click_passthrough:
+%ifdef KERNEL_MODE
+    ; Original click handling: cmd_click + HERB panel_click check
     lea rax, [rel mouse_x]
     mov ecx, dword [rax]
     lea rax, [rel mouse_y]
@@ -2237,9 +2396,8 @@ kernel_main:
     test eax, eax
     js .no_panel_click
 
-    mov r13d, eax                   ; r13 = input_ctl_eid
+    mov r13d, eax
 
-    ; herb_entity_prop_int(input_ctl_eid, "panel_click", 0)
     mov ecx, r13d
     lea rdx, [rel str_panel_click]
     xor r8d, r8d
@@ -2247,44 +2405,55 @@ kernel_main:
     test eax, eax
     jz .no_panel_click
 
-    ; herb_set_prop_int(input_ctl_eid, "panel_click", 0)
     mov ecx, r13d
     lea rdx, [rel str_panel_click]
     xor r8d, r8d
     call herb_set_prop_int
 
-    ; row = (mouse_y - (GFX_TENS_Y + 22)) / GFX_TENS_ROW_H
-    ; GFX_TENS_Y = 76, GFX_TENS_ROW_H = 16
     lea rax, [rel mouse_y]
     mov eax, dword [rax]
-    sub eax, 98                     ; 76 + 22 = 98
+    sub eax, 98
     cdq
     mov ecx, 16
-    idiv ecx                        ; eax = row
+    idiv ecx
 
     test eax, eax
     js .no_panel_click
 
-    ; if (row < herb_tension_count())
-    mov r14d, eax                   ; r14 = row
+    mov r14d, eax
     push r14
     call herb_tension_count
     pop r14
     cmp r14d, eax
     jge .no_panel_click
 
-    ; selected_tension_idx = row
     lea rax, [rel selected_tension_idx]
     mov dword [rax], r14d
-
     call cmd_tension_toggle
 
 .no_panel_click:
 %endif  ; KERNEL_MODE
 
+.wm_click_done:
     call draw_full
 
 .no_mouse_click:
+
+    ; Handle mouse release (end drag/resize)
+    lea rax, [rel mouse_left_released]
+    mov eax, dword [rax]
+    test eax, eax
+    jz .no_mouse_release
+
+    mov dword [rel mouse_left_released], 0
+
+    ; End any active drag
+    cmp dword [rel wm_drag_mode], 0     ; DRAG_NONE
+    je .no_mouse_release
+    call wm_end_drag
+    call draw_full
+
+.no_mouse_release:
 
     ; Update cursor on screen (direct MMIO, no full redraw)
     lea rax, [rel mouse_moved]
@@ -2299,6 +2468,18 @@ kernel_main:
     lea rax, [rel mouse_moved]
     mov dword [rax], 0
 
+    ; If dragging, update drag position + full redraw
+    cmp dword [rel wm_drag_mode], 0     ; DRAG_NONE
+    je .no_drag_update
+
+    mov ecx, dword [rel mouse_x]
+    mov edx, dword [rel mouse_y]
+    call wm_update_drag
+    call draw_full
+    jmp .no_mouse_move
+
+.no_drag_update:
+    ; No drag — just erase/redraw cursor
     call fb_cursor_erase
     call fb_cursor_draw
 
@@ -5410,8 +5591,8 @@ cmd_swap_policy_from_herb:
     jne .csp_load_pri
 
     ; Load round-robin
-    lea rcx, [rel program_schedule_roundrobin]
-    mov edx, [rel program_schedule_roundrobin_len]
+    lea rcx, [rel bin_schedule_roundrobin]
+    mov edx, [rel bin_sched_rr_len]
     mov r8d, -1
     lea r9, [rel str_empty]
     call herb_load_program
@@ -5426,8 +5607,8 @@ cmd_swap_policy_from_herb:
 
 .csp_load_pri:
     ; Load priority
-    lea rcx, [rel program_schedule_priority]
-    mov edx, [rel program_schedule_priority_len]
+    lea rcx, [rel bin_schedule_priority]
+    mov edx, [rel bin_sched_pri_len]
     mov r8d, -1
     lea r9, [rel str_empty]
     call herb_load_program
@@ -5780,9 +5961,9 @@ cmd_spawn:
     lea rdx, [rel str_produce_limit]
     mov r8d, 1000
     call herb_set_prop_int
-    ; herb_load_program(program_producer, program_producer_len, eid, CN_CPU0)
-    lea rcx, [rel program_producer]
-    mov edx, [rel program_producer_len]
+    ; herb_load_program(bin_producer, bin_producer_len, eid, CN_CPU0)
+    lea rcx, [rel bin_producer]
+    mov edx, [rel bin_producer_len]
     mov r8d, r14d
     lea r9, [rel str_cn_cpu0]
     call herb_load_program
@@ -5795,9 +5976,9 @@ cmd_spawn:
     lea rdx, [rel str_consumed]
     xor r8d, r8d
     call herb_set_prop_int
-    ; herb_load_program(program_consumer, program_consumer_len, eid, CN_CPU0)
-    lea rcx, [rel program_consumer]
-    mov edx, [rel program_consumer_len]
+    ; herb_load_program(bin_consumer, bin_consumer_len, eid, CN_CPU0)
+    lea rcx, [rel bin_consumer]
+    mov edx, [rel bin_consumer_len]
     mov r8d, r14d
     lea r9, [rel str_cn_cpu0]
     call herb_load_program
@@ -5810,9 +5991,9 @@ cmd_spawn:
     lea rdx, [rel str_work]
     mov r8d, 100
     call herb_set_prop_int
-    ; herb_load_program(program_worker, program_worker_len, eid, CN_CPU0)
-    lea rcx, [rel program_worker]
-    mov edx, [rel program_worker_len]
+    ; herb_load_program(bin_worker, bin_worker_len, eid, CN_CPU0)
+    lea rcx, [rel bin_worker]
+    mov edx, [rel bin_worker_len]
     mov r8d, r14d
     lea r9, [rel str_cn_cpu0]
     call herb_load_program
@@ -5829,9 +6010,9 @@ cmd_spawn:
     lea rdx, [rel str_limit]
     mov r8d, 100
     call herb_set_prop_int
-    ; herb_load_program(program_beacon, program_beacon_len, eid, CN_CPU0)
-    lea rcx, [rel program_beacon]
-    mov edx, [rel program_beacon_len]
+    ; herb_load_program(bin_beacon, bin_beacon_len, eid, CN_CPU0)
+    lea rcx, [rel bin_beacon]
+    mov edx, [rel bin_beacon_len]
     mov r8d, r14d
     lea r9, [rel str_cn_cpu0]
     call herb_load_program
@@ -6693,6 +6874,15 @@ mouse_handle_packet:
     jnz .mhp_no_click              ; was already pressed
     mov dword [rel mouse_left_clicked], 1
 .mhp_no_click:
+    ; Detect left button release (transition from pressed to not-pressed)
+    mov eax, ecx
+    and eax, 0x01
+    test eax, eax
+    jnz .mhp_no_release                ; still pressed
+    test dword [rel mouse_buttons], 0x01
+    jz .mhp_no_release                 ; was already released
+    mov dword [rel mouse_left_released], 1
+.mhp_no_release:
     ; mouse_buttons = flags & 0x07
     mov eax, ecx
     and eax, 0x07
@@ -9299,6 +9489,423 @@ gfx_draw_game:
 %endif  ; KERNEL_MODE (gfx_draw_game)
 
 ; ============================================================
+; WINDOW MANAGER ADAPTERS — Bridge between WM draw_fn and kernel content renderers
+; ============================================================
+
+; ============================================================
+; wm_draw_region_adapter — Content draw function for region windows
+; void wm_draw_region_adapter(int cx, int cy, int cw, int ch, void* win_ptr)
+; MS x64: ECX=cx, EDX=cy, R8D=cw, R9D=ch, [rbp+48]=win_ptr
+;
+; Reads content_id from win_ptr to get region_id, then calls
+; gfx_draw_procs_in_region with the window's outer bounds.
+; ============================================================
+wm_draw_region_adapter:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    sub rsp, 72                         ; shadow(32) + 5 stack args(40)
+    ; 6 pushes + sub 72 = 8 + 48 + 72 = 128. 128 % 16 = 0. ✓
+
+    mov rbx, [rbp + 48]                 ; win_ptr
+
+    ; Read region_id from window content_id
+    mov eax, dword [rbx + 36]           ; WIN_CONTENT_ID = region_id
+    cmp eax, 0
+    jl .wdra_done
+    cmp eax, 3
+    jg .wdra_done
+    mov r12d, eax                       ; r12 = region_id
+
+    ; Read window outer bounds and colors
+    mov r13d, dword [rbx + 40]          ; border_color (WIN_BORDER_COLOR)
+    mov esi, dword [rbx + 44]           ; fill_color (WIN_FILL_COLOR)
+
+    ; Call gfx_draw_procs_in_region(rx, ry, rw, rh, container_name, bc, fc)
+    ; 7 args: rcx=x, rdx=y, r8=w, r9=h, [rsp+32]=container, [rsp+40]=bc, [rsp+48]=fc
+    mov ecx, dword [rbx + 8]            ; WIN_X
+    mov edx, dword [rbx + 12]           ; WIN_Y
+    mov r8d, dword [rbx + 16]           ; WIN_W
+    mov r9d, dword [rbx + 20]           ; WIN_H
+    movsxd rax, r12d
+    lea rdi, [rel region_containers]
+    mov rdi, [rdi + rax*8]
+    mov [rsp + 32], rdi                 ; container_name
+    mov dword [rsp + 40], r13d          ; border_color
+    mov dword [rsp + 48], esi           ; fill_color
+    call gfx_draw_procs_in_region
+
+.wdra_done:
+    add rsp, 72
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+%ifdef KERNEL_MODE
+; ============================================================
+; wm_draw_tension_adapter — Content draw function for tension panel window
+; void wm_draw_tension_adapter(int cx, int cy, int cw, int ch, void* win_ptr)
+;
+; Calls gfx_draw_tension_panel which uses hardcoded position.
+; (Future: pass bounds to a parameterized version)
+; ============================================================
+wm_draw_tension_adapter:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 32                         ; shadow space
+    ; 1 push + sub 32 = 40. 40 % 16 = 8. ✓
+
+    call gfx_draw_tension_panel
+
+    add rsp, 32
+    pop rbp
+    ret
+%endif  ; KERNEL_MODE
+
+; ============================================================
+; wm_init_default_windows — Create windows from Surface entities
+; void wm_init_default_windows(void)
+;
+; Iterates display.VISIBLE container, reads Surface entity properties,
+; and creates WM windows for each region (kind==0) and the tension
+; panel (kind==4).
+; ============================================================
+; Locals start at 64 to leave room for call args at [rsp+32..63]
+%define WMIW_SID   64
+%define WMIW_RID   68
+%define WMIW_WID   72
+%define WMIW_KIND  76
+%define WMIW_VI    80
+%define WMIW_NV    84
+%define WMIW_RX    88
+%define WMIW_RY    92
+%define WMIW_RW    96
+%define WMIW_RH    100
+%define WMIW_BC    104
+%define WMIW_FC    108
+%define WMIW_EID   112
+
+wm_init_default_windows:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    sub rsp, 136                        ; shadow(32) + call args(32) + locals(72)
+    ; 6 pushes + sub 136 = 8 + 48 + 136 = 192. 192 % 16 = 0. ✓
+
+%ifdef KERNEL_MODE
+    ; Count entities in display.VISIBLE
+    lea rcx, [rel str_cn_visible]
+    call herb_container_count
+    mov dword [rsp + WMIW_NV], eax
+    mov dword [rsp + WMIW_VI], 0
+
+.wmiw_loop:
+    mov eax, dword [rsp + WMIW_VI]
+    cmp eax, dword [rsp + WMIW_NV]
+    jge .wmiw_done
+
+    ; Get entity ID
+    lea rcx, [rel str_cn_visible]
+    mov edx, eax
+    call herb_container_entity
+    test eax, eax
+    js .wmiw_next
+    mov dword [rsp + WMIW_SID], eax
+    mov dword [rsp + WMIW_EID], eax
+
+    ; Get kind
+    mov ecx, eax
+    lea rdx, [rel str_kind]
+    mov r8d, -1
+    call herb_entity_prop_int
+    mov dword [rsp + WMIW_KIND], eax
+
+    ; Handle kind == 0 (region surface)
+    cmp eax, 0
+    jne .wmiw_check_panel
+
+    ; Read region_id
+    mov ecx, dword [rsp + WMIW_SID]
+    lea rdx, [rel str_gfx_region_id]
+    mov r8d, -1
+    call herb_entity_prop_int
+    cmp eax, 0
+    jl .wmiw_next
+    cmp eax, 3
+    jg .wmiw_next
+    mov dword [rsp + WMIW_RID], eax
+
+    ; Read x, y, width, height, border_color, fill_color
+    mov ecx, dword [rsp + WMIW_SID]
+    lea rdx, [rel str_x]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + WMIW_RX], eax
+
+    mov ecx, dword [rsp + WMIW_SID]
+    lea rdx, [rel str_y]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + WMIW_RY], eax
+
+    mov ecx, dword [rsp + WMIW_SID]
+    lea rdx, [rel str_gfx_width]
+    mov r8d, 100
+    call herb_entity_prop_int
+    mov dword [rsp + WMIW_RW], eax
+
+    mov ecx, dword [rsp + WMIW_SID]
+    lea rdx, [rel str_gfx_height]
+    mov r8d, 100
+    call herb_entity_prop_int
+    mov dword [rsp + WMIW_RH], eax
+
+    mov ecx, dword [rsp + WMIW_SID]
+    lea rdx, [rel str_border_color]
+    mov r8d, 0x00888888                 ; COL_TEXT_DIM
+    call herb_entity_prop_int
+    mov dword [rsp + WMIW_BC], eax
+
+    mov ecx, dword [rsp + WMIW_SID]
+    lea rdx, [rel str_fill_color]
+    mov r8d, 0x00101820                 ; COL_BG
+    call herb_entity_prop_int
+    mov dword [rsp + WMIW_FC], eax
+
+    ; wm_create_window(x, y, w, h, type=0, content_id=rid, title=region_titles[rid], flags)
+    mov ecx, dword [rsp + WMIW_RX]
+    mov edx, dword [rsp + WMIW_RY]
+    mov r8d, dword [rsp + WMIW_RW]
+    mov r9d, dword [rsp + WMIW_RH]
+    mov dword [rsp + 32], 0            ; type = WCT_REGION
+    mov eax, dword [rsp + WMIW_RID]
+    mov dword [rsp + 40], eax          ; content_id = region_id
+    ; title = region_titles[rid]
+    movsxd rax, eax
+    lea rdi, [rel region_titles]
+    mov rdi, [rdi + rax*8]
+    mov [rsp + 48], rdi                ; title pointer
+    mov dword [rsp + 56], (1 << 5) | (1 << 6) ; WF_CLOSABLE | WF_RESIZABLE
+    call wm_create_window
+    cmp eax, -1
+    je .wmiw_next
+    mov dword [rsp + WMIW_WID], eax
+
+    ; Set border_color, fill_color, title_bg on the window
+    mov ecx, eax
+    call wm_window_ptr
+    test rax, rax
+    jz .wmiw_next
+    mov rbx, rax
+
+    mov eax, dword [rsp + WMIW_BC]
+    mov dword [rbx + 40], eax          ; WIN_BORDER_COLOR
+    mov eax, dword [rsp + WMIW_FC]
+    mov dword [rbx + 44], eax          ; WIN_FILL_COLOR
+    mov eax, dword [rsp + WMIW_BC]
+    mov dword [rbx + 48], eax          ; WIN_TITLE_BG = border_color (matches old style)
+    mov eax, dword [rsp + WMIW_EID]
+    mov dword [rbx + 52], eax          ; WIN_ENTITY_ID
+
+    ; Set draw_fn = wm_draw_region_adapter
+    lea rax, [rel wm_draw_region_adapter]
+    mov [rbx + 80], rax                ; WIN_DRAW_FN
+
+    jmp .wmiw_next
+
+.wmiw_check_panel:
+    ; Handle kind == 4 (tension panel surface)
+    cmp dword [rsp + WMIW_KIND], 4
+    jne .wmiw_next
+
+    ; Read panel position from Surface entity
+    mov ecx, dword [rsp + WMIW_SID]
+    lea rdx, [rel str_x]
+    mov r8d, 548                        ; default GFX_TENS_X
+    call herb_entity_prop_int
+    mov dword [rsp + WMIW_RX], eax
+
+    mov ecx, dword [rsp + WMIW_SID]
+    lea rdx, [rel str_y]
+    mov r8d, 76                         ; default GFX_TENS_Y
+    call herb_entity_prop_int
+    mov dword [rsp + WMIW_RY], eax
+
+    mov ecx, dword [rsp + WMIW_SID]
+    lea rdx, [rel str_gfx_width]
+    mov r8d, 244                        ; default GFX_TENS_W
+    call herb_entity_prop_int
+    mov dword [rsp + WMIW_RW], eax
+
+    mov ecx, dword [rsp + WMIW_SID]
+    lea rdx, [rel str_gfx_height]
+    mov r8d, 388                        ; default GFX_TENS_H
+    call herb_entity_prop_int
+    mov dword [rsp + WMIW_RH], eax
+
+    ; wm_create_window(x, y, w, h, type=1, content_id=4, title="TENSIONS", flags)
+    mov ecx, dword [rsp + WMIW_RX]
+    mov edx, dword [rsp + WMIW_RY]
+    mov r8d, dword [rsp + WMIW_RW]
+    mov r9d, dword [rsp + WMIW_RH]
+    mov dword [rsp + 32], 1            ; type = WCT_TENSIONS
+    mov dword [rsp + 40], 4            ; content_id = 4
+    lea rdi, [rel str_gfx_tensions]
+    mov [rsp + 48], rdi                ; title = "TENSIONS"
+    mov dword [rsp + 56], (1 << 5) | (1 << 6) ; WF_CLOSABLE | WF_RESIZABLE
+    call wm_create_window
+    cmp eax, -1
+    je .wmiw_next
+
+    ; Set colors and draw_fn
+    mov ecx, eax
+    call wm_window_ptr
+    test rax, rax
+    jz .wmiw_next
+    mov rbx, rax
+
+    mov dword [rbx + 40], 0x00336688   ; WIN_BORDER_COLOR = COL_TENS_BORDER
+    mov dword [rbx + 44], 0x000C1018   ; WIN_FILL_COLOR = COL_TENS_BG
+    mov dword [rbx + 48], 0x00336688   ; WIN_TITLE_BG
+    mov eax, dword [rsp + WMIW_EID]
+    mov dword [rbx + 52], eax          ; WIN_ENTITY_ID
+
+    ; Set draw_fn = wm_draw_tension_adapter
+    lea rax, [rel wm_draw_tension_adapter]
+    mov [rbx + 80], rax                ; WIN_DRAW_FN
+
+.wmiw_next:
+    inc dword [rsp + WMIW_VI]
+    jmp .wmiw_loop
+
+.wmiw_done:
+%else
+    ; Non-KERNEL_MODE: create windows from hardcoded positions
+    ; CPU0 window
+    mov ecx, 8                          ; GFX_CPU0_X
+    mov edx, 76                         ; GFX_CPU0_Y
+    mov r8d, 388                        ; GFX_CONT_W
+    mov r9d, 190                        ; GFX_CONT_H
+    mov dword [rsp + 32], 0            ; WCT_REGION
+    mov dword [rsp + 40], 0            ; region_id = 0
+    lea rdi, [rel str_gfx_leg_cpu0]
+    mov [rsp + 48], rdi
+    mov dword [rsp + 56], (1 << 5) | (1 << 6)
+    call wm_create_window
+
+    ; Set CPU0 colors and draw_fn
+    test eax, eax
+    js .wmiw_nk_ready
+    mov ecx, eax
+    call wm_window_ptr
+    test rax, rax
+    jz .wmiw_nk_ready
+    mov dword [rax + 40], COL_RUNNING   ; border_color
+    mov dword [rax + 44], COL_RUNNING_BG ; fill_color
+    mov dword [rax + 48], COL_RUNNING   ; title_bg
+    lea rbx, [rel wm_draw_region_adapter]
+    mov [rax + 80], rbx
+
+.wmiw_nk_ready:
+    ; READY window
+    mov ecx, 404                        ; GFX_READY_X
+    mov edx, 76                         ; GFX_READY_Y
+    mov r8d, 388
+    mov r9d, 190
+    mov dword [rsp + 32], 0
+    mov dword [rsp + 40], 1            ; region_id = 1
+    lea rdi, [rel str_gfx_leg_ready]
+    mov [rsp + 48], rdi
+    mov dword [rsp + 56], (1 << 5) | (1 << 6)
+    call wm_create_window
+
+    test eax, eax
+    js .wmiw_nk_blocked
+    mov ecx, eax
+    call wm_window_ptr
+    test rax, rax
+    jz .wmiw_nk_blocked
+    mov dword [rax + 40], COL_READY_COL
+    mov dword [rax + 44], COL_READY_BG
+    mov dword [rax + 48], COL_READY_COL
+    lea rbx, [rel wm_draw_region_adapter]
+    mov [rax + 80], rbx
+
+.wmiw_nk_blocked:
+    ; BLOCKED window
+    mov ecx, 8
+    mov edx, 274                        ; GFX_BLOCK_Y
+    mov r8d, 388
+    mov r9d, 190
+    mov dword [rsp + 32], 0
+    mov dword [rsp + 40], 2
+    lea rdi, [rel str_gfx_leg_blocked]
+    mov [rsp + 48], rdi
+    mov dword [rsp + 56], (1 << 5) | (1 << 6)
+    call wm_create_window
+
+    test eax, eax
+    js .wmiw_nk_term
+    mov ecx, eax
+    call wm_window_ptr
+    test rax, rax
+    jz .wmiw_nk_term
+    mov dword [rax + 40], COL_BLOCKED_COL
+    mov dword [rax + 44], COL_BLOCKED_BG
+    mov dword [rax + 48], COL_BLOCKED_COL
+    lea rbx, [rel wm_draw_region_adapter]
+    mov [rax + 80], rbx
+
+.wmiw_nk_term:
+    ; TERMINATED window
+    mov ecx, 404
+    mov edx, 274
+    mov r8d, 388
+    mov r9d, 190
+    mov dword [rsp + 32], 0
+    mov dword [rsp + 40], 3
+    lea rdi, [rel str_gfx_leg_term]
+    mov [rsp + 48], rdi
+    mov dword [rsp + 56], (1 << 5) | (1 << 6)
+    call wm_create_window
+
+    test eax, eax
+    js .wmiw_nk_done
+    mov ecx, eax
+    call wm_window_ptr
+    test rax, rax
+    jz .wmiw_nk_done
+    mov dword [rax + 40], COL_TERM_COL
+    mov dword [rax + 44], COL_TERM_BG
+    mov dword [rax + 48], COL_TERM_COL
+    lea rbx, [rel wm_draw_region_adapter]
+    mov [rax + 80], rbx
+
+.wmiw_nk_done:
+%endif
+
+    add rsp, 136
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
 ; GFX_DRAW_FULL — Full graphics mode redraw (Phase D Step 7b)
 ;
 ; void gfx_draw_full(void)
@@ -10047,216 +10654,8 @@ gfx_draw_full:
     mov r9d, COL_BORDER
     call fb_hline
 
-    ; ---- 7. Container regions ----
-%ifdef KERNEL_MODE
-    ; Iterate VISIBLE surfaces
-    lea rcx, [rel str_cn_visible]
-    call herb_container_count
-    mov dword [rsp + GDF_NV], eax
-    mov dword [rsp + GDF_VI], 0
-
-.gdf_vis_loop:
-    mov eax, dword [rsp + GDF_VI]
-    cmp eax, dword [rsp + GDF_NV]
-    jge .gdf_vis_done
-
-    ; sid = herb_container_entity(CN_VISIBLE, vi)
-    lea rcx, [rel str_cn_visible]
-    mov edx, eax
-    call herb_container_entity
-    test eax, eax
-    js .gdf_vis_next
-    mov dword [rsp + GDF_SID], eax
-
-    ; kind = herb_entity_prop_int(sid, "kind", -1)
-    mov ecx, eax
-    lea rdx, [rel str_kind]
-    mov r8d, -1
-    call herb_entity_prop_int
-    test eax, eax
-    jnz .gdf_vis_next           ; kind != 0, skip
-
-    ; rid = herb_entity_prop_int(sid, "region_id", -1)
-    mov ecx, dword [rsp + GDF_SID]
-    lea rdx, [rel str_gfx_region_id]
-    mov r8d, -1
-    call herb_entity_prop_int
-    cmp eax, 0
-    jl .gdf_vis_next
-    cmp eax, 3
-    jg .gdf_vis_next
-    mov dword [rsp + GDF_RID], eax
-
-    ; rx = herb_entity_prop_int(sid, "x", 0)
-    mov ecx, dword [rsp + GDF_SID]
-    lea rdx, [rel str_x]
-    xor r8d, r8d
-    call herb_entity_prop_int
-    mov dword [rsp + GDF_RX], eax
-
-    ; ry = herb_entity_prop_int(sid, "y", 0)
-    mov ecx, dword [rsp + GDF_SID]
-    lea rdx, [rel str_y]
-    xor r8d, r8d
-    call herb_entity_prop_int
-    mov dword [rsp + GDF_RY], eax
-
-    ; rw = herb_entity_prop_int(sid, "width", 100)
-    mov ecx, dword [rsp + GDF_SID]
-    lea rdx, [rel str_gfx_width]
-    mov r8d, 100
-    call herb_entity_prop_int
-    mov dword [rsp + GDF_RW], eax
-
-    ; rh = herb_entity_prop_int(sid, "height", 100)
-    mov ecx, dword [rsp + GDF_SID]
-    lea rdx, [rel str_gfx_height]
-    mov r8d, 100
-    call herb_entity_prop_int
-    mov dword [rsp + GDF_RH], eax
-
-    ; bc = herb_entity_prop_int(sid, "border_color", COL_TEXT_DIM)
-    mov ecx, dword [rsp + GDF_SID]
-    lea rdx, [rel str_border_color]
-    mov r8d, COL_TEXT_DIM
-    call herb_entity_prop_int
-    mov dword [rsp + GDF_BC], eax
-
-    ; fc = herb_entity_prop_int(sid, "fill_color", COL_BG)
-    mov ecx, dword [rsp + GDF_SID]
-    lea rdx, [rel str_fill_color]
-    mov r8d, COL_BG
-    call herb_entity_prop_int
-    mov dword [rsp + GDF_FC], eax
-
-    ; fb_draw_container(rx, ry, rw, rh, region_titles[rid], bc, fc)
-    ; 7 args: rcx=rx, rdx=ry, r8=rw, r9=rh, [rsp+32]=title, [rsp+40]=bc, [rsp+48]=fc
-    mov ecx, dword [rsp + GDF_RX]
-    mov edx, dword [rsp + GDF_RY]
-    mov r8d, dword [rsp + GDF_RW]
-    mov r9d, dword [rsp + GDF_RH]
-    mov eax, dword [rsp + GDF_RID]
-    lea rdi, [rel region_titles]
-    mov rdi, [rdi + rax*8]      ; region_titles[rid]
-    mov [rsp + 32], rdi
-    mov eax, dword [rsp + GDF_BC]
-    mov dword [rsp + 40], eax
-    mov eax, dword [rsp + GDF_FC]
-    mov dword [rsp + 48], eax
-    call fb_draw_container
-
-    ; gfx_draw_procs_in_region(rx, ry, rw, rh, region_containers[rid], bc, fc)
-    mov ecx, dword [rsp + GDF_RX]
-    mov edx, dword [rsp + GDF_RY]
-    mov r8d, dword [rsp + GDF_RW]
-    mov r9d, dword [rsp + GDF_RH]
-    mov eax, dword [rsp + GDF_RID]
-    lea rdi, [rel region_containers]
-    mov rdi, [rdi + rax*8]      ; region_containers[rid]
-    mov [rsp + 32], rdi
-    mov eax, dword [rsp + GDF_BC]
-    mov dword [rsp + 40], eax
-    mov eax, dword [rsp + GDF_FC]
-    mov dword [rsp + 48], eax
-    call gfx_draw_procs_in_region
-
-.gdf_vis_next:
-    inc dword [rsp + GDF_VI]
-    jmp .gdf_vis_loop
-
-.gdf_vis_done:
-
-%else
-    ; Non-KERNEL_MODE: hardcoded container positions
-    ; CPU0
-    mov ecx, GFX_CPU0_X
-    mov edx, GFX_CPU0_Y
-    mov r8d, GFX_CONT_W
-    mov r9d, GFX_CONT_H
-    lea rdi, [rel str_gfx_leg_cpu0]
-    mov [rsp + 32], rdi
-    mov dword [rsp + 40], COL_RUNNING
-    mov dword [rsp + 48], COL_RUNNING_BG
-    call fb_draw_container
-
-    mov ecx, GFX_CPU0_X
-    mov edx, GFX_CPU0_Y
-    mov r8d, GFX_CONT_W
-    mov r9d, GFX_CONT_H
-    lea rdi, [rel str_cn_cpu0]
-    mov [rsp + 32], rdi
-    mov dword [rsp + 40], COL_RUNNING
-    mov dword [rsp + 48], COL_RUNNING_BG
-    call gfx_draw_procs_in_region
-
-    ; READY
-    mov ecx, GFX_READY_X
-    mov edx, GFX_READY_Y
-    mov r8d, GFX_CONT_W
-    mov r9d, GFX_CONT_H
-    lea rdi, [rel str_gfx_leg_ready]
-    mov [rsp + 32], rdi
-    mov dword [rsp + 40], COL_READY_COL
-    mov dword [rsp + 48], COL_READY_BG
-    call fb_draw_container
-
-    mov ecx, GFX_READY_X
-    mov edx, GFX_READY_Y
-    mov r8d, GFX_CONT_W
-    mov r9d, GFX_CONT_H
-    lea rdi, [rel str_cn_ready]
-    mov [rsp + 32], rdi
-    mov dword [rsp + 40], COL_READY_COL
-    mov dword [rsp + 48], COL_READY_BG
-    call gfx_draw_procs_in_region
-
-    ; BLOCKED
-    mov ecx, GFX_BLOCK_X
-    mov edx, GFX_BLOCK_Y
-    mov r8d, GFX_CONT_W
-    mov r9d, GFX_CONT_H
-    lea rdi, [rel str_gfx_leg_blocked]
-    mov [rsp + 32], rdi
-    mov dword [rsp + 40], COL_BLOCKED_COL
-    mov dword [rsp + 48], COL_BLOCKED_BG
-    call fb_draw_container
-
-    mov ecx, GFX_BLOCK_X
-    mov edx, GFX_BLOCK_Y
-    mov r8d, GFX_CONT_W
-    mov r9d, GFX_CONT_H
-    lea rdi, [rel str_cn_blocked]
-    mov [rsp + 32], rdi
-    mov dword [rsp + 40], COL_BLOCKED_COL
-    mov dword [rsp + 48], COL_BLOCKED_BG
-    call gfx_draw_procs_in_region
-
-    ; TERMINATED
-    mov ecx, GFX_TERM_X
-    mov edx, GFX_TERM_Y
-    mov r8d, GFX_CONT_W
-    mov r9d, GFX_CONT_H
-    lea rdi, [rel str_gfx_leg_term]
-    mov [rsp + 32], rdi
-    mov dword [rsp + 40], COL_TERM_COL
-    mov dword [rsp + 48], COL_TERM_BG
-    call fb_draw_container
-
-    mov ecx, GFX_TERM_X
-    mov edx, GFX_TERM_Y
-    mov r8d, GFX_CONT_W
-    mov r9d, GFX_CONT_H
-    lea rdi, [rel str_cn_terminated]
-    mov [rsp + 32], rdi
-    mov dword [rsp + 40], COL_TERM_COL
-    mov dword [rsp + 48], COL_TERM_BG
-    call gfx_draw_procs_in_region
-%endif
-
-    ; ---- 8. Tension panel ----
-%ifdef KERNEL_MODE
-    call gfx_draw_tension_panel
-%endif
+    ; ---- 7+8. Window manager: container regions + tension panel ----
+    call wm_draw_all
 
     ; ---- 9. Action log ----
     xor ecx, ecx
@@ -11020,227 +11419,178 @@ draw_full:
 
 
 ; ============================================================
-; COMPILER TESTS
+; BOOT-TIME COMPILATION — compile .herb source to binary
 ; ============================================================
-%ifdef KERNEL_MODE
 
-; compiler_run_tests — run all 7 compiler byte-identity tests
-compiler_run_tests:
+; boot_compile_programs — compile all embedded .herb source at boot
+; Returns: EAX = 0 on success, -1 on failure
+boot_compile_programs:
     push    rbp
     mov     rbp, rsp
     push    rbx
-    push    rsi
-    push    rdi
-    push    r12
-    push    r13
-    push    r14
-    push    r15
-    sub     rsp, 56
-    ; ret(8)+rbp(8)+7*push(56)+sub(56)=128, 128%16=0 ✓
+    sub     rsp, 40
+    ; ret(8)+rbp(8)+rbx(8)+sub(40)=64, 64%16=0 ✓
 
-    lea     rcx, [rel str_comp_test_hdr]
+    lea     rcx, [rel str_compile_hdr]
     call    serial_print
 
-    ; Test 1: schedule_priority
-    lea     rcx, [rel src_schedule_priority]
-    lea     rax, [rel src_schedule_priority_len]
+    ; ---- interactive_kernel (always — main program) ----
+    lea     rcx, [rel src_interactive_kernel]
+    lea     rax, [rel src_interactive_kernel_len]
     mov     edx, [rax]
-    lea     r8, [rel program_schedule_priority]
-    lea     rax, [rel program_schedule_priority_len]
-    mov     r9d, [rax]
-    lea     rax, [rel str_comp_name_sp]
-    mov     [rsp+32], rax
-    call    compiler_test_one
-
-    ; Test 2: schedule_roundrobin
-    lea     rcx, [rel src_schedule_roundrobin]
-    lea     rax, [rel src_schedule_roundrobin_len]
-    mov     edx, [rax]
-    lea     r8, [rel program_schedule_roundrobin]
-    lea     rax, [rel program_schedule_roundrobin_len]
-    mov     r9d, [rax]
-    lea     rax, [rel str_comp_name_sr]
-    mov     [rsp+32], rax
-    call    compiler_test_one
-
-    ; Test 3: worker
-    lea     rcx, [rel src_worker]
-    lea     rax, [rel src_worker_len]
-    mov     edx, [rax]
-    lea     r8, [rel program_worker]
-    lea     rax, [rel program_worker_len]
-    mov     r9d, [rax]
-    lea     rax, [rel str_comp_name_wk]
-    mov     [rsp+32], rax
-    call    compiler_test_one
-
-    ; Test 4: producer
-    lea     rcx, [rel src_producer]
-    lea     rax, [rel src_producer_len]
-    mov     edx, [rax]
-    lea     r8, [rel program_producer]
-    lea     rax, [rel program_producer_len]
-    mov     r9d, [rax]
-    lea     rax, [rel str_comp_name_pr]
-    mov     [rsp+32], rax
-    call    compiler_test_one
-
-    ; Test 5: consumer
-    lea     rcx, [rel src_consumer]
-    lea     rax, [rel src_consumer_len]
-    mov     edx, [rax]
-    lea     r8, [rel program_consumer]
-    lea     rax, [rel program_consumer_len]
-    mov     r9d, [rax]
-    lea     rax, [rel str_comp_name_cn]
-    mov     [rsp+32], rax
-    call    compiler_test_one
-
-    ; Test 6: beacon
-    lea     rcx, [rel src_beacon]
-    lea     rax, [rel src_beacon_len]
-    mov     edx, [rax]
-    lea     r8, [rel program_beacon]
-    lea     rax, [rel program_beacon_len]
-    mov     r9d, [rax]
-    lea     rax, [rel str_comp_name_bc]
-    mov     [rsp+32], rax
-    call    compiler_test_one
-
-    ; Test 7: shell
-    lea     rcx, [rel src_shell]
-    lea     rax, [rel src_shell_len]
-    mov     edx, [rax]
-    lea     r8, [rel program_shell]
-    lea     rax, [rel program_shell_len]
-    mov     r9d, [rax]
-    lea     rax, [rel str_comp_name_sh]
-    mov     [rsp+32], rax
-    call    compiler_test_one
-
-    add     rsp, 56
-    pop     r15
-    pop     r14
-    pop     r13
-    pop     r12
-    pop     rdi
-    pop     rsi
-    pop     rbx
-    pop     rbp
-    ret
-
-
-; compiler_test_one — compile source, compare with reference binary
-;
-; RCX = source text ptr
-; EDX = source text len
-; R8  = reference binary ptr
-; R9D = reference binary len
-; [RSP+32+8*8] = name string ptr (5th arg: after shadow + 7 pushes + ret)
-; Actually: 5th arg passed at [RSP+32] before call, so callee sees at [RBP+48]
-compiler_test_one:
-    push    rbp
-    mov     rbp, rsp
-    push    rbx
-    push    rsi
-    push    rdi
-    push    r12
-    push    r13
-    push    r14
-    push    r15
-    sub     rsp, 56
-    ; ret(8)+rbp(8)+7*push(56)+sub(56)=128, 128%16=0 ✓
-
-    ; Save args
-    mov     r12, rcx            ; source ptr
-    mov     r13d, edx           ; source len
-    mov     r14, r8             ; ref binary ptr
-    mov     r15d, r9d           ; ref binary len
-    mov     rsi, [rbp+48]       ; name string ptr (5th arg)
-
-    ; Call herb_compile_source(src, len, comp_test_buf, 2048)
-    mov     rcx, r12
-    mov     edx, r13d
-    lea     r8, [rel comp_test_buf]
-    mov     r9d, 2048
+    lea     r8, [rel bin_interactive_kernel]
+    mov     r9d, 20480
     call    herb_compile_source
-    mov     ebx, eax            ; ebx = compiled length
-
-    ; Compare lengths
-    cmp     ebx, r15d
-    jne     .cto_len_mismatch
-
-    ; Compare bytes
-    xor     edi, edi            ; byte index
-.cto_cmp_loop:
-    cmp     edi, ebx
-    jge     .cto_pass
-
-    lea     rax, [rel comp_test_buf]
-    movzx   ecx, byte [rax + rdi]
-    movzx   edx, byte [r14 + rdi]
-    cmp     cl, dl
-    jne     .cto_byte_mismatch
-    inc     edi
-    jmp     .cto_cmp_loop
-
-.cto_pass:
-    ; Print [COMPILER PASS] <name> byte-identical
-    lea     rcx, [rel str_comp_pass]
-    call    serial_print
-    mov     rcx, rsi
-    call    serial_print
-    lea     rcx, [rel str_comp_byte_id]
-    call    serial_print
-    jmp     .cto_done
-
-.cto_len_mismatch:
-    ; Print [COMPILER FAIL] <name> length mismatch got=X exp=Y strs_got=A strs_exp=B
-    lea     rcx, [rel str_comp_fail]
-    call    serial_print
-    mov     rcx, rsi
-    call    serial_print
-    lea     rcx, [rel str_comp_len_mm]
+    test    eax, eax
+    jle     .bcp_fail
+    mov     [rel bin_ik_len], eax
+    mov     ebx, eax
+    lea     rcx, [rel str_compile_ik]
     call    serial_print
     mov     ecx, ebx
     call    serial_print_int
-    lea     rcx, [rel str_comp_len_exp]
-    call    serial_print
-    mov     ecx, r15d
-    call    serial_print_int
-    lea     rcx, [rel str_newline]
-    call    serial_print
-    jmp     .cto_done
-
-.cto_byte_mismatch:
-    ; Print [COMPILER FAIL] <name> mismatch at byte <offset>
-    push    rcx                 ; save got byte
-    push    rdx                 ; save exp byte
-    lea     rcx, [rel str_comp_fail]
-    call    serial_print
-    mov     rcx, rsi
-    call    serial_print
-    lea     rcx, [rel str_comp_mismatch]
-    call    serial_print
-    mov     ecx, edi
-    call    serial_print_int
-    pop     rdx                 ; exp byte
-    pop     rcx                 ; got byte — but we need it in ecx for print
-    ; Print got and exp as hex would be nice but serial_print_int is decimal
-    ; Just print the offset, that's enough for debugging
-    lea     rcx, [rel str_newline]
+    lea     rcx, [rel str_compile_bytes]
     call    serial_print
 
-.cto_done:
-    add     rsp, 56
-    pop     r15
-    pop     r14
-    pop     r13
-    pop     r12
-    pop     rdi
-    pop     rsi
+%ifdef KERNEL_MODE
+    ; ---- shell ----
+    lea     rcx, [rel src_shell]
+    lea     rax, [rel src_shell_len]
+    mov     edx, [rax]
+    lea     r8, [rel bin_shell]
+    mov     r9d, 2048
+    call    herb_compile_source
+    test    eax, eax
+    jle     .bcp_fail
+    mov     [rel bin_shell_len], eax
+    mov     ebx, eax
+    lea     rcx, [rel str_compile_sh]
+    call    serial_print
+    mov     ecx, ebx
+    call    serial_print_int
+    lea     rcx, [rel str_compile_bytes]
+    call    serial_print
+
+    ; ---- producer ----
+    lea     rcx, [rel src_producer]
+    lea     rax, [rel src_producer_len]
+    mov     edx, [rax]
+    lea     r8, [rel bin_producer]
+    mov     r9d, 512
+    call    herb_compile_source
+    test    eax, eax
+    jle     .bcp_fail
+    mov     [rel bin_producer_len], eax
+    mov     ebx, eax
+    lea     rcx, [rel str_compile_pr]
+    call    serial_print
+    mov     ecx, ebx
+    call    serial_print_int
+    lea     rcx, [rel str_compile_bytes]
+    call    serial_print
+
+    ; ---- consumer ----
+    lea     rcx, [rel src_consumer]
+    lea     rax, [rel src_consumer_len]
+    mov     edx, [rax]
+    lea     r8, [rel bin_consumer]
+    mov     r9d, 512
+    call    herb_compile_source
+    test    eax, eax
+    jle     .bcp_fail
+    mov     [rel bin_consumer_len], eax
+    mov     ebx, eax
+    lea     rcx, [rel str_compile_cn]
+    call    serial_print
+    mov     ecx, ebx
+    call    serial_print_int
+    lea     rcx, [rel str_compile_bytes]
+    call    serial_print
+
+    ; ---- worker ----
+    lea     rcx, [rel src_worker]
+    lea     rax, [rel src_worker_len]
+    mov     edx, [rax]
+    lea     r8, [rel bin_worker]
+    mov     r9d, 512
+    call    herb_compile_source
+    test    eax, eax
+    jle     .bcp_fail
+    mov     [rel bin_worker_len], eax
+    mov     ebx, eax
+    lea     rcx, [rel str_compile_wk]
+    call    serial_print
+    mov     ecx, ebx
+    call    serial_print_int
+    lea     rcx, [rel str_compile_bytes]
+    call    serial_print
+
+    ; ---- beacon ----
+    lea     rcx, [rel src_beacon]
+    lea     rax, [rel src_beacon_len]
+    mov     edx, [rax]
+    lea     r8, [rel bin_beacon]
+    mov     r9d, 512
+    call    herb_compile_source
+    test    eax, eax
+    jle     .bcp_fail
+    mov     [rel bin_beacon_len], eax
+    mov     ebx, eax
+    lea     rcx, [rel str_compile_bc]
+    call    serial_print
+    mov     ecx, ebx
+    call    serial_print_int
+    lea     rcx, [rel str_compile_bytes]
+    call    serial_print
+
+    ; ---- schedule_priority ----
+    lea     rcx, [rel src_schedule_priority]
+    lea     rax, [rel src_schedule_priority_len]
+    mov     edx, [rax]
+    lea     r8, [rel bin_schedule_priority]
+    mov     r9d, 512
+    call    herb_compile_source
+    test    eax, eax
+    jle     .bcp_fail
+    mov     [rel bin_sched_pri_len], eax
+    mov     ebx, eax
+    lea     rcx, [rel str_compile_sp]
+    call    serial_print
+    mov     ecx, ebx
+    call    serial_print_int
+    lea     rcx, [rel str_compile_bytes]
+    call    serial_print
+
+    ; ---- schedule_roundrobin ----
+    lea     rcx, [rel src_schedule_roundrobin]
+    lea     rax, [rel src_schedule_roundrobin_len]
+    mov     edx, [rax]
+    lea     r8, [rel bin_schedule_roundrobin]
+    mov     r9d, 512
+    call    herb_compile_source
+    test    eax, eax
+    jle     .bcp_fail
+    mov     [rel bin_sched_rr_len], eax
+    mov     ebx, eax
+    lea     rcx, [rel str_compile_sr]
+    call    serial_print
+    mov     ecx, ebx
+    call    serial_print_int
+    lea     rcx, [rel str_compile_bytes]
+    call    serial_print
+%endif  ; KERNEL_MODE — fragment compilations
+
+    ; All compilations succeeded
+    xor     eax, eax
+    jmp     .bcp_done
+
+.bcp_fail:
+    lea     rcx, [rel str_compile_fail]
+    call    serial_print
+    mov     eax, -1
+
+.bcp_done:
+    add     rsp, 40
     pop     rbx
     pop     rbp
     ret
-
-%endif  ; KERNEL_MODE — compiler tests

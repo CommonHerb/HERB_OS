@@ -37,27 +37,18 @@ ifeq ($(GRAPHICS),1)
 NASMFLAGS_KERNEL += -DGRAPHICS_MODE
 endif
 
-# Program paths
-PROGRAM_JSON = ../programs/$(PROGRAM).herb.json
-PROGRAM_BIN  = $(PROGRAM).herb
-
-# Process program paths (loaded as data at runtime)
-PROC_PROGRAMS = producer consumer worker beacon schedule_priority schedule_roundrobin shell
-PROC_HERB_BINS = $(addsuffix .herb,$(PROC_PROGRAMS))
+# .herb source files (compiled at boot by in-kernel compiler)
+HERB_SOURCES = ../programs/interactive_kernel.herb \
+               ../programs/shell.herb ../programs/producer.herb \
+               ../programs/consumer.herb ../programs/worker.herb \
+               ../programs/beacon.herb ../programs/schedule_priority.herb \
+               ../programs/schedule_roundrobin.herb
 
 .PHONY: all run run-text clean help test-bare-metal
 
 all: herb_os.img
 
-# ---- Step 1a: Compile .herb.json to .herb binary (main kernel program) ----
-$(PROGRAM_BIN): ../src/herb_compile.py $(PROGRAM_JSON)
-	$(PYTHON) ../src/herb_compile.py $(PROGRAM_JSON) $(PROGRAM_BIN)
-
-# ---- Step 1b: Compile process program fragments ----
-%.herb: ../programs/%.herb.json ../src/herb_compile.py
-	$(PYTHON) ../src/herb_compile.py $< $@
-
-# ---- Step 2: Compile all objects ----
+# ---- Step 1: Compile all objects ----
 kernel_entry.o: kernel_entry.asm
 	$(NASM) -f win64 $< -o $@
 
@@ -79,12 +70,15 @@ herb_loader.o: herb_loader.asm herb_graph_layout.inc herb_freestanding_layout.in
 herb_compiler.o: herb_compiler.asm herb_graph_layout.inc
 	$(NASM) -f win64 $< -o $@
 
-herb_kernel.o: herb_kernel.asm $(PROGRAM_BIN) $(PROC_HERB_BINS)
+herb_wm.o: herb_wm.asm
+	$(NASM) -f win64 $< -o $@
+
+herb_kernel.o: herb_kernel.asm $(HERB_SOURCES)
 	$(NASM) $(NASMFLAGS_KERNEL) $< -o $@
 
-OBJS = kernel_entry.o herb_freestanding.o herb_hw.o herb_ham.o herb_graph.o herb_loader.o herb_compiler.o herb_kernel.o
+OBJS = kernel_entry.o herb_freestanding.o herb_hw.o herb_ham.o herb_graph.o herb_loader.o herb_compiler.o herb_wm.o herb_kernel.o
 
-# ---- Step 3: Link into PE, then extract flat binary ----
+# ---- Step 2: Link into PE, then extract flat binary ----
 # Image base 0x0FFC00 makes .text land at VMA 0x100000
 # (PE headers occupy 0x0FFC00-0x0FFFFF, first section at +0x400)
 kernel.pe: $(OBJS)
@@ -95,13 +89,13 @@ kernel.bin: kernel.pe
 	$(OBJCOPY) -O binary -j .text -j .data -j .rdata $< $@
 	@$(PYTHON) -c "import os; print('Kernel binary: ' + str(os.path.getsize('kernel.bin')) + ' bytes')"
 
-# ---- Step 4: Assemble bootloader (needs kernel size) ----
+# ---- Step 3: Assemble bootloader (needs kernel size) ----
 boot.bin: boot.asm kernel.bin
 	$(eval KSECTORS := $(shell $(PYTHON) -c "import math,os; print(math.ceil(os.path.getsize('kernel.bin') / 512))"))
 	@echo "Kernel sectors: $(KSECTORS)"
 	$(NASM) -f bin -DKERNEL_SECTORS=$(KSECTORS) $< -o $@
 
-# ---- Step 5: Assemble final disk image ----
+# ---- Step 4: Assemble final disk image ----
 herb_os.img: boot.bin kernel.bin
 	$(PYTHON) -c "open('$@','wb').write(open('boot.bin','rb').read()+open('kernel.bin','rb').read())"
 	$(PYTHON) -c "import os; s=os.path.getsize('$@'); pad=((s+511)//512)*512-s; open('$@','ab').write(b'\x00'*pad) if pad else None"
@@ -132,7 +126,7 @@ test-bare-metal:
 # ---- Clean ----
 clean:
 	$(PYTHON) -c "import glob,os;\
-	[os.remove(f) for p in ['*.o','kernel.pe','kernel.bin','boot.bin','herb_os.img','interactive_kernel.herb','interactive_os.herb','producer.herb','consumer.herb','worker.herb','beacon.herb','schedule_priority.herb','schedule_roundrobin.herb','shell.herb','test_serial.log'] for f in glob.glob(p) if os.path.isfile(f)]"
+	[os.remove(f) for p in ['*.o','kernel.pe','kernel.bin','boot.bin','herb_os.img','test_serial.log'] for f in glob.glob(p) if os.path.isfile(f)]"
 
 # ---- Help ----
 help:
@@ -149,9 +143,8 @@ help:
 	@echo "  make PROGRAM=interactive_kernel   Four-module kernel (default)"
 	@echo "  make PROGRAM=interactive_os       Flat scheduler"
 	@echo ""
-	@echo "Process Programs (loaded as data at runtime):"
-	@echo "  producer.herb, consumer.herb — process program fragments"
-	@echo "  schedule_priority.herb, schedule_roundrobin.herb — scheduling policies"
+	@echo ".herb source is compiled at boot by the in-kernel compiler."
+	@echo "No Python compilation step in the build chain."
 	@echo ""
 	@echo "Display:"
 	@echo "  GRAPHICS=1 (default)   BGA framebuffer 800x600x32"
