@@ -1,0 +1,93 @@
+# Turing Machine: Binary Counter (LSB first, 8-bit tape)
+# Each tick increments the binary value by 1.
+# Press 't' to trigger one TM step.
+
+type tm.Cell
+
+type tm.Head
+
+type tm.TmSig
+
+container TAPE simple tm.Cell order_key cell_index
+container HEAD_SLOT slot tm.Head
+container TM_TICK simple tm.TmSig
+container TM_DONE simple tm.TmSig
+
+move tm_consume tm.TmSig from TM_TICK to TM_DONE
+
+# Tape cells: 8 bits, all start at 0
+entity cell0 tm.Cell in TAPE
+  prop cell_index 0
+  prop value 0
+
+entity cell1 tm.Cell in TAPE
+  prop cell_index 1
+  prop value 0
+
+entity cell2 tm.Cell in TAPE
+  prop cell_index 2
+  prop value 0
+
+entity cell3 tm.Cell in TAPE
+  prop cell_index 3
+  prop value 0
+
+entity cell4 tm.Cell in TAPE
+  prop cell_index 4
+  prop value 0
+
+entity cell5 tm.Cell in TAPE
+  prop cell_index 5
+  prop value 0
+
+entity cell6 tm.Cell in TAPE
+  prop cell_index 6
+  prop value 0
+
+entity cell7 tm.Cell in TAPE
+  prop cell_index 7
+  prop value 0
+
+# Head: starts at position 0, state 0
+entity head tm.Head in HEAD_SLOT
+  prop position 0
+  prop state 0
+
+# Step tensions: fire once per tick (not to fixpoint)
+# Signal-as-fuel: whichever fires first consumes TM_TICK, preventing the other.
+# tm_carry: if cell at head position is 1 → set to 0, move head right (carry)
+step tm_carry priority 20
+  match sig in TM_TICK select first
+  match h in HEAD_SLOT
+    where h.state == 0
+  match c in TAPE select first
+    where c.cell_index == h.position
+    where c.value == 1
+  emit set c value 0
+  emit set h position h.position + 1
+  emit move tm_consume sig to TM_DONE
+
+# tm_flip: if cell at head position is 0 → set to 1, mark done (state=1)
+step tm_flip priority 19
+  match sig in TM_TICK select first
+  match h in HEAD_SLOT
+    where h.state == 0
+  match c in TAPE select first
+    where c.cell_index == h.position
+    where c.value == 0
+  emit set c value 1
+  emit set h state 1
+  emit move tm_consume sig to TM_DONE
+
+# Converge tensions: clean up after step
+# tm_consume: consume the TM_TICK signal
+tension tm_consume priority 15
+  match sig in TM_TICK select first
+  emit move tm_consume sig to TM_DONE
+
+# tm_reset: reset head to position 0 when state==1 (increment complete)
+tension tm_reset priority 10
+  match h in HEAD_SLOT
+    where h.state == 1
+  emit set h state 0
+  emit set h position 0

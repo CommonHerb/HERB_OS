@@ -449,6 +449,7 @@ class HerbCompiler:
             self.w_u16(self.add_string(c["name"]))
             self.w_u8(CK_SLOT if c.get("kind") == "slot" else CK_SIMPLE)
             self.w_u16(self.add_string(c.get("entity_type")))
+            self.w_u16(self.add_string(c["order_key"]) if c.get("order_key") else 0xFFFF)
 
         # --- Moves ---
         moves = prog.get("moves", [])
@@ -541,6 +542,7 @@ class HerbCompiler:
             self.w_i16(t.get("priority", 0))
             pair = t.get("pair", "zip")
             self.w_u8(1 if pair == "cross" else 0)
+            self.w_u8(1 if t.get("step", False) else 0)
             matches = t.get("match", [])
             self.w_u8(len(matches))
             for mc in matches:

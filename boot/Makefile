@@ -42,7 +42,8 @@ HERB_SOURCES = ../programs/interactive_kernel.herb \
                ../programs/shell.herb ../programs/producer.herb \
                ../programs/consumer.herb ../programs/worker.herb \
                ../programs/beacon.herb ../programs/schedule_priority.herb \
-               ../programs/schedule_roundrobin.herb
+               ../programs/schedule_roundrobin.herb \
+               ../programs/turing.herb
 
 .PHONY: all run run-text clean help test-bare-metal
 
@@ -73,10 +74,13 @@ herb_compiler.o: herb_compiler.asm herb_graph_layout.inc
 herb_wm.o: herb_wm.asm
 	$(NASM) -f win64 $< -o $@
 
+herb_editor.o: herb_editor.asm
+	$(NASM) -f win64 $< -o $@
+
 herb_kernel.o: herb_kernel.asm $(HERB_SOURCES)
 	$(NASM) $(NASMFLAGS_KERNEL) $< -o $@
 
-OBJS = kernel_entry.o herb_freestanding.o herb_hw.o herb_ham.o herb_graph.o herb_loader.o herb_compiler.o herb_wm.o herb_kernel.o
+OBJS = kernel_entry.o herb_freestanding.o herb_hw.o herb_ham.o herb_graph.o herb_loader.o herb_compiler.o herb_wm.o herb_editor.o herb_kernel.o
 
 # ---- Step 2: Link into PE, then extract flat binary ----
 # Image base 0x0FFC00 makes .text land at VMA 0x100000

@@ -55,6 +55,7 @@ extern g_ham_dirty          ; int (from herb_ham.asm)
 
 ; Graph data — owned by this file (Phase D Step 7d)
 global g_strings, g_string_count, g_graph, g_expr_pool, g_expr_count
+global container_order_keys, tension_step_flags
 
 ; Export our functions — Phase 4b Part 1
 global intern
@@ -137,6 +138,10 @@ align 16
 g_strings:      resb 262144     ; char[2048][128] — string intern table
 g_expr_pool:    resb 131072     ; Expr[4096] — expression pool (4096 × 32 bytes)
 g_graph:        resb SIZEOF_GRAPH ; Graph struct (720568 bytes)
+
+align 4
+container_order_keys: resd MAX_CONTAINERS  ; parallel array: order_key prop string ID per container (-1 = unordered)
+tension_step_flags:   resd MAX_TENSIONS    ; parallel array: step flag per tension (0 = converge, 1 = step)
 
 ; ============================================================
 ; DATA — Graph counters (Phase D Step 7d: migrated from C)
