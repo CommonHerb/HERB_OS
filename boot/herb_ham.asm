@@ -49,6 +49,9 @@ extern try_move
 extern get_scoped_container
 extern do_channel_send
 extern do_channel_receive
+; Parallel arrays (from herb_graph.asm)
+extern container_order_keys
+extern tension_step_flags
 ; Phase 4i — HAM compiler externs
 extern g_graph
 extern intern
@@ -103,6 +106,9 @@ each_idx:        resd 1        ; current iteration index
 each_bind:       resd 1        ; which binding register (0-3) to update
 thdr_owner:      resd 1        ; saved owner entity index from THDR (Phase 3c)
 thdr_run_ctnr:   resd 1        ; saved run_container from THDR (Phase 3c)
+scan_last_ctnr:  resd 1        ; last scanned container index (for ordered sort)
+ham_pass_mode:   resd 1        ; 0 = step pass, 1 = converge pass
+thdr_flags:      resd 1        ; flags byte from current THDR
 ; Debug counters (read by C after ham_run returns)
 ham_dbg_thdr:    resd 1        ; number of THDR entries
 ham_dbg_fail:    resd 1        ; number of FAILs
@@ -169,7 +175,6 @@ hc_ham_lp:        db "(", 0
 hc_ham_rp:        db ")", 0
 hc_newline:       db 10, 0
 hc_intfmt:        db "%d", 0
-
 ; ============================================================
 ; TEXT — HAM engine code
 ; ============================================================
@@ -311,6 +316,7 @@ ham_run:
     mov  dword [changed_flag], 0    ; changed = 0
     mov  dword [each_mode], 0      ; not in each-mode
     mov  dword [fixpoint_iters], 0 ; safety counter
+    mov  dword [ham_pass_mode], 0  ; start with step pass
 
     ; Save bytecode bounds
     mov  [bytecode_end_p], rcx
@@ -375,12 +381,16 @@ ham_invalid:
 ; Sets up tension_end, resets expression stack and action buffer.
 ; For Phase 3a: only system tensions (owner == -1) are executed.
 ; THDR (0x40): Tension header
-; Format: THDR pri(1) owner(2) run_ctnr(2) tension_len(2) = 7 bytes after opcode
+; Format: THDR pri(1) flags(1) owner(2) run_ctnr(2) tension_len(2) = 8 bytes after opcode
 ; Phase 3c: owner scheduling — system/daemon/process three-way check
 ham_op_thdr:
     inc  dword [ham_dbg_thdr]
     movzx eax, byte [rsi]          ; pri (1 byte)
     inc  rsi
+
+    movzx eax, byte [rsi]          ; flags (1 byte)
+    inc  rsi
+    mov  [thdr_flags], eax          ; save to BSS
 
     movzx eax, word [rsi]          ; owner (2 bytes, u16)
     add  rsi, 2
@@ -395,10 +405,26 @@ ham_op_thdr:
 
     ; Compute tension_end = THDR_opcode_pos + tension_len
     mov  rdx, rsi
-    sub  rdx, 8                     ; back to THDR opcode
+    sub  rdx, 9                     ; back to THDR opcode (1+1+1+2+2+2=9 bytes)
     add  rdx, rcx                   ; + tension_len
     mov  [tension_end_p], rdx
 
+    ; === Pass-mode filtering ===
+    mov  eax, [ham_pass_mode]
+    mov  ecx, [thdr_flags]
+    and  ecx, 1                     ; step_flag
+    test eax, eax
+    jz   .thdr_step_pass
+    ; converge pass: skip step tensions
+    test ecx, ecx
+    jnz  .thdr_skip                 ; step tension in converge pass → skip
+    jmp  .thdr_owner_check
+.thdr_step_pass:
+    ; step pass: skip converge tensions
+    test ecx, ecx
+    jz   .thdr_skip                 ; converge tension in step pass → skip
+
+.thdr_owner_check:
     ; === Owner scheduling decision ===
     cmp  word [thdr_owner], 0xFFFF
     je   .thdr_proceed              ; system tension (owner == -1) → always run
@@ -486,6 +512,7 @@ ham_op_tend:
     ; Action SET: field1=entity_idx, field2=prop_id, field3=value(i64)
     ; Call ham_eset(entity_idx, prop_id, value) -> returns 1 if changed
     inc  dword [ham_dbg_action]
+
     push r8
     push r9
     sub  rsp, 32                    ; shadow space (MS x64 ABI)
@@ -607,17 +634,25 @@ ham_op_tend:
     cmp  rsi, [bytecode_end_p]
     jl   .not_end
 
-    ; At end of bytecode — check if anything changed
+    ; Two-pass fixpoint: step pass → converge pass
+    cmp  dword [ham_pass_mode], 0
+    je   .switch_to_converge        ; step pass done → switch to converge
+
+    ; Converge pass: normal fixpoint loop
     cmp  dword [changed_flag], 0
     je   ham_run.done               ; no changes → equilibrium, return
 
-    ; Changes occurred — reset for another fixpoint cycle
     inc  dword [fixpoint_iters]
     cmp  dword [fixpoint_iters], 100
-    jge  ham_run.done               ; safety: max 100 fixpoint iterations
+    jge  ham_run.done               ; safety limit
     mov  rsi, rbx                   ; PC = bytecode start
-    mov  dword [changed_flag], 0    ; clear changed flag
-    ; Fall through to dispatch
+    mov  dword [changed_flag], 0
+    jmp  .not_end                   ; continue converge pass
+
+.switch_to_converge:
+    mov  dword [ham_pass_mode], 1   ; enter converge pass
+    mov  rsi, rbx                   ; reset PC to bytecode start
+    mov  dword [changed_flag], 0    ; clear changed flag for converge pass
 
 .not_end:
     DISPATCH
@@ -680,6 +715,96 @@ ham_op_fail:
     DISPATCH
 
 ; ============================================================
+; ham_sort_scan_buf(container_idx)
+; Insertion sort scan_buf by ascending order_key property value.
+; If container is unordered or scan_count < 2, returns immediately.
+; ECX = container_idx
+; Clobbers: caller-saved registers
+; ============================================================
+ham_sort_scan_buf:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 48
+    ; ret(8)+rbp(8)+4*push(32)+sub(48)=96, 96%16=0 ✓
+    ; [rsp+32]=key_value, [rsp+40]=key_entity
+
+    ; Check if container is ordered
+    lea     rax, [container_order_keys]
+    mov     ebx, [rax + rcx*4]         ; EBX = order_key prop_id
+    cmp     ebx, -1
+    je      .hsb_done                  ; unordered → return
+
+    ; Check if scan_count >= 2
+    mov     eax, [scan_count]
+    cmp     eax, 2
+    jl      .hsb_done                  ; 0 or 1 elements → no sort needed
+
+    ; Insertion sort: i = 1 .. scan_count-1
+    mov     r12d, 1                    ; R12 = i (outer loop)
+.hsb_outer:
+    cmp     r12d, [scan_count]
+    jge     .hsb_done
+
+    ; key_entity = scan_buf[i]
+    lea     rax, [scan_buf]
+    mov     r13d, [rax + r12*4]        ; R13 = key_entity
+    mov     [rsp+40], r13d
+
+    ; key_value = ham_eprop(key_entity, order_key)
+    mov     ecx, r13d
+    mov     edx, ebx                   ; prop_id
+    call    ham_eprop
+    mov     [rsp+32], rax              ; key_value (int64)
+
+    ; j = i - 1
+    lea     r14d, [r12d - 1]           ; R14 = j
+.hsb_inner:
+    cmp     r14d, 0
+    jl      .hsb_insert
+
+    ; val_j = ham_eprop(scan_buf[j], order_key)
+    lea     rax, [scan_buf]
+    mov     ecx, [rax + r14*4]         ; entity at scan_buf[j]
+    mov     edx, ebx
+    call    ham_eprop
+
+    ; Compare: if val_j <= key_value, stop shifting
+    cmp     rax, [rsp+32]
+    jle     .hsb_insert
+
+    ; Shift: scan_buf[j+1] = scan_buf[j]
+    lea     rax, [scan_buf]
+    lea     ecx, [r14d + 1]
+    mov     edx, [rax + r14*4]
+    mov     [rax + rcx*4], edx
+
+    dec     r14d
+    jmp     .hsb_inner
+
+.hsb_insert:
+    ; scan_buf[j+1] = key_entity
+    lea     rax, [scan_buf]
+    lea     ecx, [r14d + 1]
+    mov     edx, [rsp+40]
+    mov     [rax + rcx*4], edx
+
+    inc     r12d
+    jmp     .hsb_outer
+
+.hsb_done:
+    add     rsp, 48
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ============================================================
 ; SCANNING INSTRUCTIONS
 ; ============================================================
 
@@ -688,6 +813,7 @@ ham_op_fail:
 ham_op_scan:
     movzx ecx, word [rsi]          ; container_idx
     add  rsi, 2
+    mov  [scan_last_ctnr], ecx     ; save for sort
 
     ; Call ham_scan(container_idx, scan_buf, 64)
     ; RCX = container_idx (already set)
@@ -700,6 +826,11 @@ ham_op_scan:
     test eax, eax
     jz   .scan_zero
     inc  dword [ham_dbg_scan_nz]
+
+    ; Sort scan_buf if container is ordered
+    mov  ecx, [scan_last_ctnr]
+    call ham_sort_scan_buf
+
 .scan_zero:
     DISPATCH
 
@@ -742,6 +873,7 @@ ham_op_scan_scoped:
 
     ; Call ham_scan(container_idx, scan_buf, 64)
     mov  ecx, eax                   ; container_idx
+    mov  [scan_last_ctnr], ecx      ; save for sort
     lea  rdx, [scan_buf]
     mov  r8d, 64
     call ham_scan
@@ -750,6 +882,11 @@ ham_op_scan_scoped:
     test eax, eax
     jz   .ss_zero
     inc  dword [ham_dbg_scan_nz]
+
+    ; Sort scan_buf if container is ordered
+    mov  ecx, [scan_last_ctnr]
+    call ham_sort_scan_buf
+
 .ss_zero:
     DISPATCH
 
@@ -2436,7 +2573,7 @@ ham_compile_tension:
     mov     eax, [rdi]
     mov     [rsp + HCT_TST], eax
 
-    ; --- Emit THDR: 0x40 + pri(1) + owner(2) + run_ctnr(2) + len_placeholder(2) ---
+    ; --- Emit THDR: 0x40 + pri(1) + flags(1) + owner(2) + run_ctnr(2) + len_placeholder(2) ---
     mov     ecx, [rdi]          ; pos
     mov     byte [rsi + rcx], 0x40
     inc     ecx
@@ -2447,6 +2584,14 @@ ham_compile_tension:
     jle     .hct_pri_ok
     mov     eax, 255
 .hct_pri_ok:
+    mov     [rsi + rcx], al
+    inc     ecx
+
+    ; flags byte: bit 0 = step_discipline
+    mov     eax, [rbp + 48]             ; 5th arg = tension graph index
+    lea     rdx, [tension_step_flags]
+    mov     eax, [rdx + rax*4]          ; tension_step_flags[ti]
+    and     eax, 0xFF
     mov     [rsi + rcx], al
     inc     ecx
 
@@ -3278,11 +3423,13 @@ ham_compile_all:
     mov     eax, [rsp + HCA_POS]
     mov     [rsp + HCA_SAVE_POS], eax
 
-    ; --- ham_compile_tension(t, buf, &pos, buf_size) ---
+    ; --- ham_compile_tension(t, buf, &pos, buf_size, tension_idx) ---
     mov     rcx, rdi            ; t
     mov     rdx, rbx            ; buf
     lea     r8, [rsp + HCA_POS] ; &pos
     mov     r9d, r12d           ; buf_size
+    mov     eax, [rsp + HCA_ORDER + r14*4]
+    mov     [rsp + 32], eax     ; 5th arg = tension graph index
     call    ham_compile_tension
     test    eax, eax
     jz      .hca_compile_fail

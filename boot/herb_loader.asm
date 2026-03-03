@@ -41,10 +41,13 @@ extern herb_error
 extern herb_snprintf
 extern herb_arena_init
 extern herb_set_error_handler
+extern serial_print
 
 
 ; External data
 extern g_graph          ; Graph (720568 bytes)
+extern container_order_keys  ; parallel array: order_key per container
+extern tension_step_flags    ; parallel array: step flag per tension
 extern g_strings        ; char[2048][128]
 extern g_string_count   ; int
 extern g_expr_pool      ; Expr[4096]
@@ -63,6 +66,7 @@ section .bss
     g_bin_str_count: resd 1                 ; int
     arena_storage:   resb SIZEOF_ARENA      ; HerbArena — static storage for herb_init
     g_arena_ptr:     resq 1                 ; HerbArena* — pointer to arena_storage
+    g_graph_initialized: resd 1             ; flag: 0 = first load, 1 = already initialized
 
 section .rdata
     str_expr_full:    db "expr pool full", 0
@@ -1084,7 +1088,10 @@ load_program_binary:
     jmp     .lpb_str_loop
 
 .lpb_str_done:
-    ; Initialize graph
+    ; Initialize graph ONLY on first call
+    cmp     dword [g_graph_initialized], 0
+    jne     .lpb_init_owner_done
+
     lea     rcx, [g_graph]
     xor     edx, edx
     mov     r8d, SIZEOF_GRAPH
@@ -1118,6 +1125,7 @@ load_program_binary:
     jmp     .lpb_init_owner
 
 .lpb_init_owner_done:
+    mov     dword [g_graph_initialized], 1
     ; Main section loop
 .lpb_section_loop:
     mov     rax, [rbx + BR_POS]
@@ -1298,6 +1306,29 @@ load_program_binary:
     movzx   ecx, ax
     call    bstr
     mov     [rdi + CNT_ENTITY_TYPE], eax
+    ; order_key = br_u16(r) — parallel array, not in Container struct
+    push    rsi                         ; save ci (ESI = ci)
+    push    rdi                         ; save Container*
+    mov     rcx, rbx
+    call    br_u16                      ; AX = order_key string table index
+    pop     rdi                         ; restore Container*
+    pop     rsi                         ; restore ci
+    cmp     ax, 0xFFFF
+    je      .lpb_cnt_no_order
+    ; Intern the order_key property name: bstr(order_key_idx)
+    movzx   ecx, ax
+    push    rsi
+    push    rdi
+    call    bstr                        ; EAX = interned string ID
+    pop     rdi
+    pop     rsi
+    lea     rcx, [container_order_keys]
+    mov     [rcx + rsi*4], eax          ; container_order_keys[ci] = prop string ID
+    jmp     .lpb_cnt_order_done
+.lpb_cnt_no_order:
+    lea     rcx, [container_order_keys]
+    mov     dword [rcx + rsi*4], -1     ; unordered
+.lpb_cnt_order_done:
     ; c->entity_count = 0 (already 0 from graph memset)
     ; c->owner = -1
     mov     dword [rdi + CNT_OWNER], -1
@@ -1784,6 +1815,7 @@ load_program_binary:
     mov     rcx, rbx
     call    br_u16
     movzx   r13d, ax        ; R13 = count
+
     xor     r14d, r14d
 .lpb_ten_loop:
     cmp     r14d, r13d
@@ -1825,6 +1857,12 @@ load_program_binary:
     mov     rcx, rbx
     call    br_u8
     mov     [rdi + TEN_PAIR_MODE], eax
+
+    ; step_flag = br_u8(r) → tension_step_flags[ti]
+    mov     rcx, rbx
+    call    br_u8
+    lea     rcx, [tension_step_flags]
+    mov     [rcx + rsi*4], eax         ; tension_step_flags[ti] = step_flag
 
     ; Match clauses
     mov     rcx, rbx
@@ -2202,6 +2240,12 @@ herb_load_program:
     mov     rcx, rbx
     call    br_u8
     mov     [rdi + TEN_PAIR_MODE], eax
+
+    ; step_flag = br_u8(r) → tension_step_flags[ti]
+    mov     rcx, rbx
+    call    br_u8
+    lea     rcx, [tension_step_flags]
+    mov     [rcx + rsi*4], eax         ; tension_step_flags[ti] = step_flag
 
     ; Match clauses (same as load_program_binary)
     mov     rcx, rbx

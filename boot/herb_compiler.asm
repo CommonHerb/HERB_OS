@@ -156,7 +156,8 @@ global herb_compile_source
 %define CIR_TEN_MATCHES     12      ; CIR_MATCH[8] = 640 bytes
 %define CIR_TEN_EMIT_COUNT  652     ; int (12 + 8*80)
 %define CIR_TEN_EMITS       656     ; CIR_EMIT[8] = 384 bytes
-%define SIZEOF_CIR_TENSION  1040    ; 656 + 384
+%define CIR_TEN_STEP        1040    ; int: 0=converge, 1=step
+%define SIZEOF_CIR_TENSION  1044    ; 656 + 384 + 4
 
 ; Entity type IR layout
 %define CIR_ET_NAME          0
@@ -169,7 +170,8 @@ global herb_compile_source
 %define CIR_CT_NAME          0
 %define CIR_CT_KIND          4
 %define CIR_CT_ETYPE         8
-%define SIZEOF_CIR_CT        12
+%define CIR_CT_ORDER_KEY     12
+%define SIZEOF_CIR_CT        16
 
 ; Move IR layout
 %define CIR_MV_NAME          0
@@ -256,6 +258,9 @@ comp_chan_count:      resd 1
 ; Config
 comp_config_nesting: resd 1
 
+; Step tension flag (set before calling comp_parse_tension)
+comp_step_pending:   resd 1
+
 ; Output buffer tracking
 comp_out_ptr:        resq 1
 comp_out_pos:        resd 1
@@ -314,6 +319,8 @@ kw_receive:    db "receive", 0
 kw_scoped_from: db "scoped_from", 0
 kw_scoped_to:  db "scoped_to", 0
 kw_max_nesting_depth: db "max_nesting_depth", 0
+kw_order_key:  db "order_key", 0
+kw_step:       db "step", 0
 
 ; Operator strings for binary format (source → binary mapping)
 op_and_src:    db "&&", 0
@@ -1606,6 +1613,13 @@ comp_parse_program:
     test    rax, rax
     jz      .cpp_loop
 
+    ; Check if it's "step" (step-discipline tension)
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_step]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpp_step
+
     ; Check if it's "tension"
     lea     rcx, [comp_tok_buf]
     lea     rdx, [kw_tension]
@@ -1658,7 +1672,13 @@ comp_parse_program:
     ; Unknown keyword — skip
     jmp     .cpp_loop
 
+.cpp_step:
+    mov     dword [comp_step_pending], 1
+    call    comp_parse_tension
+    jmp     .cpp_loop
+
 .cpp_tension:
+    mov     dword [comp_step_pending], 0
     call    comp_parse_tension
     jmp     .cpp_loop
 
@@ -1727,11 +1747,15 @@ comp_parse_tension:
     mov     r8d, SIZEOF_CIR_TENSION
     call    herb_memset
 
+    ; Set step flag from comp_step_pending
+    mov     eax, [comp_step_pending]
+    mov     [r13 + CIR_TEN_STEP], eax
+
     ; The line buffer still has the full line. We need to re-tokenize.
-    ; Tokens: tension <name> priority <N>
-    ; "tension" was already consumed. Let's re-parse from start.
+    ; Tokens: tension/step <name> priority <N>
+    ; "tension"/"step" was already consumed. Let's re-parse from start.
     xor     ecx, ecx
-    call    comp_next_token     ; skip "tension"
+    call    comp_next_token     ; skip "tension"/"step"
     mov     ebx, ecx
 
     ; Token: <name>
@@ -2106,9 +2130,46 @@ comp_parse_match_clause:
     call    comp_next_token     ; skip "where"
     mov     ecx, ecx            ; pos after "where" — ECX already has it
     call    comp_parse_expr
+    ; EAX = new_expr_idx
+
+    ; If already have a where expr, AND them together
+    cmp     dword [r12 + CIR_MC_HAS_WHERE], 1
+    jne     .cpmc_where_first
+
+    ; Combine: create AND(old_expr, new_expr)
+    ; Save new_expr_idx
+    mov     edx, eax                ; EDX = right (new expr)
+    mov     r14d, [r12 + CIR_MC_WHERE_EXPR]  ; R14d = left (old expr)
+
+    ; Allocate new expr node
+    mov     esi, [comp_expr_count]
+    inc     dword [comp_expr_count]
+
+    ; Intern "and" operator string
+    push    rdx
+    push    rsi
+    lea     rcx, [op_and_bin]
+    call    comp_str_add            ; EAX = "and" str idx
+    pop     rsi
+    pop     rdx
+
+    ; Fill CIREX_BINARY(and, old, new)
+    imul    ecx, esi, SIZEOF_CIR_EXPR
+    lea     rcx, [comp_expr_pool + rcx]
+    mov     dword [rcx + CIR_EX_KIND], CIREX_BINARY
+    mov     [rcx + CIR_EX_OP], eax          ; "and" op
+    mov     [rcx + CIR_EX_LEFT], r14d       ; old expr
+    mov     [rcx + CIR_EX_RIGHT], edx       ; new expr
+
+    ; Store combined expr as the where_expr
+    mov     [r12 + CIR_MC_WHERE_EXPR], esi
+    jmp     .cpmc_check_where       ; loop: check for more where clauses
+
+.cpmc_where_first:
+    ; First where clause
     mov     [r12 + CIR_MC_WHERE_EXPR], eax
     mov     dword [r12 + CIR_MC_HAS_WHERE], 1
-    jmp     .cpmc_done
+    jmp     .cpmc_check_where       ; loop: check for more where clauses
 
 .cpmc_unread_check:
 .cpmc_unread:
@@ -2639,6 +2700,28 @@ comp_parse_container_decl:
     mov     ebx, ecx
     call    comp_tok_to_str
     mov     [r13 + CIR_CT_ETYPE], eax
+
+    ; Optional: order_key <prop_name>
+    mov     dword [r13 + CIR_CT_ORDER_KEY], -1  ; default: unordered
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpcd_done
+    mov     ebx, ecx
+    ; Check if token is "order_key"
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_order_key]
+    call    comp_token_eq
+    test    eax, eax
+    jz      .cpcd_done          ; not "order_key" — done
+    ; Next token is the property name
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpcd_done
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r13 + CIR_CT_ORDER_KEY], eax
 
 .cpcd_done:
     add     rsp, 32
@@ -3783,6 +3866,19 @@ comp_emit_binary:
     ; entity_type
     mov     ecx, [r13 + CIR_CT_ETYPE]
     call    comp_emit_str_idx
+    ; order_key (u16: string idx or 0xFFFF)
+    mov     ecx, [r13 + CIR_CT_ORDER_KEY]
+    cmp     ecx, -1
+    jne     .ceb_ct_has_ok
+    mov     ecx, 0xFFFF
+    jmp     .ceb_ct_emit_ok
+.ceb_ct_has_ok:
+    ; Map parse string idx to output string idx
+    call    comp_emit_str_idx
+    jmp     .ceb_ct_ok_next
+.ceb_ct_emit_ok:
+    call    comp_emit_u16
+.ceb_ct_ok_next:
     inc     r14d
     jmp     .ceb_ct_loop
 .ceb_ct_done:
@@ -3991,6 +4087,10 @@ comp_emit_binary:
 
     ; pair_mode (always 0=zip for fragments)
     xor     ecx, ecx
+    call    comp_emit_u8
+
+    ; step_flag
+    mov     ecx, [r13 + CIR_TEN_STEP]
     call    comp_emit_u8
 
     ; match_count

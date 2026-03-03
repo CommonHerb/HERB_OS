@@ -69,6 +69,10 @@ extern hw_hlt
 extern herb_snprintf
 extern herb_memset
 
+; Parallel arrays (from herb_graph.asm)
+extern container_order_keys
+extern tension_step_flags
+
 ; ISR stubs (from kernel_entry.asm)
 extern timer_isr_stub
 extern keyboard_isr_stub
@@ -157,6 +161,18 @@ extern wm_drag_mode
 extern wm_drag_win_id
 extern wm_drag_offset_x
 extern wm_drag_offset_y
+
+; Editor module (from herb_editor.asm)
+extern editor_init
+extern editor_open
+extern editor_close
+extern editor_handle_key
+extern editor_draw_content
+extern editor_activate
+extern editor_deactivate
+extern editor_toggle_blink
+extern ed_active
+extern ed_win_id
 %endif
 
 ; ============================================================
@@ -308,6 +324,8 @@ bin_schedule_priority: resb 512
 bin_sched_pri_len:     resd 1
 bin_schedule_roundrobin: resb 512
 bin_sched_rr_len:      resd 1
+bin_turing:            resb 2048
+bin_turing_len:        resd 1
 
 ; ============================================================
 ; DATA — Initialized globals (Phase D Step 7d)
@@ -429,6 +447,13 @@ src_shell:
     db 0
 src_shell_end:
 src_shell_len: dd src_shell_end - src_shell - 1
+
+align 4
+src_turing:
+    incbin "../programs/turing.herb"
+    db 0
+src_turing_end:
+src_turing_len: dd src_turing_end - src_turing - 1
 %endif  ; KERNEL_MODE — source text
 
 %ifdef KERNEL_MODE
@@ -482,6 +507,8 @@ str_compile_wk:       db "[COMPILE] worker: ", 0
 str_compile_bc:       db "[COMPILE] beacon: ", 0
 str_compile_sp:       db "[COMPILE] schedule_priority: ", 0
 str_compile_sr:       db "[COMPILE] schedule_roundrobin: ", 0
+str_compile_tm:       db "[COMPILE] turing: ", 0
+str_tm_loaded:        db "[LOAD] Turing machine loaded", 10, 0
 
 ; Phase D Step 4 — terrain name strings
 str_terrain_grass:  db "Grass", 0
@@ -843,6 +870,25 @@ str_la_move_block:  db "Blocked %s at (%d,%d)", 0
 str_la_gather_yes:  db "Gathered! wood=%d", 0
 str_la_gather_no:   db "Nothing here (wood=%d)", 0
 str_la_timer:       db "Timer signal %s -> %d ops", 0
+str_la_turing:      db "TM step -> %d ops", 0
+str_cn_tm_tick:     db "TM_TICK", 0
+str_cn_tape:        db "TAPE", 0
+str_cn_head_slot:   db "HEAD_SLOT", 0
+str_et_tmsig:       db "tm.TmSig", 0
+str_tm_sig_name:    db "tm_tick_sig", 0
+str_tm_hdr:         db "[TM] Tape: ", 0
+str_tm_cell:        db "[%d:%d]", 0
+str_tm_head:        db " Head@%d state=%d ops=%d", 10, 0
+str_prop_cell_idx:  db "cell_index", 0
+str_prop_value:     db "value", 0
+str_prop_position:  db "position", 0
+str_prop_state:     db "state", 0
+str_tm_bracket_o:   db "[", 0
+str_tm_colon:       db ":", 0
+str_tm_bracket_c:   db "]", 0
+str_tm_head_info:   db " Head@", 0
+str_tm_state_info:  db " state=", 0
+str_tm_ops_info:    db " ops=", 0
 %endif  ; KERNEL_MODE
 
 ; ---- Non-KERNEL_MODE container/type names ----
@@ -1406,6 +1452,18 @@ kernel_main:
     call serial_print
 
     ; ================================================================
+    ; INIT PARALLEL ARRAYS (must be before compilation/loading)
+    ; ================================================================
+    lea rcx, [rel container_order_keys]
+    mov edx, 0xFF
+    mov r8d, 1024                   ; 256 containers * 4 bytes = 1024
+    call herb_memset
+    lea rcx, [rel tension_step_flags]
+    xor edx, edx
+    mov r8d, 256                    ; 64 tensions * 4 bytes = 256
+    call herb_memset
+
+    ; ================================================================
     ; COMPILE .herb SOURCE TO BINARY
     ; ================================================================
     call boot_compile_programs
@@ -1454,6 +1512,19 @@ kernel_main:
     call vga_print
     lea rcx, [rel str_prog_loaded]
     call serial_print
+
+%ifdef KERNEL_MODE
+    ; Load turing machine program (system-level, no owner)
+    lea rcx, [rel bin_turing]
+    lea rax, [rel bin_turing_len]
+    mov edx, dword [rax]
+    call herb_load
+    test eax, eax
+    jnz .load_failed
+    lea rcx, [rel str_tm_loaded]
+    call serial_print
+%endif
+
     jmp .load_ok
 
 .load_failed:
@@ -1961,6 +2032,7 @@ kernel_main:
 %ifdef GRAPHICS_MODE
     call wm_init
     call wm_init_default_windows
+    call editor_init
 %endif
 
     ; ================================================================
@@ -2085,6 +2157,23 @@ kernel_main:
 .no_auto_timer:
 %else
     ; Non-KERNEL_MODE: no auto-timer
+%endif
+
+    ; Editor cursor blink (every 30 ticks = ~300ms at 100Hz)
+%ifdef GRAPHICS_MODE
+    cmp dword [rel ed_win_id], -1
+    je .no_editor_blink
+    cmp dword [rel ed_active], 0
+    je .no_editor_blink
+    mov eax, r12d
+    xor edx, edx
+    mov ecx, 30
+    div ecx
+    test edx, edx
+    jnz .no_editor_blink
+    call editor_toggle_blink
+    call draw_full
+.no_editor_blink:
 %endif
 
     ; Refresh stats every 500ms (every 50 ticks at 100Hz)
@@ -2258,6 +2347,14 @@ kernel_main:
     mov ecx, r14d
     call wm_set_focus
 
+    ; Deactivate editor if focus moved to a different window
+    cmp dword [rel ed_active], 0
+    je .wm_no_editor_deactivate
+    cmp r14d, dword [rel ed_win_id]
+    je .wm_no_editor_deactivate
+    call editor_deactivate
+.wm_no_editor_deactivate:
+
     ; Dispatch based on hit region
     cmp r15d, 1                     ; HIT_CLOSE
     je .wm_click_close
@@ -2272,6 +2369,11 @@ kernel_main:
     jmp .wm_click_done
 
 .wm_click_close:
+    ; Check if closing the editor window
+    cmp r14d, dword [rel ed_win_id]
+    jne .wm_close_not_editor
+    call editor_close
+.wm_close_not_editor:
     ; Destroy the window
     mov ecx, r14d
     call wm_destroy_window
@@ -2345,6 +2447,16 @@ kernel_main:
     test rax, rax
     jz .wm_click_passthrough
     mov r13d, dword [rax + 32]      ; WIN_CONTENT_TYPE
+
+    ; WCT_CUSTOM (3): check if editor window
+    cmp r13d, 3
+    jne .wm_click_not_editor
+    cmp r14d, dword [rel ed_win_id]
+    jne .wm_click_not_editor
+    call editor_activate
+    call draw_full
+    jmp .wm_click_done
+.wm_click_not_editor:
 
     ; WCT_TENSIONS (1): handle tension panel click
     cmp r13d, 1
@@ -2969,6 +3081,142 @@ cmd_timer:
     pop rbx
     pop rbp
     ret
+
+; ============================================================
+; cmd_turing_step — Create TM_TICK signal, run HAM, print tape
+; No args. Clobbers caller-saved.
+; Stack: 4 pushes (rbx,rsi,rdi,r12) + sub 40 = aligned
+;   8(ret)+8(rbp)+32(pushes)+40(sub) = 88 → 88%16=8 → need sub 48
+;   8+8+32+48 = 96 → 96%16=0 ✓
+;   [rsp+32] = saved value temp
+; ============================================================
+%ifdef KERNEL_MODE
+cmd_turing_step:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    sub     rsp, 48
+    ; 8(ret)+8(rbp)+32(4 pushes)+48(sub)=96, 96%16=0 ✓
+
+    ; 1. Create TmSig entity in TM_TICK
+    lea     rcx, [rel str_tm_sig_name]
+    lea     rdx, [rel str_et_tmsig]
+    lea     r8, [rel str_cn_tm_tick]
+    call    herb_create
+    test    eax, eax
+    js      .cts_no_tm
+
+    ; 2. Run HAM to process the tick
+    mov     ecx, 100
+    call    ham_run_ham
+    mov     ebx, eax
+    add     [rel total_ops], eax
+
+    ; 3. Print tape state to serial
+    lea     rcx, [rel str_tm_hdr]
+    call    serial_print
+
+    ; Iterate TAPE container entities (0..7)
+    xor     r12d, r12d
+.cts_tape_loop:
+    cmp     r12d, 8
+    jge     .cts_tape_done
+
+    lea     rcx, [rel str_cn_tape]
+    mov     edx, r12d
+    call    herb_container_entity
+    test    eax, eax
+    js      .cts_tape_done
+    mov     esi, eax
+
+    ; Get cell_index
+    mov     ecx, esi
+    lea     rdx, [rel str_prop_cell_idx]
+    mov     r8d, -1
+    call    herb_entity_prop_int
+    mov     edi, eax
+
+    ; Get value
+    mov     ecx, esi
+    lea     rdx, [rel str_prop_value]
+    xor     r8d, r8d
+    call    herb_entity_prop_int
+    mov     [rsp+32], eax               ; save value
+
+    ; Print "[idx:val]"
+    lea     rcx, [rel str_tm_bracket_o]
+    call    serial_print
+    mov     ecx, edi
+    call    serial_print_int
+    lea     rcx, [rel str_tm_colon]
+    call    serial_print
+    mov     ecx, [rsp+32]
+    call    serial_print_int
+    lea     rcx, [rel str_tm_bracket_c]
+    call    serial_print
+
+    inc     r12d
+    jmp     .cts_tape_loop
+
+.cts_tape_done:
+    ; Get head entity from HEAD_SLOT[0]
+    lea     rcx, [rel str_cn_head_slot]
+    xor     edx, edx
+    call    herb_container_entity
+    test    eax, eax
+    js      .cts_head_done
+    mov     esi, eax
+
+    ; position
+    mov     ecx, esi
+    lea     rdx, [rel str_prop_position]
+    xor     r8d, r8d
+    call    herb_entity_prop_int
+    mov     edi, eax
+
+    ; state
+    mov     ecx, esi
+    lea     rdx, [rel str_prop_state]
+    xor     r8d, r8d
+    call    herb_entity_prop_int
+    mov     r12d, eax
+
+    ; Print " Head@pos state=S ops=N\n"
+    lea     rcx, [rel str_tm_head_info]
+    call    serial_print
+    mov     ecx, edi
+    call    serial_print_int
+    lea     rcx, [rel str_tm_state_info]
+    call    serial_print
+    mov     ecx, r12d
+    call    serial_print_int
+    lea     rcx, [rel str_tm_ops_info]
+    call    serial_print
+    mov     ecx, ebx
+    call    serial_print_int
+    lea     rcx, [rel str_newline]
+    call    serial_print
+
+.cts_head_done:
+    ; Update last_action
+    lea     rcx, [rel last_action]
+    mov     edx, 80
+    lea     r8, [rel str_la_turing]
+    mov     r9d, ebx
+    call    herb_snprintf
+
+.cts_no_tm:
+    add     rsp, 48
+    pop     r12
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+%endif  ; KERNEL_MODE
 
 ; ============================================================
 ; cmd_toggle_game — Toggle game/OS display mode
@@ -6334,6 +6582,40 @@ handle_key:
 
 .hk_name_done:
 
+    ; ---- Editor: intercept ALL keys when editor is active ----
+%ifdef GRAPHICS_MODE
+    cmp dword [rel ed_active], 1
+    jne .hk_not_editor_input
+    movzx ecx, r13b                     ; ASCII
+    mov edx, r12d                       ; scancode
+    call editor_handle_key
+    call draw_full
+    jmp .hk_done
+.hk_not_editor_input:
+
+    ; ---- 'E' key opens editor (command mode only) ----
+    cmp r13b, 'e'
+    jne .hk_not_editor_open
+    cmp dword [rel fb_active], 0
+    je .hk_not_editor_open
+%ifdef KERNEL_MODE
+    ; Only open in command mode (InputCtl.mode == 0)
+    mov ecx, [rel input_ctl_eid]
+    test ecx, ecx
+    js .hk_editor_open_ok              ; no InputCtl = command mode
+    lea rdx, [rel str_mode]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    test eax, eax
+    jnz .hk_not_editor_open            ; mode != 0 = text mode, skip
+.hk_editor_open_ok:
+%endif
+    call editor_open
+    call draw_full
+    jmp .hk_done
+.hk_not_editor_open:
+%endif  ; GRAPHICS_MODE
+
     ; ---- Game mode: intercept arrow keys and space ----
 %ifdef KERNEL_MODE
     mov ecx, [rel game_ctl_eid]
@@ -6604,6 +6886,15 @@ handle_key:
     call herb_entity_prop_int
     mov esi, eax                        ; esi = prev_mode
 
+    ; Turing machine step: intercept 'u' in command mode (mode==0)
+    test esi, esi                       ; prev_mode == 0 (command mode)?
+    jnz .hk_not_turing_early
+    cmp r13b, 'u'
+    jne .hk_not_turing_early
+    call cmd_turing_step
+    jmp .hk_input_draw
+.hk_not_turing_early:
+
     ; create_key_signal(ch)
     movsx ecx, r13b
     call create_key_signal
@@ -6766,6 +7057,9 @@ handle_key:
     call cmd_new_process
     jmp .hk_fb_draw
 .hk_fb_not_n:
+%endif
+%ifdef KERNEL_MODE
+    ; (u key handled inside KERNEL_MODE input routing above)
 %endif
     cmp r13b, 't'
     jne .hk_fb_not_t
@@ -11573,6 +11867,24 @@ boot_compile_programs:
     mov     [rel bin_sched_rr_len], eax
     mov     ebx, eax
     lea     rcx, [rel str_compile_sr]
+    call    serial_print
+    mov     ecx, ebx
+    call    serial_print_int
+    lea     rcx, [rel str_compile_bytes]
+    call    serial_print
+
+    ; ---- turing ----
+    lea     rcx, [rel src_turing]
+    lea     rax, [rel src_turing_len]
+    mov     edx, [rax]
+    lea     r8, [rel bin_turing]
+    mov     r9d, 2048
+    call    herb_compile_source
+    test    eax, eax
+    jle     .bcp_fail
+    mov     [rel bin_turing_len], eax
+    mov     ebx, eax
+    lea     rcx, [rel str_compile_tm]
     call    serial_print
     mov     ecx, ebx
     call    serial_print_int
