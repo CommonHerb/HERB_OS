@@ -52,6 +52,9 @@ extern do_channel_receive
 ; Parallel arrays (from herb_graph.asm)
 extern container_order_keys
 extern tension_step_flags
+; Session 74: standalone tension data (from herb_graph.asm)
+extern g_tensions
+extern g_tension_count
 ; Phase 4i — HAM compiler externs
 extern g_graph
 extern intern
@@ -3208,24 +3211,25 @@ ham_compile_tension:
 ;   RBX = buf, R12d = buf_size, R13d = compiled count
 ;   R14d = main loop i, R15d = n (tension_count)
 ;
-; Stack locals (sub rsp, 344):
-;   [rsp+32..287]  = int order[64] (256 bytes)
-;   [rsp+288..291] = pos (int, passed by pointer to ham_compile_tension)
-;   [rsp+292..295] = save_pos (int)
-;   [rsp+296..303] = out_count pointer (8 bytes, saved)
-;   [rsp+304..307] = tmpcidx (spawn diagnostic temp)
-;   [rsp+308..311] = tmpj (spawn diagnostic temp)
-;   [rsp+312..335] = tmpbuf (24 bytes, snprintf scratch)
+; Stack locals (sub rsp, 1112):
+;   [rsp+32..1055]   = int order[256] (1024 bytes)
+;   [rsp+1056..1059] = pos (int, passed by pointer to ham_compile_tension)
+;   [rsp+1060..1063] = save_pos (int)
+;   [rsp+1064..1071] = out_count pointer (8 bytes, saved)
+;   [rsp+1072..1075] = tmpcidx (spawn diagnostic temp)
+;   [rsp+1076..1079] = tmpj (spawn diagnostic temp)
+;   [rsp+1080..1103] = tmpbuf (24 bytes, snprintf scratch)
+;   Alignment: 8 pushes=64, 8+64+1112=1184, 1184%16=0 ✓
 ; ============================================================
 
 %define HCA_ORDER     32
-%define HCA_POS       288
-%define HCA_SAVE_POS  292
-%define HCA_OUTCOUNT  296
-%define HCA_TMPCIDX   304
-%define HCA_TMPJ      308
-%define HCA_TMPBUF    312
-%define HCA_FRAME     344
+%define HCA_POS       1056
+%define HCA_SAVE_POS  1060
+%define HCA_OUTCOUNT  1064
+%define HCA_TMPCIDX   1072
+%define HCA_TMPJ      1076
+%define HCA_TMPBUF    1080
+%define HCA_FRAME     1112
 
 ham_compile_all:
     push    rbp
@@ -3248,7 +3252,7 @@ ham_compile_all:
     call    ham_init_op_ids
 
     ; --- Build order[] array: order[i] = i ---
-    mov     r15d, [g_graph + GRAPH_TENSION_COUNT]  ; R15d = n
+    mov     r15d, [g_tension_count]  ; R15d = n
     xor     ecx, ecx
 .hca_init_order:
     cmp     ecx, r15d
@@ -3275,11 +3279,11 @@ ham_compile_all:
 
     movsxd  rax, dword [rsp + HCA_ORDER + rsi*4]
     imul    rax, SIZEOF_TENSION
-    mov     ecx, [g_graph + GRAPH_TENSIONS + rax + TEN_PRIORITY]
+    mov     ecx, [g_tensions + rax + TEN_PRIORITY]
 
     movsxd  rax, dword [rsp + HCA_ORDER + rdi*4]
     imul    rax, SIZEOF_TENSION
-    mov     edx, [g_graph + GRAPH_TENSIONS + rax + TEN_PRIORITY]
+    mov     edx, [g_tensions + rax + TEN_PRIORITY]
 
     cmp     ecx, edx
     jge     .hca_sort_j_next
@@ -3313,7 +3317,7 @@ ham_compile_all:
     ; t = &g_graph.tensions[order[i]]
     movsxd  rax, dword [rsp + HCA_ORDER + r14*4]
     imul    rax, SIZEOF_TENSION
-    lea     rdi, [g_graph + GRAPH_TENSIONS + rax]  ; RDI = t (callee-saved)
+    lea     rdi, [g_tensions + rax]  ; RDI = t (callee-saved)
 
     ; if (!ham_tension_compilable(t)) continue
     mov     rcx, rdi

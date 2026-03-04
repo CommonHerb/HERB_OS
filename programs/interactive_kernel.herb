@@ -676,6 +676,15 @@ entity help_block display.HelpCmd in display.HELP_TEXT
 entity help_unblock display.HelpCmd in display.HELP_TEXT
   prop order 7
   prop cmd_text "unblock"
+entity help_save display.HelpCmd in display.HELP_TEXT
+  prop order 8
+  prop cmd_text "save <name> <text>"
+entity help_read display.HelpCmd in display.HELP_TEXT
+  prop order 9
+  prop cmd_text "read <name>"
+entity help_files display.HelpCmd in display.HELP_TEXT
+  prop order 10
+  prop cmd_text "files"
 entity input_ctl input.InputCtl in input.INPUT_STATE
   prop mode 0
   prop submitted 0
@@ -748,6 +757,15 @@ entity tcmd_block input.TextCmd in input.TEXTCMD
 entity tcmd_unblock input.TextCmd in input.TEXTCMD
   prop text_key 30062
   prop cmd_id 7
+entity tcmd_save input.TextCmd in input.TEXTCMD
+  prop text_key 29537
+  prop cmd_id 11
+entity tcmd_read input.TextCmd in input.TEXTCMD
+  prop text_key 29285
+  prop cmd_id 12
+entity tcmd_files input.TextCmd in input.TEXTCMD
+  prop text_key 26217
+  prop cmd_id 13
 entity targ_producer input.TextArg in input.TEXTARG
   prop text_key 28786
   prop arg_id 1

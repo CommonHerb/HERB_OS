@@ -12,7 +12,7 @@
 %define MAX_ENTITIES              1024
 %define MAX_CONTAINERS            256
 %define MAX_MOVE_TYPES            64
-%define MAX_TENSIONS              64
+%define MAX_TENSIONS              256
 %define MAX_STRINGS               2048
 %define MAX_STRING_LEN            128
 %define MAX_PROPERTIES            16
@@ -196,8 +196,8 @@
 %define GRAPH_CONTAINER_COUNT       423940      ; int
 %define GRAPH_MOVE_TYPES            423944      ; MoveType[64]
 %define GRAPH_MOVE_TYPE_COUNT       442120      ; int
-%define GRAPH_TENSIONS              442128      ; Tension[64]
-%define GRAPH_TENSION_COUNT         567568      ; int
+%define GRAPH_TENSIONS              442128      ; DEPRECATED — use g_tensions BSS array (Session 74)
+%define GRAPH_TENSION_COUNT         567568      ; DEPRECATED — use g_tension_count BSS global (Session 74)
 %define GRAPH_ENTITY_LOCATION       567572      ; int[1024]
 %define GRAPH_TYPE_NAMES            571668      ; int[64]
 %define GRAPH_TYPE_COUNT            571924      ; int

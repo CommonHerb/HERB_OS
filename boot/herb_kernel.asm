@@ -68,10 +68,22 @@ extern hw_hlt
 ; Utility (from herb_freestanding.asm)
 extern herb_snprintf
 extern herb_memset
+extern herb_strlen
 
 ; Parallel arrays (from herb_graph.asm)
 extern container_order_keys
 extern tension_step_flags
+
+; Disk + filesystem (from herb_disk.asm)
+extern disk_identify
+extern fs_init
+extern fs_create
+extern fs_read
+extern fs_delete
+extern fs_list
+extern disk_present
+extern fs_initialized
+extern fs_data_buf
 
 ; ISR stubs (from kernel_entry.asm)
 extern timer_isr_stub
@@ -852,6 +864,12 @@ str_la_tension_none: db "No tension selected (use [ ] to select)", 0
 str_la_tension_tog: db "Tension %s %s", 0
 str_la_game_on:     db "Game view (G=back, Arrows=move, Space=gather)", 0
 str_la_game_off:    db "OS view", 0
+str_la_save:        db "Saved %s (%d bytes)", 0
+str_la_read:        db "Read %s", 0
+str_la_files:       db "Files: %d on disk", 0
+str_ser_read_prefix: db "[FS] content ", 34, 0
+str_ser_read_colon: db 34, ": ", 0
+str_fs_nodisk:      db "[FS] error: no disk", 10, 0
 str_la_ham:         db "HAM: %d tensions %d bytes %d ops, ready %d->%d, cpu0 %d->%d", 0
 str_la_policy:      db "Policy: %s (%d ops)", 0
 str_la_create_fail: db "Failed to create process (entity limit?)", 0
@@ -1460,7 +1478,7 @@ kernel_main:
     call herb_memset
     lea rcx, [rel tension_step_flags]
     xor edx, edx
-    mov r8d, 256                    ; 64 tensions * 4 bytes = 256
+    mov r8d, 1024                   ; 256 tensions * 4 bytes = 1024
     call herb_memset
 
     ; ================================================================
@@ -2059,6 +2077,16 @@ kernel_main:
 .pause_loop:
     dec ecx
     jnz .pause_loop
+
+    ; ================================================================
+    ; PERSISTENT STORAGE INIT (ATA PIO + Filesystem)
+    ; ================================================================
+
+    call disk_identify
+    test eax, eax
+    jnz .skip_fs
+    call fs_init
+.skip_fs:
 
     ; ================================================================
     ; SET UP INTERRUPTS
@@ -4773,10 +4801,11 @@ dispatch_cmd_from_route:
     mov ebx, eax                    ; rbx = ops
     add [rel total_ops], eax
 
-    ; post_dispatch(sig_eid, ops, cpu0_name)
+    ; post_dispatch(sig_eid, ops, cpu0_name, NULL)
     mov ecx, r15d
     mov edx, ebx
     mov r8, r14
+    xor r9d, r9d                    ; buf = NULL (hotkey, no command buffer)
     call post_dispatch
 
     add rsp, 56
@@ -4907,10 +4936,11 @@ dispatch_text_command:
     mov r12d, eax                   ; r12 = cmd_id
 
 .dtc_post:
-    ; post_dispatch(sig_eid, ops, cpu0_name)
+    ; post_dispatch(sig_eid, ops, cpu0_name, buf)
     mov ecx, r15d
     mov edx, ebx
     mov r8, rsi
+    mov r9, r14                     ; buf (command buffer)
     call post_dispatch
 
     ; If cmd_id == 0 && buf != NULL: override last_action
@@ -4937,12 +4967,13 @@ dispatch_text_command:
     pop rbp
     ret
 
-; ---- post_dispatch(int sig_eid, int ops, const char* cpu0_name) ----
+; ---- post_dispatch(int sig_eid, int ops, const char* cpu0_name, const char* buf) ----
 ; Read cmd_id from HERB, emit serial, cleanup terminated, handle shell action.
-; Args: ECX = sig_eid, EDX = ops, R8 = cpu0_name
-; Stack: 5 pushes (rbp,rbx,rsi,rdi,r12) + sub rsp 80 = 120 aligned.
-;   8+40+80 = 128. 128%16=0. Good.
-;   rbx=ops, rsi=cpu0_name, r12d=cmd_id, edi=sig_eid
+; Args: ECX = sig_eid, EDX = ops, R8 = cpu0_name, R9 = buf (command buffer)
+; Stack: 6 pushes (rbp,rbx,rsi,rdi,r12,r13) + sub rsp 80 = 128+8 aligned.
+;   8+48+80 = 136. 136%16=8. Need sub rsp 88: 8+48+88=144. 144%16=0. Good.
+;   rbx=ops, rsi=cpu0_name, r12d=cmd_id, edi=sig_eid, r13=buf
+;   name_buf[32] at [rsp+56]
 post_dispatch:
     push rbp
     mov rbp, rsp
@@ -4950,11 +4981,13 @@ post_dispatch:
     push rsi
     push rdi
     push r12
-    sub rsp, 80
+    push r13
+    sub rsp, 88
 
     mov edi, ecx                    ; save sig_eid
     mov ebx, edx                    ; save ops
     mov rsi, r8                     ; save cpu0_name
+    mov r13, r9                     ; save buf
 
     ; Read cmd_id from sig_eid if >= 0
     xor r12d, r12d                  ; cmd_id = 0
@@ -5004,13 +5037,19 @@ post_dispatch:
 .pd_shell_action:
     call handle_shell_action
 
-    ; Switch on cmd_id: 1=kill, 6=block, 7=unblock
+    ; Switch on cmd_id: 1=kill, 6=block, 7=unblock, 11=save, 12=read, 13=files
     cmp r12d, 1
     je .pd_kill
     cmp r12d, 6
     je .pd_block
     cmp r12d, 7
     je .pd_unblock
+    cmp r12d, 11
+    je .pd_save
+    cmp r12d, 12
+    je .pd_read
+    cmp r12d, 13
+    je .pd_files
     jmp .pd_report
 
 .pd_kill:
@@ -5093,10 +5132,204 @@ post_dispatch:
     lea rcx, [rel str_newline]
     call serial_print
 
+.pd_save:
+    ; Parse: skip "save ", extract filename (until next space), content = rest
+    ; r13 = buf (full command string, e.g. "save test hello world")
+    test r13, r13
+    jz .pd_report
+    cmp dword [rel fs_initialized], 0
+    je .pd_save_no_disk
+
+    ; Skip "save " (5 chars)
+    lea rax, [r13]
+    ; Find "save " prefix — skip to first space after command
+    xor ecx, ecx
+.pd_save_skip:
+    cmp byte [rax + rcx], 0
+    je .pd_report                   ; hit end before finding space
+    cmp byte [rax + rcx], ' '
+    je .pd_save_found_space
+    inc ecx
+    jmp .pd_save_skip
+.pd_save_found_space:
+    inc ecx                         ; skip the space
+    lea rax, [r13 + rcx]           ; rax = start of filename
+
+    ; Copy filename to name_buf[32] at [rsp+56], stop at space or null
+    lea rdi, [rsp+56]
+    ; Zero name_buf first
+    push rax
+    mov rcx, rdi
+    xor edx, edx
+    mov r8d, 32
+    call herb_memset
+    pop rax
+
+    xor ecx, ecx
+.pd_save_name:
+    cmp ecx, 31
+    jge .pd_save_name_done
+    movzx edx, byte [rax + rcx]
+    test dl, dl
+    jz .pd_save_name_done
+    cmp dl, ' '
+    je .pd_save_name_done
+    mov [rdi + rcx], dl
+    inc ecx
+    jmp .pd_save_name
+.pd_save_name_done:
+    mov byte [rdi + rcx], 0        ; null terminate
+
+    ; Check we have a filename
+    cmp byte [rdi], 0
+    je .pd_report                   ; no filename given
+
+    ; Find content start: skip past filename + space
+    lea rdx, [rax + rcx]           ; rdx = char after filename
+    cmp byte [rdx], ' '
+    jne .pd_save_has_content
+    inc rdx                         ; skip space between name and content
+.pd_save_has_content:
+    ; rdx = content string (may be empty)
+
+    ; Calculate content length
+    push rdx                        ; save content ptr
+    mov rcx, rdx
+    call herb_strlen
+    mov r12d, eax                   ; r12d = content length (reuse, cmd_id no longer needed)
+    pop rdx                         ; restore content ptr
+
+    ; fs_create(name, data, size)
+    lea rcx, [rsp+56]              ; name_buf
+    ; rdx = content ptr (already set)
+    mov r8d, r12d                   ; size
+    call fs_create
+
+    ; Update last_action: "Saved <name> (<size> bytes)"
+    lea rcx, [rel last_action]
+    mov edx, 80
+    lea r8, [rel str_la_save]
+    lea r9, [rsp+56]                ; name
+    mov [rsp+32], r12d              ; size = 5th arg
+    call herb_snprintf
+    jmp .pd_report
+
+.pd_save_no_disk:
+    lea rcx, [rel str_fs_nodisk]
+    call serial_print
+    jmp .pd_report
+
+.pd_read:
+    ; Parse: skip "read ", extract filename
+    test r13, r13
+    jz .pd_report
+    cmp dword [rel fs_initialized], 0
+    je .pd_read_no_disk
+
+    ; Skip to first space (past "read")
+    lea rax, [r13]
+    xor ecx, ecx
+.pd_read_skip:
+    cmp byte [rax + rcx], 0
+    je .pd_report
+    cmp byte [rax + rcx], ' '
+    je .pd_read_found_space
+    inc ecx
+    jmp .pd_read_skip
+.pd_read_found_space:
+    inc ecx
+    lea rax, [r13 + rcx]           ; rax = start of filename
+
+    ; Copy filename to name_buf
+    lea rdi, [rsp+56]
+    push rax
+    mov rcx, rdi
+    xor edx, edx
+    mov r8d, 32
+    call herb_memset
+    pop rax
+
+    xor ecx, ecx
+.pd_read_name:
+    cmp ecx, 31
+    jge .pd_read_name_done
+    movzx edx, byte [rax + rcx]
+    test dl, dl
+    jz .pd_read_name_done
+    cmp dl, ' '
+    je .pd_read_name_done
+    mov [rdi + rcx], dl
+    inc ecx
+    jmp .pd_read_name
+.pd_read_name_done:
+    mov byte [rdi + rcx], 0
+
+    cmp byte [rdi], 0
+    je .pd_report
+
+    ; fs_read(name, fs_data_buf, 4096)
+    lea rcx, [rsp+56]              ; name_buf
+    lea rdx, [rel fs_data_buf]
+    mov r8d, 4095                   ; max_size (leave room for null)
+    call fs_read
+
+    cmp eax, -1
+    je .pd_report                   ; error already printed by fs_read
+
+    ; Null-terminate the data
+    lea rcx, [rel fs_data_buf]
+    mov byte [rcx + rax], 0
+
+    ; Serial: print file content
+    lea rcx, [rel str_ser_read_prefix]
+    call serial_print
+    lea rcx, [rsp+56]
+    call serial_print
+    lea rcx, [rel str_ser_read_colon]
+    call serial_print
+    lea rcx, [rel fs_data_buf]
+    call serial_print
+    lea rcx, [rel str_newline]
+    call serial_print
+
+    ; Update last_action
+    lea rcx, [rel last_action]
+    mov edx, 80
+    lea r8, [rel str_la_read]
+    lea r9, [rsp+56]                ; name
+    call herb_snprintf
+    jmp .pd_report
+
+.pd_read_no_disk:
+    lea rcx, [rel str_fs_nodisk]
+    call serial_print
+    jmp .pd_report
+
+.pd_files:
+    cmp dword [rel fs_initialized], 0
+    je .pd_files_no_disk
+
+    call fs_list
+    ; eax = file count (already printed to serial by fs_list)
+
+    ; Update last_action
+    lea rcx, [rel last_action]
+    mov edx, 80
+    lea r8, [rel str_la_files]
+    mov r9d, eax                    ; count
+    call herb_snprintf
+    jmp .pd_report
+
+.pd_files_no_disk:
+    lea rcx, [rel str_fs_nodisk]
+    call serial_print
+    jmp .pd_report
+
 .pd_report:
     call report_buffer_state
 
-    add rsp, 80
+    add rsp, 88
+    pop r13
     pop r12
     pop rdi
     pop rsi

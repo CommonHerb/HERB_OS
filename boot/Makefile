@@ -77,10 +77,13 @@ herb_wm.o: herb_wm.asm
 herb_editor.o: herb_editor.asm
 	$(NASM) -f win64 $< -o $@
 
+herb_disk.o: herb_disk.asm
+	$(NASM) -f win64 $< -o $@
+
 herb_kernel.o: herb_kernel.asm $(HERB_SOURCES)
 	$(NASM) $(NASMFLAGS_KERNEL) $< -o $@
 
-OBJS = kernel_entry.o herb_freestanding.o herb_hw.o herb_ham.o herb_graph.o herb_loader.o herb_compiler.o herb_wm.o herb_editor.o herb_kernel.o
+OBJS = kernel_entry.o herb_freestanding.o herb_hw.o herb_ham.o herb_graph.o herb_loader.o herb_compiler.o herb_wm.o herb_editor.o herb_disk.o herb_kernel.o
 
 # ---- Step 2: Link into PE, then extract flat binary ----
 # Image base 0x0FFC00 makes .text land at VMA 0x100000
@@ -110,20 +113,25 @@ herb_os.img: boot.bin kernel.bin
 	@$(PYTHON) -c "import os; print('  File: $@  (' + str(os.path.getsize('$@')) + ' bytes)')"
 	@echo "  Run:  make run"
 
+# ---- Data disk image (persistent storage, 1MB) ----
+herb_disk.img:
+	$(PYTHON) -c "open('herb_disk.img','wb').write(b'\x00'*1048576)"
+
 # ---- Run in QEMU (graphics mode, default) ----
-run: herb_os.img
-	$(QEMU) -drive format=raw,file=herb_os.img -m 64 -no-reboot -serial stdio
+run: herb_os.img herb_disk.img
+	$(QEMU) -drive format=raw,file=herb_os.img -drive format=raw,file=herb_disk.img -m 64 -no-reboot -serial stdio
 
 # ---- Run in QEMU (text mode — for debugging / fallback) ----
 run-text:
 	$(MAKE) clean
 	$(MAKE) GRAPHICS=0
-	$(QEMU) -drive format=raw,file=herb_os.img -m 64 -no-reboot -serial stdio
+	$(QEMU) -drive format=raw,file=herb_os.img -drive format=raw,file=herb_disk.img -m 64 -no-reboot -serial stdio
 
 # ---- Automated bare metal tests (always text mode — tests use serial) ----
 test-bare-metal:
 	$(MAKE) clean
 	$(MAKE) GRAPHICS=0
+	$(PYTHON) -c "open('herb_disk.img','wb').write(b'\x00'*1048576)"
 	@echo "Running bare metal tests..."
 	$(PYTHON) test_bare_metal.py herb_os.img
 

@@ -83,9 +83,16 @@ class HerbOSTest:
         if not os.path.exists(self.image_path):
             raise FileNotFoundError(f"Image not found: {self.image_path}")
 
+        # Data disk image for persistent filesystem
+        disk_img = os.path.join(os.path.dirname(self.image_path) or ".", "herb_disk.img")
+        disk_args = []
+        if os.path.exists(disk_img):
+            disk_args = ["-drive", f"format=raw,file={disk_img}"]
+
         cmd = [
             self.qemu_path,
             "-drive", f"format=raw,file={self.image_path}",
+            *disk_args,
             "-m", "64",
             "-no-reboot",
             "-display", "none",
@@ -1433,6 +1440,50 @@ def run_tests(image_path):
             if m3:
                 ops2 = int(m3.group(3))
                 t.check("HAM second run terminates cleanly", True)
+
+            # ============================================================
+            # Disk + Filesystem Tests (Session 75)
+            # ============================================================
+            print("\n" + "=" * 60)
+            print("Disk + Filesystem Tests (Session 75)")
+            print("=" * 60)
+
+            # ---- TEST: Disk Detection ----
+            print("\n--- Test: Disk Detection ---")
+            serial = t.get_serial()
+            m = re.search(r"\[DISK\] found, (\d+) sectors", serial)
+            t.check("Disk detected", m is not None)
+            if m:
+                t.check("Disk has sectors", int(m.group(1)) > 0)
+
+            m = re.search(r"\[DISK\] self-test OK", serial)
+            t.check("Disk self-test passed", m is not None)
+
+            # ---- TEST: Filesystem Init ----
+            print("\n--- Test: Filesystem Init ---")
+            m = re.search(r"\[FS\] (initialized|formatted)", serial)
+            t.check("Filesystem initialized", m is not None)
+
+            # ---- TEST: Save File ----
+            print("\n--- Test: Save File ---")
+            pos = t.serial_pos()
+            type_command("save test hello world")
+            m = t.wait_for(r'\[FS\] saved "test"', after=pos, timeout=8)
+            t.check("File saved", m is not None)
+
+            # ---- TEST: List Files ----
+            print("\n--- Test: List Files ---")
+            pos = t.serial_pos()
+            type_command("files")
+            m = t.wait_for(r'test', after=pos, timeout=8)
+            t.check("File listed", m is not None)
+
+            # ---- TEST: Read File ----
+            print("\n--- Test: Read File ---")
+            pos = t.serial_pos()
+            type_command("read test")
+            m = t.wait_for(r'hello world', after=pos, timeout=8)
+            t.check("File content correct", m is not None)
 
         else:
             print("\n(Kernel-specific tests skipped — flat scheduler mode)")
