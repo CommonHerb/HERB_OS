@@ -48,6 +48,9 @@ extern serial_print
 extern g_graph          ; Graph (720568 bytes)
 extern container_order_keys  ; parallel array: order_key per container
 extern tension_step_flags    ; parallel array: step flag per tension
+; Session 74: standalone tension data (from herb_graph.asm)
+extern g_tensions
+extern g_tension_count
 extern g_strings        ; char[2048][128]
 extern g_string_count   ; int
 extern g_expr_pool      ; Expr[4096]
@@ -1097,6 +1100,9 @@ load_program_binary:
     mov     r8d, SIZEOF_GRAPH
     call    herb_memset
 
+    ; Session 74: zero standalone tension count
+    mov     dword [g_tension_count], 0
+
     ; g_graph.entity_location[i] = -1 for all i
     lea     rdi, [g_graph + GRAPH_ENTITY_LOCATION]
     xor     esi, esi
@@ -1820,14 +1826,16 @@ load_program_binary:
 .lpb_ten_loop:
     cmp     r14d, r13d
     jge     .lpb_section_loop
-    ; ti = g_graph.tension_count++
-    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    ; ti = g_tension_count++ (with bounds check)
+    lea     rax, [g_tension_count]
     mov     esi, [rax]
+    cmp     esi, MAX_TENSIONS
+    jge     .lpb_section_loop    ; skip if full
     inc     dword [rax]
-    ; Tension* t = &g_graph.tensions[ti]
+    ; Tension* t = &g_tensions[ti]
     movsxd  rax, esi
     imul    rax, SIZEOF_TENSION
-    lea     rdi, [g_graph + GRAPH_TENSIONS]
+    lea     rdi, [g_tensions]
     add     rdi, rax        ; RDI = Tension*
 
     ; memset(t, 0, sizeof(Tension))
@@ -2167,17 +2175,17 @@ herb_load_program:
     jge     .hlp_section_loop
 
     ; Check MAX_TENSIONS
-    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    lea     rax, [g_tension_count]
     mov     esi, [rax]
     cmp     esi, MAX_TENSIONS
     jge     .hlp_section_loop
 
-    ; ti = g_graph.tension_count++
+    ; ti = g_tension_count++
     inc     dword [rax]
-    ; Tension* t = &g_graph.tensions[ti]
+    ; Tension* t = &g_tensions[ti]
     movsxd  rax, esi
     imul    rax, SIZEOF_TENSION
-    lea     rdi, [g_graph + GRAPH_TENSIONS]
+    lea     rdi, [g_tensions]
     add     rdi, rax
 
     ; memset(t, 0, sizeof(Tension))

@@ -56,6 +56,7 @@ extern g_ham_dirty          ; int (from herb_ham.asm)
 ; Graph data — owned by this file (Phase D Step 7d)
 global g_strings, g_string_count, g_graph, g_expr_pool, g_expr_count
 global container_order_keys, tension_step_flags
+global g_tensions, g_tension_count
 
 ; Export our functions — Phase 4b Part 1
 global intern
@@ -142,6 +143,11 @@ g_graph:        resb SIZEOF_GRAPH ; Graph struct (720568 bytes)
 align 4
 container_order_keys: resd MAX_CONTAINERS  ; parallel array: order_key prop string ID per container (-1 = unordered)
 tension_step_flags:   resd MAX_TENSIONS    ; parallel array: step flag per tension (0 = converge, 1 = step)
+
+; Session 74: Tension array extracted from Graph struct into standalone BSS
+align 16
+g_tensions:       resb MAX_TENSIONS * SIZEOF_TENSION  ; Tension[256] (~490KB)
+g_tension_count:  resd 1                               ; int — number of active tensions
 
 ; ============================================================
 ; DATA — Graph counters (Phase D Step 7d: migrated from C)
@@ -1751,7 +1757,7 @@ herb_entity_total:
 ; Returns tension count in the graph.
 ; ============================================================
 herb_tension_count:
-    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    lea     rax, [g_tension_count]
     mov     eax, [rax]
     ret
 
@@ -1768,14 +1774,14 @@ herb_tension_name:
     ; Bounds check
     test    ecx, ecx
     js      .htn_bad
-    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    lea     rax, [g_tension_count]
     cmp     ecx, [rax]
     jge     .htn_bad
 
     ; return str_of(tensions[idx].name_id)
     movsxd  rax, ecx
     imul    rax, SIZEOF_TENSION
-    lea     rdx, [g_graph + GRAPH_TENSIONS]
+    lea     rdx, [g_tensions]
     mov     ecx, [rdx + rax + TEN_NAME_ID]
     jmp     str_of                 ; tail call
 
@@ -1795,13 +1801,13 @@ herb_tension_name:
 herb_tension_priority:
     test    ecx, ecx
     js      .htp_zero
-    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    lea     rax, [g_tension_count]
     cmp     ecx, [rax]
     jge     .htp_zero
 
     movsxd  rax, ecx
     imul    rax, SIZEOF_TENSION
-    lea     rdx, [g_graph + GRAPH_TENSIONS]
+    lea     rdx, [g_tensions]
     mov     eax, [rdx + rax + TEN_PRIORITY]
     ret
 
@@ -1821,13 +1827,13 @@ herb_tension_priority:
 herb_tension_enabled:
     test    ecx, ecx
     js      .hte_zero
-    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    lea     rax, [g_tension_count]
     cmp     ecx, [rax]
     jge     .hte_zero
 
     movsxd  rax, ecx
     imul    rax, SIZEOF_TENSION
-    lea     rdx, [g_graph + GRAPH_TENSIONS]
+    lea     rdx, [g_tensions]
     mov     eax, [rdx + rax + TEN_ENABLED]
     ret
 
@@ -1852,7 +1858,7 @@ herb_tension_enabled:
 herb_tension_set_enabled:
     test    ecx, ecx
     js      .htse_done
-    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    lea     rax, [g_tension_count]
     cmp     ecx, [rax]
     jge     .htse_done
 
@@ -1863,7 +1869,7 @@ herb_tension_set_enabled:
 
     movsxd  rax, ecx
     imul    rax, SIZEOF_TENSION
-    lea     rcx, [g_graph + GRAPH_TENSIONS]
+    lea     rcx, [g_tensions]
     mov     [rcx + rax + TEN_ENABLED], edx
 
 .htse_done:
@@ -1881,13 +1887,13 @@ herb_tension_set_enabled:
 herb_tension_owner:
     test    ecx, ecx
     js      .hto_bad
-    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    lea     rax, [g_tension_count]
     cmp     ecx, [rax]
     jge     .hto_bad
 
     movsxd  rax, ecx
     imul    rax, SIZEOF_TENSION
-    lea     rdx, [g_graph + GRAPH_TENSIONS]
+    lea     rdx, [g_tensions]
     mov     eax, [rdx + rax + TEN_OWNER]
     ret
 
@@ -2719,7 +2725,7 @@ herb_remove_owner_tensions:
     xor     esi, esi           ; ESI = write = 0
     xor     edi, edi           ; EDI = read = 0
     xor     r12d, r12d         ; R12D = removed = 0
-    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    lea     rax, [g_tension_count]
     mov     r13d, [rax]        ; R13D = tension_count
 
 .hrot_loop:
@@ -2729,7 +2735,7 @@ herb_remove_owner_tensions:
     ; Check tensions[read].owner == owner_entity
     movsxd  rax, edi
     imul    rax, SIZEOF_TENSION
-    cmp     dword [g_graph + GRAPH_TENSIONS + rax + TEN_OWNER], ebx
+    cmp     dword [g_tensions + rax + TEN_OWNER], ebx
     jne     .hrot_keep
 
     ; Match — skip
@@ -2743,12 +2749,17 @@ herb_remove_owner_tensions:
     ; memcpy(&tensions[write], &tensions[read], SIZEOF_TENSION)
     movsxd  rax, esi
     imul    rax, SIZEOF_TENSION
-    lea     rcx, [g_graph + GRAPH_TENSIONS + rax]
+    lea     rcx, [g_tensions + rax]
     movsxd  rax, edi
     imul    rax, SIZEOF_TENSION
-    lea     rdx, [g_graph + GRAPH_TENSIONS + rax]
+    lea     rdx, [g_tensions + rax]
     mov     r8, SIZEOF_TENSION
     call    herb_memcpy
+
+    ; Compact tension_step_flags[write] = tension_step_flags[read]
+    lea     rax, [tension_step_flags]
+    mov     ecx, [rax + rdi*4]
+    mov     [rax + rsi*4], ecx
 
 .hrot_no_copy:
     inc     esi
@@ -2758,7 +2769,7 @@ herb_remove_owner_tensions:
     jmp     .hrot_loop
 
 .hrot_done:
-    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    lea     rax, [g_tension_count]
     mov     [rax], esi
     test    r12d, r12d
     jz      .hrot_return
@@ -2797,7 +2808,7 @@ herb_remove_tension_by_name:
     xor     esi, esi           ; ESI = write = 0
     xor     edi, edi           ; EDI = read = 0
     xor     r12d, r12d         ; R12D = removed = 0
-    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    lea     rax, [g_tension_count]
     mov     r13d, [rax]        ; R13D = tension_count
 
 .hrtn_loop:
@@ -2806,7 +2817,7 @@ herb_remove_tension_by_name:
 
     movsxd  rax, edi
     imul    rax, SIZEOF_TENSION
-    cmp     dword [g_graph + GRAPH_TENSIONS + rax + TEN_NAME_ID], ebx
+    cmp     dword [g_tensions + rax + TEN_NAME_ID], ebx
     jne     .hrtn_keep
     test    r12d, r12d
     jnz     .hrtn_keep         ; already removed one
@@ -2821,12 +2832,17 @@ herb_remove_tension_by_name:
 
     movsxd  rax, esi
     imul    rax, SIZEOF_TENSION
-    lea     rcx, [g_graph + GRAPH_TENSIONS + rax]
+    lea     rcx, [g_tensions + rax]
     movsxd  rax, edi
     imul    rax, SIZEOF_TENSION
-    lea     rdx, [g_graph + GRAPH_TENSIONS + rax]
+    lea     rdx, [g_tensions + rax]
     mov     r8, SIZEOF_TENSION
     call    herb_memcpy
+
+    ; Compact tension_step_flags[write] = tension_step_flags[read]
+    lea     rax, [tension_step_flags]
+    mov     ecx, [rax + rdi*4]
+    mov     [rax + rsi*4], ecx
 
 .hrtn_no_copy:
     inc     esi
@@ -2836,7 +2852,7 @@ herb_remove_tension_by_name:
     jmp     .hrtn_loop
 
 .hrtn_done:
-    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    lea     rax, [g_tension_count]
     mov     [rax], esi
     test    r12d, r12d
     jz      .hrtn_return
@@ -2881,7 +2897,7 @@ herb_tension_create:
     mov     r12, r9            ; R12 = run_container_name
 
     ; Check capacity
-    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    lea     rax, [g_tension_count]
     mov     r13d, [rax]        ; R13D = ti
     cmp     r13d, MAX_TENSIONS
     jge     .htc_fail
@@ -2891,7 +2907,7 @@ herb_tension_create:
     ; t = &g_graph.tensions[ti]
     movsxd  rax, r13d
     imul    rax, SIZEOF_TENSION
-    lea     r14, [g_graph + GRAPH_TENSIONS + rax]  ; R14 = t
+    lea     r14, [g_tensions + rax]  ; R14 = t
 
     ; herb_memset(t, 0, sizeof(Tension))
     mov     rcx, r14
@@ -2997,14 +3013,14 @@ herb_tension_match_in:
     ; Validate tidx
     test    ecx, ecx
     js      .htmi_fail
-    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    lea     rax, [g_tension_count]
     cmp     ecx, [rax]
     jge     .htmi_fail
 
     ; t = &g_graph.tensions[tidx]
     movsxd  rax, ecx
     imul    rax, SIZEOF_TENSION
-    lea     r12, [g_graph + GRAPH_TENSIONS + rax]
+    lea     r12, [g_tensions + rax]
 
     ; Check & increment match_count
     mov     eax, [r12 + TEN_MATCH_COUNT]
@@ -3087,7 +3103,7 @@ herb_tension_match_in_where:
     ; t->matches[match_count - 1].where_expr = where_expr
     movsxd  rax, ebx
     imul    rax, SIZEOF_TENSION
-    lea     rcx, [g_graph + GRAPH_TENSIONS + rax]
+    lea     rcx, [g_tensions + rax]
     mov     eax, [rcx + TEN_MATCH_COUNT]
     dec     eax
     movsxd  rax, eax
@@ -3124,13 +3140,13 @@ herb_tension_emit_set:
     ; Validate tidx
     test    ecx, ecx
     js      .htes_fail
-    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    lea     rax, [g_tension_count]
     cmp     ecx, [rax]
     jge     .htes_fail
 
     movsxd  rax, ecx
     imul    rax, SIZEOF_TENSION
-    lea     r12, [g_graph + GRAPH_TENSIONS + rax]
+    lea     r12, [g_tensions + rax]
 
     ; Check emit_count
     mov     eax, [r12 + TEN_EMIT_COUNT]
@@ -3210,13 +3226,13 @@ herb_tension_emit_move:
     ; Validate tidx
     test    ecx, ecx
     js      .htem_fail
-    lea     rax, [g_graph + GRAPH_TENSION_COUNT]
+    lea     rax, [g_tension_count]
     cmp     ecx, [rax]
     jge     .htem_fail
 
     movsxd  rax, ecx
     imul    rax, SIZEOF_TENSION
-    lea     r12, [g_graph + GRAPH_TENSIONS + rax]
+    lea     r12, [g_tensions + rax]
 
     mov     eax, [r12 + TEN_EMIT_COUNT]
     cmp     eax, MAX_EMIT_CLAUSES
