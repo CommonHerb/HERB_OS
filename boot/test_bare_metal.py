@@ -1441,6 +1441,21 @@ def run_tests(image_path):
                 ops2 = int(m3.group(3))
                 t.check("HAM second run terminates cleanly", True)
 
+            # ---- TEST: HAM Incremental (Session 79) ----
+            print("\n--- Test: HAM Incremental ---")
+            serial = t.get_serial()
+            eval_matches = re.findall(r"\[HAM\] eval=(\d+)/(\d+)", serial)
+            t.check("HAM eval stats present", len(eval_matches) > 0)
+            if eval_matches:
+                # Check that at least one invocation shows N < M (incremental skip)
+                any_skip = any(int(n) < int(m) for n, m in eval_matches)
+                t.check("HAM incremental: some tensions skipped (eval < total)",
+                         any_skip,
+                         f"all evals: {eval_matches[:5]}")
+                # Print summary
+                for n, m in eval_matches[:5]:
+                    print(f"  INFO: eval={n}/{m}")
+
             # ============================================================
             # Disk + Filesystem Tests (Session 75)
             # ============================================================
@@ -1484,6 +1499,122 @@ def run_tests(image_path):
             type_command("read test")
             m = t.wait_for(r'hello world', after=pos, timeout=8)
             t.check("File content correct", m is not None)
+
+            # ============================================================
+            # Flow Tests (Session 76)
+            # ============================================================
+            print("\n" + "=" * 60)
+            print("Flow Tests (Session 76)")
+            print("=" * 60)
+
+            # ---- TEST: Flow Compilation ----
+            print("\n--- Test: Flow Compilation ---")
+            serial = t.get_serial()
+            t.check("test_flow compiled", "test_flow:" in serial)
+            t.check("test_flow loaded", "test_flow loaded" in serial)
+
+            # ---- TEST: Flow Count ----
+            print("\n--- Test: Flow Count ---")
+            m = re.search(r'\[FLOW\] count=(\d+)', serial)
+            t.check("Flow count reported", m is not None)
+            if m:
+                t.check("Flow count >= 1", int(m.group(1)) >= 1)
+
+            # ---- TEST: Flow Creates Entities ----
+            print("\n--- Test: Flow Creates Entities ---")
+            m = re.search(r'\[FLOW\] FLOW_DST entities=(\d+)', serial)
+            t.check("FLOW_DST entity count reported", m is not None)
+            if m:
+                t.check("FLOW_DST has 3 entities", int(m.group(1)) == 3)
+
+            # ---- TEST: Flow Set Properties ----
+            print("\n--- Test: Flow Set Properties ---")
+            doubled_vals = re.findall(r'doubled=(\d+)', serial)
+            cumsum_vals = re.findall(r'cumsum=(\d+)', serial)
+            t.check("Found 3 doubled values", len(doubled_vals) == 3)
+            t.check("Found 3 cumsum values", len(cumsum_vals) == 3)
+            if len(doubled_vals) == 3:
+                t.check("doubled: 20,40,60",
+                        [int(v) for v in doubled_vals] == [20, 40, 60])
+            if len(cumsum_vals) == 3:
+                t.check("cumsum: 10,30,60",
+                        [int(v) for v in cumsum_vals] == [10, 30, 60])
+
+            # ============================================================
+            # Editor Tests (Session 76 Phase 2)
+            # ============================================================
+            print("\n" + "=" * 60)
+            print("Editor Tests (Session 76)")
+            print("=" * 60)
+
+            # ---- TEST: Editor Compilation ----
+            print("\n--- Test: Editor Compilation ---")
+            serial = t.get_serial()
+            t.check("Interactive kernel compiled with editor",
+                     "interactive_kernel:" in serial)
+
+            # ---- TEST: Editor Tensions Compiled ----
+            print("\n--- Test: Editor Tensions ---")
+            m = re.search(r'\[HAM\] tensions=(\d+) bytes=(\d+)', serial)
+            if m:
+                tension_count = int(m.group(1))
+                t.check("Editor tensions compiled (count > 72)",
+                        tension_count > 72,
+                        f"tension_count={tension_count}")
+
+            # ---- TEST: Flow includes render_editor ----
+            print("\n--- Test: Editor Flow ---")
+            m = re.search(r'\[FLOW\] count=(\d+)', serial)
+            if m:
+                flow_count = int(m.group(1))
+                t.check("render_editor flow compiled (count >= 2)",
+                        flow_count >= 2,
+                        f"flow_count={flow_count}")
+
+            # ---- TEST: Edit Command ----
+            print("\n--- Test: Edit Command ---")
+            pos = t.serial_pos()
+            t.send_key('/')
+            t.wait_for(r"\[INPUT\] mode=1", after=pos)
+            for ch in "edit":
+                t.send_key(ch)
+            pos = t.serial_pos()
+            t.send_key('ret')
+            m = t.wait_for(r"\[EDIT\] entering editor mode", after=pos, timeout=5)
+            t.check("Edit command enters editor mode", m is not None)
+
+            # ---- TEST: Type character in editor ----
+            print("\n--- Test: Editor Type Character ---")
+            pos = t.serial_pos()
+            t.send_key('a')
+            time.sleep(1.5)
+            # Check for GLYPHS debug output after typing
+            m = t.wait_for(r"\[EDIT\] GLYPHS=(\d+)", after=pos, timeout=5)
+            if m:
+                glyph_count = int(m.group(1))
+                t.check("Editor GLYPHS created after typing",
+                        glyph_count > 0,
+                        f"GLYPHS={glyph_count}")
+                # Check first glyph properties if available
+                m2 = t.wait_for(r"g\[0\] ascii=(\d+)", after=pos, timeout=2)
+                if m2:
+                    ascii_val = int(m2.group(1))
+                    t.check("First glyph has correct ascii",
+                            ascii_val == 97,  # 'a' = 97
+                            f"ascii={ascii_val}")
+            else:
+                t.check("Editor GLYPHS created after typing", False, "no GLYPHS output")
+
+            # ---- TEST: ESC exits editor ----
+            print("\n--- Test: ESC Exit Editor ---")
+            pos = t.serial_pos()
+            t.send_key('esc')
+            time.sleep(1.0)
+            # Verify command mode restored: send timer key
+            pos2 = t.serial_pos()
+            t.send_key('t')
+            m = t.wait_for(r"\[TIMER\]", after=pos2, timeout=5)
+            t.check("Timer works after editor exit", m is not None)
 
         else:
             print("\n(Kernel-specific tests skipped — flat scheduler mode)")

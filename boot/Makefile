@@ -89,7 +89,7 @@ OBJS = kernel_entry.o herb_freestanding.o herb_hw.o herb_ham.o herb_graph.o herb
 # Image base 0x0FFC00 makes .text land at VMA 0x100000
 # (PE headers occupy 0x0FFC00-0x0FFFFF, first section at +0x400)
 kernel.pe: $(OBJS)
-	$(LD) --image-base=0x0FFC00 --section-alignment=0x200 --file-alignment=0x200 \
+	$(LD) --image-base=0x0FF000 --section-alignment=0x1000 --file-alignment=0x200 \
 	      -e _start -nostdlib -o $@ $(OBJS)
 
 kernel.bin: kernel.pe

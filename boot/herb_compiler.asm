@@ -48,7 +48,7 @@ global herb_compile_source
 %define COMP_MAX_CONTAINERS    64
 %define COMP_MAX_MOVES         32
 %define COMP_MAX_MOVE_LOCS     20
-%define COMP_MAX_ENTITIES      256
+%define COMP_MAX_ENTITIES      512
 %define COMP_MAX_PROPS_PER_ENT 16
 %define COMP_MAX_CHANNELS      4
 %define COMP_MAX_PROPS_TOTAL   4096
@@ -63,6 +63,7 @@ global herb_compile_source
 %define BSEC_CHANNELS      0x07
 %define BSEC_CONFIG        0x08
 %define BSEC_TENSIONS      0x09
+%define BSEC_FLOWS         0x0A
 %define BSEC_END           0xFF
 
 ; Binary expression kinds
@@ -77,6 +78,8 @@ global herb_compile_source
 %define BEX_BINARY          0x08
 %define BEX_UNARY_NOT       0x09
 %define BEX_IN_OF           0x0A
+%define BEX_SEED            0x0B
+%define BEX_TERNARY         0x0C
 %define BEX_NULL            0xFF
 
 ; Binary match kinds
@@ -122,6 +125,8 @@ global herb_compile_source
 %define CIREX_PROP          1
 %define CIREX_BINARY        2
 %define CIREX_COUNT         3
+%define CIREX_SEED          5       ; Session 76: seed register reference
+%define CIREX_TERNARY       6       ; Session 76: if/then/else ternary
 
 ; Compiler IR match clause (80 bytes)
 %define CIR_MC_KIND         0       ; 0=entity_in, 1=empty_in, 3=guard
@@ -206,6 +211,22 @@ global herb_compile_source
 %define CIR_CH_ETYPE         12
 %define SIZEOF_CIR_CH        16
 
+; Session 76: Flow IR layout (292 bytes)
+%define CIR_FL_NAME          0       ; parse string idx
+%define CIR_FL_SOURCE        4       ; parse string idx (from container)
+%define CIR_FL_ORDER_KEY     8       ; parse string idx (order_by property)
+%define CIR_FL_DEST          12      ; parse string idx (into container)
+%define CIR_FL_BIND_SRC      16      ; parse string idx (source bind name)
+%define CIR_FL_BIND_DST      20      ; parse string idx (dest bind name)
+%define CIR_FL_SEED_CNT      24      ; int
+%define CIR_FL_SEEDS         28      ; 8 × {name:4, val:4} = 64 bytes
+%define CIR_FL_SET_CNT       92      ; int
+%define CIR_FL_SETS          96      ; 16 × {prop:4, expr:4} = 128 bytes
+%define CIR_FL_STEP_CNT      224     ; int
+%define CIR_FL_STEPS         228     ; 8 × {slot:4, expr:4} = 64 bytes
+%define SIZEOF_CIR_FLOW      292
+%define COMP_MAX_FLOWS       8
+
 ; ============================================================
 ; BSS — Compiler-internal data (no runtime state modified)
 ; ============================================================
@@ -260,6 +281,13 @@ comp_config_nesting: resd 1
 
 ; Step tension flag (set before calling comp_parse_tension)
 comp_step_pending:   resd 1
+
+; Session 76: Flow IR array
+comp_flows:          resb COMP_MAX_FLOWS * SIZEOF_CIR_FLOW   ; 2336 bytes
+comp_flow_count:     resd 1
+comp_in_flow:        resd 1         ; flag: parsing flow body expressions
+comp_flow_seeds:     resd 8         ; seed name string indices for current flow
+comp_flow_seed_count: resd 1
 
 ; Output buffer tracking
 comp_out_ptr:        resq 1
@@ -321,6 +349,15 @@ kw_scoped_to:  db "scoped_to", 0
 kw_max_nesting_depth: db "max_nesting_depth", 0
 kw_order_key:  db "order_key", 0
 kw_step:       db "step", 0
+kw_flow:       db "flow", 0
+kw_into:       db "into", 0
+kw_seed:       db "seed", 0
+kw_each_kw:    db "each", 0
+kw_if:         db "if", 0
+kw_then:       db "then", 0
+kw_else:       db "else", 0
+kw_arrow:      db "->", 0
+kw_order_by:   db "order_by", 0
 
 ; Operator strings for binary format (source → binary mapping)
 op_and_src:    db "&&", 0
@@ -411,6 +448,9 @@ comp_reset:
     mov     dword [comp_ent_count], 0
     mov     dword [comp_prop_count], 0
     mov     dword [comp_chan_count], 0
+    mov     dword [comp_flow_count], 0
+    mov     dword [comp_in_flow], 0
+    mov     dword [comp_flow_seed_count], 0
     mov     dword [comp_config_nesting], -1
 
     ; Zero idx map
@@ -697,6 +737,42 @@ comp_emit_i64:
 
     mov     rax, rbx
     shr     rax, 56
+    movzx   ecx, al
+    call    comp_emit_u8
+
+    add     rsp, 40
+    pop     rbx
+    pop     rbp
+    ret
+
+
+; ============================================================
+; comp_emit_i32(int32_t value in ECX) — Session 76
+; ============================================================
+comp_emit_i32:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 40
+
+    mov     ebx, ecx
+
+    ; Emit 4 bytes, LSB first
+    movzx   ecx, bl
+    call    comp_emit_u8
+
+    mov     eax, ebx
+    shr     eax, 8
+    movzx   ecx, al
+    call    comp_emit_u8
+
+    mov     eax, ebx
+    shr     eax, 16
+    movzx   ecx, al
+    call    comp_emit_u8
+
+    mov     eax, ebx
+    shr     eax, 24
     movzx   ecx, al
     call    comp_emit_u8
 
@@ -1497,6 +1573,13 @@ comp_parse_primary:
     jmp     .ppri_done
 
 .ppri_maybe_prop:
+    ; Session 76: Check for "if" keyword → ternary expression
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_if]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .ppri_ternary
+
     ; Check for bind.prop pattern (contains '.')
     lea     rsi, [comp_tok_buf]
     xor     edi, edi
@@ -1541,6 +1624,40 @@ comp_parse_primary:
     jmp     .ppri_done
 
 .ppri_bare_ident:
+    ; Session 76: Check if this is a seed name (when in flow body)
+    cmp     dword [comp_in_flow], 0
+    je      .ppri_bare_unknown
+
+    ; Scan comp_flow_seeds[0..seed_count-1] for match
+    lea     rsi, [comp_tok_buf]
+    mov     rcx, rsi
+    call    comp_str_add        ; get string idx for this identifier
+    mov     r12d, eax           ; R12D = identifier string idx
+
+    xor     edi, edi            ; EDI = scan index
+    mov     esi, [comp_flow_seed_count]
+.ppri_seed_scan:
+    cmp     edi, esi
+    jge     .ppri_bare_unknown
+    lea     rcx, [comp_flow_seeds]
+    cmp     r12d, [rcx + rdi*4]
+    je      .ppri_seed_found
+    inc     edi
+    jmp     .ppri_seed_scan
+
+.ppri_seed_found:
+    ; Create SEED expression node, slot = edi
+    call    comp_alloc_expr
+    mov     esi, eax
+    imul    eax, esi, SIZEOF_CIR_EXPR
+    lea     rcx, [comp_expr_pool + rax]
+    mov     dword [rcx + CIR_EX_KIND], CIREX_SEED
+    mov     [rcx + CIR_EX_IVAL], edi    ; slot index (store as int32 at offset 8)
+    mov     eax, esi
+    mov     ecx, ebx
+    jmp     .ppri_done
+
+.ppri_bare_unknown:
     ; Unknown token — shouldn't happen in well-formed input
     ; Treat as integer 0
     call    comp_alloc_expr
@@ -1550,6 +1667,51 @@ comp_parse_primary:
     mov     dword [rcx + CIR_EX_KIND], CIREX_INT
     mov     qword [rcx + CIR_EX_IVAL], 0
     mov     eax, r12d
+    mov     ecx, ebx
+    jmp     .ppri_done
+
+.ppri_ternary:
+    ; Session 76: Parse "if <cond> then <true> else <false>"
+    ; "if" already consumed. Parse condition expression.
+    mov     ecx, ebx
+    call    comp_parse_expr
+    mov     r12d, eax           ; R12D = cond expr idx
+    mov     ebx, ecx
+
+    ; Expect "then"
+    mov     ecx, ebx
+    call    comp_next_token
+    mov     ebx, ecx
+    ; (skip checking, assume "then")
+
+    ; Parse true expression
+    mov     ecx, ebx
+    call    comp_parse_expr
+    mov     esi, eax            ; ESI = true expr idx
+    mov     ebx, ecx
+
+    ; Expect "else"
+    mov     ecx, ebx
+    call    comp_next_token
+    mov     ebx, ecx
+    ; (skip checking, assume "else")
+
+    ; Parse false expression
+    mov     ecx, ebx
+    call    comp_parse_expr
+    mov     edi, eax            ; EDI = false expr idx
+    mov     ebx, ecx
+
+    ; Allocate ternary node: CIR_EX_OP = false, CIR_EX_LEFT = cond, CIR_EX_RIGHT = true
+    call    comp_alloc_expr
+    mov     ecx, eax
+    imul    eax, ecx, SIZEOF_CIR_EXPR
+    lea     rdx, [comp_expr_pool + rax]
+    mov     dword [rdx + CIR_EX_KIND], CIREX_TERNARY
+    mov     [rdx + CIR_EX_OP], edi         ; false_idx at offset 4
+    mov     [rdx + CIR_EX_LEFT], r12d      ; cond_idx at offset 8
+    mov     [rdx + CIR_EX_RIGHT], esi      ; true_idx at offset 12
+    mov     eax, ecx
     mov     ecx, ebx
     jmp     .ppri_done
 
@@ -1669,6 +1831,13 @@ comp_parse_program:
     test    eax, eax
     jnz     .cpp_config
 
+    ; Session 76: Check "flow"
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_flow]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpp_flow
+
     ; Unknown keyword — skip
     jmp     .cpp_loop
 
@@ -1704,6 +1873,10 @@ comp_parse_program:
 
 .cpp_config:
     call    comp_parse_config
+    jmp     .cpp_loop
+
+.cpp_flow:
+    call    comp_parse_flow
     jmp     .cpp_loop
 
 .cpp_done:
@@ -1856,6 +2029,377 @@ comp_parse_tension:
     mov     [comp_src_pos], esi
 .cpt_done:
     add     rsp, 40
+    pop     r13
+    pop     r12
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+
+
+; ============================================================
+; comp_parse_flow — parse flow declaration + body
+;
+; Session 76: Called after "flow" keyword consumed from line.
+; Rest of line: <name>
+; Body (indent 1): from/into/seed/each
+; Sub-body (indent 2): set/step
+; ============================================================
+comp_parse_flow:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 32
+    ; ret(8)+rbp(8)+6*push(48)+sub(32)=96, 96%16=0 ✓
+
+    ; Allocate flow slot
+    mov     eax, [comp_flow_count]
+    cmp     eax, COMP_MAX_FLOWS
+    jge     .cpf_done
+    mov     r12d, eax           ; R12D = flow index
+    inc     dword [comp_flow_count]
+
+    ; Compute pointer to flow IR
+    imul    eax, r12d, SIZEOF_CIR_FLOW
+    lea     r13, [comp_flows + rax]  ; R13 = flow IR ptr
+
+    ; Zero it
+    mov     rcx, r13
+    xor     edx, edx
+    mov     r8d, SIZEOF_CIR_FLOW
+    call    herb_memset
+
+    ; Parse header: "flow <name>" — "flow" already consumed
+    xor     ecx, ecx
+    call    comp_next_token     ; skip "flow" keyword
+    mov     ebx, ecx
+
+    ; Token: <name>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpf_done
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r13 + CIR_FL_NAME], eax
+
+    ; Init counters
+    mov     dword [r13 + CIR_FL_SEED_CNT], 0
+    mov     dword [r13 + CIR_FL_SET_CNT], 0
+    mov     dword [r13 + CIR_FL_STEP_CNT], 0
+    mov     dword [comp_flow_seed_count], 0
+
+.cpf_body_loop:
+    ; Save source position for backtrack
+    mov     esi, [comp_src_pos]
+
+    call    comp_next_line
+    test    eax, eax
+    jz      .cpf_done
+
+    ; If indent 0, next declaration — put line back
+    cmp     dword [comp_line_indent], 0
+    je      .cpf_unread_line
+
+    ; Indent 2: set/step sub-lines
+    cmp     dword [comp_line_indent], 2
+    je      .cpf_indent2
+
+    ; Indent 1: from/into/seed/each
+    xor     ecx, ecx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpf_body_loop
+
+    ; Dispatch on keyword
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_from]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpf_from
+
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_into]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpf_into
+
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_seed]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpf_seed
+
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_each_kw]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpf_each
+
+    ; Unknown — skip
+    jmp     .cpf_body_loop
+
+    ; ---- "from <container> order_by <prop>" ----
+.cpf_from:
+    ; Line position is after "from"
+    xor     ecx, ecx
+    call    comp_next_token     ; skip "from"
+    mov     ebx, ecx
+
+    ; <container>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpf_body_loop
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r13 + CIR_FL_SOURCE], eax
+
+    ; "order_by"
+    mov     ecx, ebx
+    call    comp_next_token
+    mov     ebx, ecx
+
+    ; <prop>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpf_body_loop
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r13 + CIR_FL_ORDER_KEY], eax
+    jmp     .cpf_body_loop
+
+    ; ---- "into <container>" ----
+.cpf_into:
+    xor     ecx, ecx
+    call    comp_next_token     ; skip "into"
+    mov     ebx, ecx
+
+    ; <container>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpf_body_loop
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r13 + CIR_FL_DEST], eax
+    jmp     .cpf_body_loop
+
+    ; ---- "seed <name> <value>" ----
+.cpf_seed:
+    xor     ecx, ecx
+    call    comp_next_token     ; skip "seed"
+    mov     ebx, ecx
+
+    ; <name>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpf_body_loop
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     r14d, eax           ; R14D = seed name str idx
+
+    ; <value>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpf_body_loop
+    mov     ebx, ecx
+    lea     rcx, [comp_tok_buf]
+    call    herb_atoll
+    mov     edi, eax            ; EDI = initial value (i32)
+
+    ; Store seed in flow IR
+    mov     eax, [r13 + CIR_FL_SEED_CNT]
+    cmp     eax, 8
+    jge     .cpf_body_loop
+    ; offset = CIR_FL_SEEDS + idx * 8
+    imul    ecx, eax, 8
+    mov     [r13 + CIR_FL_SEEDS + rcx], r14d      ; name
+    mov     [r13 + CIR_FL_SEEDS + rcx + 4], edi   ; initial value
+    inc     eax
+    mov     [r13 + CIR_FL_SEED_CNT], eax
+
+    ; Also store in comp_flow_seeds for expression parsing
+    mov     eax, [comp_flow_seed_count]
+    lea     rcx, [comp_flow_seeds]
+    mov     [rcx + rax*4], r14d
+    inc     eax
+    mov     [comp_flow_seed_count], eax
+    jmp     .cpf_body_loop
+
+    ; ---- "each <src> -> <dst>" ----
+.cpf_each:
+    xor     ecx, ecx
+    call    comp_next_token     ; skip "each"
+    mov     ebx, ecx
+
+    ; <src>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpf_body_loop
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r13 + CIR_FL_BIND_SRC], eax
+
+    ; "->" (skip)
+    mov     ecx, ebx
+    call    comp_next_token
+    mov     ebx, ecx
+
+    ; <dst>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpf_body_loop
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     [r13 + CIR_FL_BIND_DST], eax
+
+    ; Set flow expression parsing mode
+    mov     dword [comp_in_flow], 1
+    jmp     .cpf_body_loop
+
+    ; ---- Indent 2: "set" or "step" ----
+.cpf_indent2:
+    xor     ecx, ecx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpf_body_loop
+
+    ; Check "set"
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_set]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpf_set
+
+    ; Check "step"
+    lea     rcx, [comp_tok_buf]
+    lea     rdx, [kw_step]
+    call    comp_token_eq
+    test    eax, eax
+    jnz     .cpf_step
+
+    jmp     .cpf_body_loop
+
+    ; ---- "set <dst>.<prop> <expression>" ----
+.cpf_set:
+    ; Re-tokenize from start of indent2 content
+    xor     ecx, ecx
+    call    comp_next_token     ; skip "set"
+    mov     ebx, ecx
+
+    ; <dst>.<prop> — one token with dot
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpf_body_loop
+    mov     ebx, ecx
+
+    ; Split at dot to get prop name
+    lea     rsi, [comp_tok_buf]
+    xor     edi, edi
+.cpf_set_dot_scan:
+    movzx   eax, byte [rsi + rdi]
+    test    al, al
+    jz      .cpf_set_no_dot
+    cmp     al, '.'
+    je      .cpf_set_found_dot
+    inc     edi
+    jmp     .cpf_set_dot_scan
+.cpf_set_found_dot:
+    lea     rdi, [rsi + rdi + 1]    ; RDI -> prop name after dot
+    mov     rcx, rdi
+    call    comp_str_add
+    mov     r14d, eax               ; R14D = prop str idx
+    jmp     .cpf_set_parse_expr
+.cpf_set_no_dot:
+    ; No dot — entire token as prop (shouldn't happen)
+    mov     rcx, rsi
+    call    comp_str_add
+    mov     r14d, eax
+
+.cpf_set_parse_expr:
+    ; Parse expression (rest of line)
+    mov     ecx, ebx
+    call    comp_parse_expr
+    mov     edi, eax            ; EDI = expr idx
+
+    ; Store in flow IR
+    mov     eax, [r13 + CIR_FL_SET_CNT]
+    cmp     eax, 16
+    jge     .cpf_body_loop
+    ; offset = CIR_FL_SETS + idx * 8
+    imul    ecx, eax, 8
+    mov     [r13 + CIR_FL_SETS + rcx], r14d       ; prop
+    mov     [r13 + CIR_FL_SETS + rcx + 4], edi    ; expr idx
+    inc     eax
+    mov     [r13 + CIR_FL_SET_CNT], eax
+    jmp     .cpf_body_loop
+
+    ; ---- "step <seed_name> <expression>" ----
+.cpf_step:
+    xor     ecx, ecx
+    call    comp_next_token     ; skip "step"
+    mov     ebx, ecx
+
+    ; <seed_name>
+    mov     ecx, ebx
+    call    comp_next_token
+    test    rax, rax
+    jz      .cpf_body_loop
+    mov     ebx, ecx
+    call    comp_tok_to_str
+    mov     r14d, eax           ; R14D = seed name str idx
+
+    ; Find slot index by scanning comp_flow_seeds
+    xor     edi, edi
+    mov     esi, [comp_flow_seed_count]
+.cpf_step_find:
+    cmp     edi, esi
+    jge     .cpf_body_loop      ; not found — skip
+    lea     rcx, [comp_flow_seeds]
+    cmp     r14d, [rcx + rdi*4]
+    je      .cpf_step_found
+    inc     edi
+    jmp     .cpf_step_find
+.cpf_step_found:
+    ; EDI = slot index
+    mov     r14d, edi
+
+    ; Parse expression (rest of line)
+    mov     ecx, ebx
+    call    comp_parse_expr
+    mov     edi, eax            ; EDI = expr idx
+
+    ; Store in flow IR
+    mov     eax, [r13 + CIR_FL_STEP_CNT]
+    cmp     eax, 8
+    jge     .cpf_body_loop
+    imul    ecx, eax, 8
+    mov     [r13 + CIR_FL_STEPS + rcx], r14d      ; slot
+    mov     [r13 + CIR_FL_STEPS + rcx + 4], edi   ; expr idx
+    inc     eax
+    mov     [r13 + CIR_FL_STEP_CNT], eax
+    jmp     .cpf_body_loop
+
+.cpf_unread_line:
+    mov     [comp_src_pos], esi
+.cpf_done:
+    ; Clear flow expression mode
+    mov     dword [comp_in_flow], 0
+    add     rsp, 32
+    pop     r14
     pop     r13
     pop     r12
     pop     rdi
@@ -3406,6 +3950,77 @@ comp_collect_strings:
     jmp     .ccs_ten_loop
 .ccs_ten_done:
 
+    ; === 7b. Flows (Session 76) ===
+    xor     r14d, r14d
+    mov     r15d, [comp_flow_count]
+.ccs_fl_loop:
+    cmp     r14d, r15d
+    jge     .ccs_fl_done
+    imul    eax, r14d, SIZEOF_CIR_FLOW
+    lea     r13, [comp_flows + rax]
+    ; name
+    mov     ecx, [r13 + CIR_FL_NAME]
+    call    comp_out_str_add
+    ; source container
+    mov     ecx, [r13 + CIR_FL_SOURCE]
+    call    comp_out_str_add
+    ; order_key
+    mov     ecx, [r13 + CIR_FL_ORDER_KEY]
+    call    comp_out_str_add
+    ; dest container
+    mov     ecx, [r13 + CIR_FL_DEST]
+    call    comp_out_str_add
+    ; bind_src
+    mov     ecx, [r13 + CIR_FL_BIND_SRC]
+    call    comp_out_str_add
+    ; bind_dst
+    mov     ecx, [r13 + CIR_FL_BIND_DST]
+    call    comp_out_str_add
+    ; seed names
+    xor     r12d, r12d
+    mov     ebx, [r13 + CIR_FL_SEED_CNT]
+.ccs_fl_seed_loop:
+    cmp     r12d, ebx
+    jge     .ccs_fl_seeds_done
+    imul    eax, r12d, 8
+    mov     ecx, [r13 + CIR_FL_SEEDS + rax]       ; seed name
+    call    comp_out_str_add
+    inc     r12d
+    jmp     .ccs_fl_seed_loop
+.ccs_fl_seeds_done:
+    ; set expressions
+    xor     r12d, r12d
+    mov     ebx, [r13 + CIR_FL_SET_CNT]
+.ccs_fl_set_loop:
+    cmp     r12d, ebx
+    jge     .ccs_fl_sets_done
+    imul    eax, r12d, 8
+    ; prop name
+    mov     ecx, [r13 + CIR_FL_SETS + rax]
+    call    comp_out_str_add
+    ; expression strings
+    imul    eax, r12d, 8
+    mov     ecx, [r13 + CIR_FL_SETS + rax + 4]    ; expr idx
+    call    comp_collect_expr_strings
+    inc     r12d
+    jmp     .ccs_fl_set_loop
+.ccs_fl_sets_done:
+    ; step expressions
+    xor     r12d, r12d
+    mov     ebx, [r13 + CIR_FL_STEP_CNT]
+.ccs_fl_step_loop:
+    cmp     r12d, ebx
+    jge     .ccs_fl_steps_done
+    imul    eax, r12d, 8
+    mov     ecx, [r13 + CIR_FL_STEPS + rax + 4]   ; expr idx
+    call    comp_collect_expr_strings
+    inc     r12d
+    jmp     .ccs_fl_step_loop
+.ccs_fl_steps_done:
+    inc     r14d
+    jmp     .ccs_fl_loop
+.ccs_fl_done:
+
     ; === 8. Entities ===
     xor     r14d, r14d
     mov     r15d, [comp_ent_count]
@@ -3685,7 +4300,9 @@ comp_collect_expr_strings:
     je      .ccexs_prop
     cmp     eax, CIREX_COUNT
     je      .ccexs_count
-    ; INT — no strings
+    cmp     eax, CIREX_TERNARY
+    je      .ccexs_ternary
+    ; INT/SEED — no strings
     jmp     .ccexs_done
 
 .ccexs_binary:
@@ -3711,6 +4328,16 @@ comp_collect_expr_strings:
 .ccexs_count:
     mov     ecx, [rbx + CIR_EX_STR1]
     call    comp_out_str_add
+    jmp     .ccexs_done
+
+.ccexs_ternary:
+    ; Session 76: recurse all three children
+    mov     ecx, [rbx + CIR_EX_LEFT]       ; cond
+    call    comp_collect_expr_strings
+    mov     ecx, [rbx + CIR_EX_RIGHT]      ; true
+    call    comp_collect_expr_strings
+    mov     ecx, [rbx + CIR_EX_OP]         ; false
+    call    comp_collect_expr_strings
 
 .ccexs_done:
     add     rsp, 32
@@ -4131,6 +4758,105 @@ comp_emit_binary:
     jmp     .ceb_ten_loop
 
 .ceb_ten_done:
+
+    ; === Session 76: Flows ===
+    mov     ecx, BSEC_FLOWS
+    call    comp_emit_u8
+    mov     ecx, [comp_flow_count]
+    call    comp_emit_u16
+
+    xor     r14d, r14d
+    mov     r15d, [comp_flow_count]
+.ceb_fl_loop:
+    cmp     r14d, r15d
+    jge     .ceb_fl_done
+
+    imul    eax, r14d, SIZEOF_CIR_FLOW
+    lea     r13, [comp_flows + rax]
+
+    ; name
+    mov     ecx, [r13 + CIR_FL_NAME]
+    call    comp_emit_str_idx
+    ; source
+    mov     ecx, [r13 + CIR_FL_SOURCE]
+    call    comp_emit_str_idx
+    ; order_key
+    mov     ecx, [r13 + CIR_FL_ORDER_KEY]
+    call    comp_emit_str_idx
+    ; dest
+    mov     ecx, [r13 + CIR_FL_DEST]
+    call    comp_emit_str_idx
+    ; bind_src
+    mov     ecx, [r13 + CIR_FL_BIND_SRC]
+    call    comp_emit_str_idx
+    ; bind_dst
+    mov     ecx, [r13 + CIR_FL_BIND_DST]
+    call    comp_emit_str_idx
+
+    ; seed_count
+    mov     ecx, [r13 + CIR_FL_SEED_CNT]
+    call    comp_emit_u8
+    ; seeds
+    xor     r12d, r12d
+.ceb_fl_seed_loop:
+    cmp     r12d, [r13 + CIR_FL_SEED_CNT]
+    jge     .ceb_fl_seed_done
+    imul    eax, r12d, 8
+    ; seed name
+    mov     ecx, [r13 + CIR_FL_SEEDS + rax]
+    call    comp_emit_str_idx
+    ; seed initial value (i32)
+    imul    eax, r12d, 8
+    mov     ecx, [r13 + CIR_FL_SEEDS + rax + 4]
+    call    comp_emit_i32
+    inc     r12d
+    jmp     .ceb_fl_seed_loop
+.ceb_fl_seed_done:
+
+    ; set_count
+    mov     ecx, [r13 + CIR_FL_SET_CNT]
+    call    comp_emit_u8
+    ; sets
+    xor     r12d, r12d
+.ceb_fl_set_loop:
+    cmp     r12d, [r13 + CIR_FL_SET_CNT]
+    jge     .ceb_fl_set_done
+    imul    eax, r12d, 8
+    ; prop name
+    mov     ecx, [r13 + CIR_FL_SETS + rax]
+    call    comp_emit_str_idx
+    ; expression binary
+    imul    eax, r12d, 8
+    mov     ecx, [r13 + CIR_FL_SETS + rax + 4]
+    call    comp_emit_expr_binary
+    inc     r12d
+    jmp     .ceb_fl_set_loop
+.ceb_fl_set_done:
+
+    ; step_count
+    mov     ecx, [r13 + CIR_FL_STEP_CNT]
+    call    comp_emit_u8
+    ; steps
+    xor     r12d, r12d
+.ceb_fl_step_loop:
+    cmp     r12d, [r13 + CIR_FL_STEP_CNT]
+    jge     .ceb_fl_step_done
+    imul    eax, r12d, 8
+    ; slot
+    mov     ecx, [r13 + CIR_FL_STEPS + rax]
+    call    comp_emit_u8
+    ; expression binary
+    imul    eax, r12d, 8
+    mov     ecx, [r13 + CIR_FL_STEPS + rax + 4]
+    call    comp_emit_expr_binary
+    inc     r12d
+    jmp     .ceb_fl_step_loop
+.ceb_fl_step_done:
+
+    inc     r14d
+    jmp     .ceb_fl_loop
+.ceb_fl_done:
+
     ; === End marker ===
     mov     ecx, BSEC_END
     call    comp_emit_u8
@@ -4412,6 +5138,10 @@ comp_emit_expr_binary:
     je      .ceeb_binary
     cmp     eax, CIREX_COUNT
     je      .ceeb_count
+    cmp     eax, CIREX_SEED
+    je      .ceeb_seed
+    cmp     eax, CIREX_TERNARY
+    je      .ceeb_ternary
     ; Unknown — emit EX_NULL
     mov     ecx, BEX_NULL
     call    comp_emit_u8
@@ -4454,6 +5184,29 @@ comp_emit_expr_binary:
     call    comp_emit_u8
     mov     ecx, [rbx + CIR_EX_STR1]
     call    comp_emit_str_idx
+    jmp     .ceeb_done
+
+.ceeb_seed:
+    ; Session 76: emit BEX_SEED + u8(slot)
+    mov     ecx, BEX_SEED
+    call    comp_emit_u8
+    mov     ecx, [rbx + CIR_EX_IVAL]   ; slot index (i32 at offset 8)
+    call    comp_emit_u8
+    jmp     .ceeb_done
+
+.ceeb_ternary:
+    ; Session 76: emit BEX_TERNARY + recurse(cond) + recurse(true) + recurse(false)
+    mov     ecx, BEX_TERNARY
+    call    comp_emit_u8
+    ; cond (at CIR_EX_LEFT = offset 8)
+    mov     ecx, [rbx + CIR_EX_LEFT]
+    call    comp_emit_expr_binary
+    ; true (at CIR_EX_RIGHT = offset 12)
+    mov     ecx, [rbx + CIR_EX_RIGHT]
+    call    comp_emit_expr_binary
+    ; false (at CIR_EX_OP = offset 4)
+    mov     ecx, [rbx + CIR_EX_OP]
+    call    comp_emit_expr_binary
 
 .ceeb_done:
     add     rsp, 32

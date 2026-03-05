@@ -16,7 +16,7 @@
 %define MAX_STRINGS               2048
 %define MAX_STRING_LEN            128
 %define MAX_PROPERTIES            16
-%define MAX_ENTITY_PER_CONTAINER  64
+%define MAX_ENTITY_PER_CONTAINER  256
 %define MAX_FROM_TO               16
 %define MAX_SCOPE_TEMPLATES       16
 %define MAX_CHANNELS              16
@@ -57,8 +57,8 @@
 %define CNT_NAME_ID         4       ; int (4 bytes)
 %define CNT_KIND            8       ; ContainerKind enum (4 bytes)
 %define CNT_ENTITY_TYPE     12      ; int (4 bytes)
-%define CNT_ENTITIES        16      ; int[64] (256 bytes)
-%define CNT_ENTITY_COUNT    272     ; int (4 bytes)
+%define CNT_ENTITIES        16      ; DEPRECATED — use g_container_entities BSS array (Session 76)
+%define CNT_ENTITY_COUNT    272     ; DEPRECATED — use g_container_entity_counts BSS array (Session 76)
 %define CNT_OWNER           276     ; int (4 bytes)
 %define SIZEOF_CONTAINER    280
 
@@ -263,6 +263,53 @@
 %define EX_BINARY_T 6
 %define EX_UNARY_T  7
 %define EX_INOF_T   8
+%define EX_SEED_T   9      ; Session 76: seed register reference
+%define EX_TERNARY_T 10    ; Session 76: if/then/else ternary
+
+; Expr union offsets — seed variant (Session 76)
+%define EX_SEED_SLOT     8       ; int at union+0 (seed slot index)
+
+; Expr union offsets — ternary variant (Session 76)
+%define EX_TERNARY_COND  8       ; Expr* at union+0
+%define EX_TERNARY_TRUE  16      ; Expr* at union+8
+%define EX_TERNARY_FALSE 24      ; Expr* at union+16
+
+; ============================================================
+; Flow (488 bytes, 4-byte aligned) — Session 76
+; ============================================================
+
+%define FLOW_NAME_ID       0     ; (4) interned string ID
+%define FLOW_SRC_CIDX      4     ; (4) source container index
+%define FLOW_DST_CIDX      8     ; (4) dest container index
+%define FLOW_ORDER_KEY_PID 12    ; (4) order_key property ID
+%define FLOW_BIND_SRC_ID   16    ; (4) source binding name ID
+%define FLOW_BIND_DST_ID   20    ; (4) dest binding name ID
+%define FLOW_DST_ETYPE_NID 24    ; (4) dest entity type name ID (for creation)
+%define FLOW_SEED_CNT      28    ; (4)
+%define FLOW_SEEDS         32    ; 8 × {name_id:4, initial:4} = 64 bytes
+%define FLOW_SET_CNT       96    ; (4)
+%define FLOW_SETS          100   ; 16 × {prop_id:4, pad:4, expr:8} = 256 bytes
+%define FLOW_STEP_CNT      356   ; (4)
+%define FLOW_STEPS         360   ; 8 × {slot:4, pad:4, expr:8} = 128 bytes
+%define SIZEOF_FLOW        488
+%define MAX_FLOWS          16
+
+; Flow seed sub-struct offsets
+%define FLOW_SEED_NAME_ID  0     ; (4) seed name interned ID
+%define FLOW_SEED_INITIAL  4     ; (4) initial value (i32)
+%define SIZEOF_FLOW_SEED   8
+
+; Flow set sub-struct offsets
+%define FLOW_SET_PROP_ID   0     ; (4) property name interned ID
+%define FLOW_SET_PAD       4     ; (4) padding
+%define FLOW_SET_EXPR      8     ; (8) Expr* pointer
+%define SIZEOF_FLOW_SET    16
+
+; Flow step sub-struct offsets
+%define FLOW_STEP_SLOT     0     ; (4) seed slot index
+%define FLOW_STEP_PAD      4     ; (4) padding
+%define FLOW_STEP_EXPR     8     ; (8) Expr* pointer
+%define SIZEOF_FLOW_STEP   16
 
 ; ============================================================
 ; BinReader (24 bytes, 8-byte aligned)

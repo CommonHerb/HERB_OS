@@ -19,6 +19,8 @@
 [bits 64]
 default rel
 
+%include "herb_graph_layout.inc"
+
 ; ============================================================
 ; EXTERNS — Assembly runtime functions
 ; ============================================================
@@ -49,7 +51,9 @@ extern herb_remove_tension_by_name
 extern ham_run_ham
 extern ham_mark_dirty
 extern ham_get_compiled_count
+extern ham_trace_mode
 extern ham_get_bytecode_len
+extern g_ham_dirty
 extern ham_dbg_thdr
 extern ham_dbg_fail
 extern ham_dbg_tend
@@ -73,6 +77,14 @@ extern herb_strlen
 ; Parallel arrays (from herb_graph.asm)
 extern container_order_keys
 extern tension_step_flags
+extern g_container_entity_counts
+extern g_flow_count
+extern g_flows
+extern g_graph
+extern graph_find_container_by_name
+extern intern
+extern container_add
+extern container_remove
 
 ; Disk + filesystem (from herb_disk.asm)
 extern disk_identify
@@ -173,6 +185,8 @@ extern wm_drag_mode
 extern wm_drag_win_id
 extern wm_drag_offset_x
 extern wm_drag_offset_y
+extern wm_set_clip
+extern wm_clear_clip
 
 ; Editor module (from herb_editor.asm)
 extern editor_init
@@ -320,7 +334,7 @@ last_action:     resb 80        ; char[80]
 last_key_name:   resb 16        ; char[16]
 mouse_packet:    resb 4         ; uint8_t[3] + padding
 ; Boot-compiled program binaries (compiled from .herb source at boot)
-bin_interactive_kernel: resb 20480    ; 20KB (actual ~16KB)
+bin_interactive_kernel: resb 24576    ; 24KB (actual ~22KB with 332 entities)
 bin_ik_len:            resd 1
 bin_shell:             resb 2048
 bin_shell_len:         resd 1
@@ -338,6 +352,8 @@ bin_schedule_roundrobin: resb 512
 bin_sched_rr_len:      resd 1
 bin_turing:            resb 2048
 bin_turing_len:        resd 1
+bin_test_flow:         resb 2048
+bin_test_flow_len:     resd 1
 
 ; ============================================================
 ; DATA — Initialized globals (Phase D Step 7d)
@@ -376,6 +392,12 @@ buffer_capacity:    dd 20
 %ifdef GRAPHICS_MODE
 selected_eid:       dd -1
 %endif
+
+; Editor debug counter (for throttled serial output)
+ed_debug_counter:   dd 0
+
+; Flow editor WM window ID (-1 = not created)
+flow_editor_win_id: dd -1
 
 ; ============================================================
 ; RDATA — String literals + const data
@@ -466,6 +488,13 @@ src_turing:
     db 0
 src_turing_end:
 src_turing_len: dd src_turing_end - src_turing - 1
+
+align 4
+src_test_flow:
+    incbin "../programs/test_flow.herb"
+    db 0
+src_test_flow_end:
+src_test_flow_len: dd src_test_flow_end - src_test_flow - 1
 %endif  ; KERNEL_MODE — source text
 
 %ifdef KERNEL_MODE
@@ -521,6 +550,16 @@ str_compile_sp:       db "[COMPILE] schedule_priority: ", 0
 str_compile_sr:       db "[COMPILE] schedule_roundrobin: ", 0
 str_compile_tm:       db "[COMPILE] turing: ", 0
 str_tm_loaded:        db "[LOAD] Turing machine loaded", 10, 0
+str_compile_tf:       db "[COMPILE] test_flow: ", 0
+str_tf_loaded:        db "[LOAD] test_flow loaded", 10, 0
+str_flow_diag:        db "[FLOW] count=", 0
+str_flow_dst_name:    db "FLOW_DST", 0
+str_flow_dst_cnt:     db "[FLOW] FLOW_DST entities=", 0
+str_flow_ent:         db "[FLOW] e=", 0
+str_flow_doubled:     db " doubled=", 0
+str_flow_cumsum:      db " cumsum=", 0
+str_prop_doubled:     db "doubled", 0
+str_prop_cumsum:      db "cumsum", 0
 
 ; Phase D Step 4 — terrain name strings
 str_terrain_grass:  db "Grass", 0
@@ -907,6 +946,48 @@ str_tm_bracket_c:   db "]", 0
 str_tm_head_info:   db " Head@", 0
 str_tm_state_info:  db " state=", 0
 str_tm_ops_info:    db " ops=", 0
+; ---- Editor (flow-based) strings ----
+str_cn_ed_buffer:   db "editor.BUFFER", 0
+str_cn_ed_glyphs:   db "editor.GLYPHS", 0
+str_cn_ed_ctl:      db "editor.CTL", 0
+str_cn_ed_pool:     db "editor.POOL", 0
+str_la_edit_open:   db "Editor (ESC=exit, type to edit)", 0
+str_la_edit_close:  db "Editor closed", 0
+str_ser_edit_open:  db "[EDIT] entering editor mode", 10, 0
+str_ser_esave:      db "[EDIT] saved ", 0
+str_ser_eload:      db "[EDIT] loaded ", 0
+str_la_esave:       db "Editor saved %s (%d bytes)", 0
+str_la_eload:       db "Editor loaded %s (%d bytes)", 0
+str_ser_eload_pre:  db "[ELOAD] pre-HAM buf=", 0
+str_ser_eload_gly:  db " gly=", 0
+str_ser_eload_post: db "[ELOAD] post-HAM buf=", 0
+str_ser_eload_ops:  db " ops=", 0
+str_ser_eload_dirty: db " dirty=", 0
+str_ser_eload_flow: db " flows=", 0
+str_ser_eload_e1:  db "[ELOAD] entry", 10, 0
+str_ser_eload_e2:  db "[ELOAD] fs_read done size=", 0
+str_ser_eload_e3:  db "[ELOAD] clear done", 10, 0
+str_ser_eload_e4:  db "[ELOAD] populate done", 10, 0
+str_ser_eload_e5:  db "[ELOAD] cursor set", 10, 0
+str_prop_cursor_pos: db "cursor_pos", 0
+str_gfx_editor_title: db "EDITOR", 0
+str_editor_title: db "EDITOR", 0
+str_gfx_ed_chars:   db "Chars:", 0
+str_gfx_ed_status:  db "ESC=exit  /esave <name>  /eload <name>", 0
+str_gfx_screen_x:   db "screen_x", 0
+str_gfx_screen_y:   db "screen_y", 0
+; Debug strings for editor flow diagnosis
+str_ser_ed_glyphs:  db "[EDIT] GLYPHS=", 0
+str_ser_ed_g0:      db " g[0] ascii=", 0
+str_ser_ed_x:       db " x=", 0
+str_ser_ed_y:       db " y=", 0
+str_ser_edkey:      db "[EDKEY] ascii=", 0
+str_ser_edham:      db " ops=", 0
+str_ser_edbuf:      db " buf=", 0
+str_ser_edpool:     db " pool=", 0
+str_ser_edsig:      db " sig=", 0
+str_ser_edmode:     db " mode=", 0
+str_ser_edpre:      db "[EDPRE] sig=", 0
 %endif  ; KERNEL_MODE
 
 ; ---- Non-KERNEL_MODE container/type names ----
@@ -923,7 +1004,6 @@ str_cn_cpu0:        db "CPU0", 0
 str_cn_ready:       db "READY", 0
 str_et_process:     db "Process", 0
 str_et_signal:      db "Signal", 0
-str_newline:        db 10, 0
 %endif
 
 ; ---- Unconditional strings (both modes) ----
@@ -1480,6 +1560,10 @@ kernel_main:
     xor edx, edx
     mov r8d, 1024                   ; 256 tensions * 4 bytes = 1024
     call herb_memset
+    lea rcx, [rel g_container_entity_counts]
+    xor edx, edx
+    mov r8d, 1024                   ; 256 containers * 4 bytes = 1024
+    call herb_memset
 
     ; ================================================================
     ; COMPILE .herb SOURCE TO BINARY
@@ -1541,6 +1625,16 @@ kernel_main:
     jnz .load_failed
     lea rcx, [rel str_tm_loaded]
     call serial_print
+
+    ; Load test_flow program (system-level, no owner)
+    lea rcx, [rel bin_test_flow]
+    lea rax, [rel bin_test_flow_len]
+    mov edx, dword [rax]
+    call herb_load
+    test eax, eax
+    jnz .load_failed
+    lea rcx, [rel str_tf_loaded]
+    call serial_print
 %endif
 
     jmp .load_ok
@@ -1560,6 +1654,39 @@ kernel_main:
     jmp .halt_forever
 
 .load_ok:
+
+    ; DEBUG: Print entity count + container counts after loading
+    sub rsp, 32
+    lea rcx, [rel str_ser_edkey]       ; reuse "[EDKEY] " as prefix
+    call serial_print
+    lea rcx, [rel str_ser_edbuf]       ; "buf="
+    call serial_print
+    mov eax, [g_graph + GRAPH_ENTITY_COUNT]
+    mov ecx, eax
+    call serial_print_int
+    lea rcx, [rel str_ser_edpool]      ; " pool="
+    call serial_print
+    lea rcx, [rel str_cn_ed_pool]      ; "editor.POOL"
+    call herb_container_count
+    mov ecx, eax
+    call serial_print_int
+    ; CTL count
+    lea rcx, [rel str_ser_edbuf]       ; " buf="
+    call serial_print
+    lea rcx, [rel str_cn_ed_ctl]       ; "editor.CTL"
+    call herb_container_count
+    mov ecx, eax
+    call serial_print_int
+    ; INPUT_STATE count
+    lea rcx, [rel str_ser_edham]       ; " ops=" (reuse as separator)
+    call serial_print
+    lea rcx, [rel str_cn_input_state]
+    call herb_container_count
+    mov ecx, eax
+    call serial_print_int
+    lea rcx, [rel str_newline]
+    call serial_print
+    add rsp, 32
 
     ; ================================================================
     ; BOOT: RESOLVE INITIAL TENSIONS
@@ -1601,6 +1728,77 @@ kernel_main:
     ; serial_print(" ops\n")
     lea rcx, [rel str_ops_nl]
     call serial_print
+
+    ; ================================================================
+    ; FLOW DIAGNOSTIC — print test_flow results
+    ; ================================================================
+    lea rcx, [rel str_flow_diag]          ; "[FLOW] count="
+    call serial_print
+    mov ecx, [g_flow_count]
+    call serial_print_int
+    lea rcx, [rel str_newline]
+    call serial_print
+
+    ; Look up FLOW_DST container count
+    lea rcx, [rel str_flow_dst_name]      ; "FLOW_DST"
+    call herb_container_count
+    mov r12d, eax                         ; r12 = dst count
+
+    lea rcx, [rel str_flow_dst_cnt]       ; "[FLOW] FLOW_DST entities="
+    call serial_print
+    mov ecx, r12d
+    call serial_print_int
+    lea rcx, [rel str_newline]
+    call serial_print
+
+    ; Print each entity's doubled and cumsum properties
+    xor r13d, r13d                        ; r13 = i
+.flow_diag_loop:
+    cmp r13d, r12d
+    jge .flow_diag_done
+
+    lea rcx, [rel str_flow_dst_name]      ; "FLOW_DST"
+    mov edx, r13d
+    call herb_container_entity
+    test eax, eax
+    js .flow_diag_next
+    mov r14d, eax                         ; r14 = entity_id
+
+    lea rcx, [rel str_flow_ent]           ; "[FLOW] e="
+    call serial_print
+    mov ecx, r14d
+    call serial_print_int
+
+    ; Read "doubled" property
+    mov ecx, r14d
+    lea rdx, [rel str_prop_doubled]       ; "doubled"
+    mov r8d, -1
+    call herb_entity_prop_int
+    push rax
+    lea rcx, [rel str_flow_doubled]       ; " doubled="
+    call serial_print
+    pop rcx
+    call serial_print_int
+
+    ; Read "cumsum" property
+    mov ecx, r14d
+    lea rdx, [rel str_prop_cumsum]        ; "cumsum"
+    mov r8d, -1
+    call herb_entity_prop_int
+    push rax
+    lea rcx, [rel str_flow_cumsum]        ; " cumsum="
+    call serial_print
+    pop rcx
+    call serial_print_int
+
+    lea rcx, [rel str_newline]
+    call serial_print
+
+.flow_diag_next:
+    inc r13d
+    jmp .flow_diag_loop
+
+.flow_diag_done:
 
     ; ================================================================
     ; KERNEL_MODE: Entity discovery + shell process creation
@@ -2782,6 +2980,68 @@ report_buffer_state:
     call serial_print_int
 
     ; serial_print("\n")
+    lea rcx, [rel str_newline]
+    call serial_print
+
+    ; DEBUG: If editor mode (mode==2), print GLYPHS count + first glyph props
+    mov eax, dword [rel input_ctl_eid]
+    test eax, eax
+    js .rbs_done
+    mov ecx, eax
+    lea rdx, [rel str_mode]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    cmp eax, 2
+    jne .rbs_done
+
+    ; Print "[EDIT] GLYPHS=N"
+    lea rcx, [rel str_ser_ed_glyphs]
+    call serial_print
+    lea rcx, [rel str_cn_ed_glyphs]
+    call herb_container_count
+    mov esi, eax                        ; ESI = glyph count
+    mov ecx, eax
+    call serial_print_int
+
+    ; If count > 0, print first glyph's ascii, screen_x, screen_y
+    test esi, esi
+    jle .rbs_ed_debug_nl
+
+    lea rcx, [rel str_cn_ed_glyphs]
+    xor edx, edx
+    call herb_container_entity
+    test eax, eax
+    js .rbs_ed_debug_nl
+    mov ebx, eax                        ; EBX = glyph eid
+
+    lea rcx, [rel str_ser_ed_g0]
+    call serial_print
+    mov ecx, ebx
+    lea rdx, [rel str_ascii_prop]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov ecx, eax
+    call serial_print_int
+
+    lea rcx, [rel str_ser_ed_x]
+    call serial_print
+    mov ecx, ebx
+    lea rdx, [rel str_gfx_screen_x]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov ecx, eax
+    call serial_print_int
+
+    lea rcx, [rel str_ser_ed_y]
+    call serial_print
+    mov ecx, ebx
+    lea rdx, [rel str_gfx_screen_y]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov ecx, eax
+    call serial_print_int
+
+.rbs_ed_debug_nl:
     lea rcx, [rel str_newline]
     call serial_print
 
@@ -5050,6 +5310,12 @@ post_dispatch:
     je .pd_read
     cmp r12d, 13
     je .pd_files
+    cmp r12d, 14
+    je .pd_edit
+    cmp r12d, 15
+    je .pd_esave
+    cmp r12d, 16
+    je .pd_eload
     jmp .pd_report
 
 .pd_kill:
@@ -5321,6 +5587,490 @@ post_dispatch:
     jmp .pd_report
 
 .pd_files_no_disk:
+    lea rcx, [rel str_fs_nodisk]
+    call serial_print
+    jmp .pd_report
+
+.pd_edit:
+    ; Set input_ctl.mode = 2 (editor mode)
+    mov ecx, [rel input_ctl_eid]
+    test ecx, ecx
+    js .pd_report
+    lea rdx, [rel str_mode]
+    mov r8d, 2
+    call herb_set_prop_int
+    ; Focus editor window
+%ifdef GRAPHICS_MODE
+    mov ecx, [rel flow_editor_win_id]
+    test ecx, ecx
+    js .pd_edit_no_focus
+    call wm_set_focus
+    mov ecx, [rel flow_editor_win_id]
+    call wm_bring_to_front
+.pd_edit_no_focus:
+%endif
+    ; Serial
+    lea rcx, [rel str_ser_edit_open]
+    call serial_print
+    ; last_action
+    lea rcx, [rel last_action]
+    mov edx, 80
+    lea r8, [rel str_la_edit_open]
+    call herb_snprintf
+    jmp .pd_report
+
+.pd_esave:
+    ; Parse "esave <name>", read editor.BUFFER chars, save to disk
+    test r13, r13
+    jz .pd_report
+    cmp dword [rel fs_initialized], 0
+    je .pd_esave_no_disk
+
+    ; Skip "esave " — find first space
+    lea rax, [r13]
+    xor ecx, ecx
+.pd_esave_skip:
+    cmp byte [rax + rcx], 0
+    je .pd_report
+    cmp byte [rax + rcx], ' '
+    je .pd_esave_found_space
+    inc ecx
+    jmp .pd_esave_skip
+.pd_esave_found_space:
+    inc ecx
+    lea rax, [r13 + rcx]              ; rax = start of filename
+
+    ; Copy filename to name_buf[32] at [rsp+56]
+    lea rdi, [rsp+56]
+    push rax
+    mov rcx, rdi
+    xor edx, edx
+    mov r8d, 32
+    call herb_memset
+    pop rax
+
+    xor ecx, ecx
+.pd_esave_name:
+    cmp ecx, 31
+    jge .pd_esave_name_done
+    movzx edx, byte [rax + rcx]
+    test dl, dl
+    jz .pd_esave_name_done
+    cmp dl, ' '
+    je .pd_esave_name_done
+    mov [rdi + rcx], dl
+    inc ecx
+    jmp .pd_esave_name
+.pd_esave_name_done:
+    mov byte [rdi + rcx], 0
+
+    cmp byte [rdi], 0
+    je .pd_report
+
+    ; Build string from editor.BUFFER entities into fs_data_buf
+    ; Zero fs_data_buf first
+    push rdi                            ; save name_buf ptr
+    lea rcx, [rel fs_data_buf]
+    xor edx, edx
+    mov r8d, 4096
+    call herb_memset
+
+    ; nc = herb_container_count("editor.BUFFER")
+    lea rcx, [rel str_cn_ed_buffer]
+    call herb_container_count
+    test eax, eax
+    jle .pd_esave_write                 ; empty buffer, save empty file
+
+    mov edi, eax                        ; edi = entity count
+    xor r12d, r12d                      ; i = 0
+    xor ebx, ebx                        ; max_pos = 0
+
+.pd_esave_loop:
+    cmp r12d, edi
+    jge .pd_esave_write
+
+    ; eid = herb_container_entity("editor.BUFFER", i)
+    lea rcx, [rel str_cn_ed_buffer]
+    mov edx, r12d
+    call herb_container_entity
+    test eax, eax
+    js .pd_esave_next
+
+    mov [rsp+40], eax                   ; save eid (rsp+40 because we pushed rdi)
+
+    ; pos = herb_entity_prop_int(eid, "pos", 0)
+    mov ecx, eax
+    lea rdx, [rel str_pos]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov [rsp+44], eax                   ; save pos
+
+    ; ascii = herb_entity_prop_int(eid, "ascii", 0)
+    mov ecx, [rsp+40]
+    lea rdx, [rel str_ascii_prop]
+    xor r8d, r8d
+    call herb_entity_prop_int
+
+    ; if pos >= 0 && pos < 4095 && ascii > 0: fs_data_buf[pos] = ascii
+    mov ecx, [rsp+44]
+    test ecx, ecx
+    js .pd_esave_next
+    cmp ecx, 4095
+    jge .pd_esave_next
+    test eax, eax
+    jle .pd_esave_next
+    lea rdx, [rel fs_data_buf]
+    mov [rdx + rcx], al
+    ; max_pos = max(max_pos, pos + 1)
+    inc ecx
+    cmp ecx, ebx
+    jle .pd_esave_next
+    mov ebx, ecx
+
+.pd_esave_next:
+    inc r12d
+    jmp .pd_esave_loop
+
+.pd_esave_write:
+    ; Null-terminate
+    lea rcx, [rel fs_data_buf]
+    mov byte [rcx + rbx], 0
+
+    ; fs_create(name, data, size)
+    pop rdi                             ; restore name_buf ptr
+    lea rcx, [rsp+56]                  ; name_buf
+    lea rdx, [rel fs_data_buf]
+    mov r8d, ebx                        ; size = max_pos
+    mov [rsp+32], ebx                   ; save size for snprintf
+    call fs_create
+
+    ; Serial
+    lea rcx, [rel str_ser_esave]
+    call serial_print
+    lea rcx, [rsp+56]
+    call serial_print
+    lea rcx, [rel str_newline]
+    call serial_print
+
+    ; last_action
+    lea rcx, [rel last_action]
+    mov edx, 80
+    lea r8, [rel str_la_esave]
+    lea r9, [rsp+56]                    ; name
+    mov eax, [rsp+32]                   ; saved size
+    mov [rsp+32], eax                   ; 5th arg = size
+    call herb_snprintf
+    jmp .pd_report
+
+.pd_esave_no_disk:
+    lea rcx, [rel str_fs_nodisk]
+    call serial_print
+    jmp .pd_report
+
+.pd_eload:
+    ; Parse "eload <name>", read file, populate editor.BUFFER
+    test r13, r13
+    jz .pd_report
+    cmp dword [rel fs_initialized], 0
+    je .pd_eload_no_disk
+
+    lea rcx, [rel str_ser_eload_e1]
+    call serial_print
+
+    ; Skip to first space
+    lea rax, [r13]
+    xor ecx, ecx
+.pd_eload_skip:
+    cmp byte [rax + rcx], 0
+    je .pd_report
+    cmp byte [rax + rcx], ' '
+    je .pd_eload_found_space
+    inc ecx
+    jmp .pd_eload_skip
+.pd_eload_found_space:
+    inc ecx
+    lea rax, [r13 + rcx]
+
+    ; Copy filename to name_buf
+    lea rdi, [rsp+56]
+    push rax
+    mov rcx, rdi
+    xor edx, edx
+    mov r8d, 32
+    call herb_memset
+    pop rax
+
+    xor ecx, ecx
+.pd_eload_name:
+    cmp ecx, 31
+    jge .pd_eload_name_done
+    movzx edx, byte [rax + rcx]
+    test dl, dl
+    jz .pd_eload_name_done
+    cmp dl, ' '
+    je .pd_eload_name_done
+    mov [rdi + rcx], dl
+    inc ecx
+    jmp .pd_eload_name
+.pd_eload_name_done:
+    mov byte [rdi + rcx], 0
+
+    cmp byte [rdi], 0
+    je .pd_report
+
+    ; fs_read(name, fs_data_buf, 4095)
+    lea rcx, [rsp+56]
+    lea rdx, [rel fs_data_buf]
+    mov r8d, 4095
+    call fs_read
+    cmp eax, -1
+    je .pd_report
+
+    ; eax = bytes read, save it
+    mov [rsp+32], eax                   ; file_size
+
+    lea rcx, [rel str_ser_eload_e2]
+    call serial_print
+    mov ecx, [rsp+32]
+    call serial_print_int
+    lea rcx, [rel str_newline]
+    call serial_print
+
+    ; Now clear editor.BUFFER: move all entities back to POOL
+    ; We do this by iterating BUFFER and using container_remove/container_add
+    ; First, find container indices
+    lea rcx, [rel str_cn_ed_buffer]
+    call intern
+    mov ecx, eax
+    call graph_find_container_by_name
+    mov [rsp+36], eax                   ; buffer_cidx
+
+    lea rcx, [rel str_cn_ed_pool]
+    call intern
+    mov ecx, eax
+    call graph_find_container_by_name
+    mov [rsp+40], eax                   ; pool_cidx
+
+    ; Clear editor.BUFFER: move entities to POOL
+    ; Count current BUFFER entities
+.pd_eload_clear:
+    lea rcx, [rel str_cn_ed_buffer]
+    call herb_container_count
+    test eax, eax
+    jle .pd_eload_populate
+
+    ; Get entity at index 0 (always remove first)
+    lea rcx, [rel str_cn_ed_buffer]
+    xor edx, edx
+    call herb_container_entity
+    test eax, eax
+    js .pd_eload_populate
+
+    ; container_remove(buffer_cidx, entity_idx)
+    mov ecx, [rsp+36]                  ; buffer_cidx
+    mov edx, eax                        ; entity_idx
+    mov [rsp+44], edx                   ; save entity_idx
+    call container_remove
+
+    ; container_add(pool_cidx, entity_idx)
+    mov ecx, [rsp+40]                  ; pool_cidx
+    mov edx, [rsp+44]                  ; entity_idx
+    call container_add
+
+    ; Update entity location
+    mov eax, [rsp+44]
+    mov ecx, [rsp+40]                  ; pool_cidx
+    ; entity_location[entity_idx] = pool_cidx
+    lea rdx, [rel g_graph]
+    add rdx, GRAPH_ENTITY_LOCATION
+    movsxd rax, dword [rsp+44]
+    mov [rdx + rax*4], ecx
+
+    ; Reset ascii/pos on entity
+    mov ecx, [rsp+44]
+    lea rdx, [rel str_ascii_prop]
+    xor r8d, r8d
+    call herb_set_prop_int
+    mov ecx, [rsp+44]
+    lea rdx, [rel str_pos]
+    xor r8d, r8d
+    call herb_set_prop_int
+
+    jmp .pd_eload_clear
+
+.pd_eload_populate:
+    lea rcx, [rel str_ser_eload_e3]
+    call serial_print
+
+    ; Now populate BUFFER from file data
+    ; For each byte i in 0..file_size-1:
+    ;   Get entity from POOL, set ascii=byte, pos=i, move to BUFFER
+    mov edi, [rsp+32]                   ; file_size
+    test edi, edi
+    jz .pd_eload_done
+    xor r12d, r12d                      ; i = 0
+
+.pd_eload_pop_loop:
+    cmp r12d, edi
+    jge .pd_eload_done
+
+    ; Get first entity from POOL
+    lea rcx, [rel str_cn_ed_pool]
+    xor edx, edx
+    call herb_container_entity
+    test eax, eax
+    js .pd_eload_done                   ; no more pool entities
+
+    mov [rsp+44], eax                   ; entity_idx
+
+    ; Get ascii byte from file data
+    lea rcx, [rel fs_data_buf]
+    movzx ebx, byte [rcx + r12]        ; ascii = fs_data_buf[i]
+    test ebx, ebx
+    jz .pd_eload_pop_next               ; skip null bytes
+
+    ; Set ascii property
+    mov ecx, [rsp+44]
+    lea rdx, [rel str_ascii_prop]
+    mov r8d, ebx
+    call herb_set_prop_int
+
+    ; Set pos property
+    mov ecx, [rsp+44]
+    lea rdx, [rel str_pos]
+    mov r8d, r12d
+    call herb_set_prop_int
+
+    ; container_remove(pool_cidx, entity_idx)
+    mov ecx, [rsp+40]                  ; pool_cidx
+    mov edx, [rsp+44]
+    call container_remove
+
+    ; container_add(buffer_cidx, entity_idx)
+    mov ecx, [rsp+36]                  ; buffer_cidx
+    mov edx, [rsp+44]
+    call container_add
+
+    ; Update entity location
+    movsxd rax, dword [rsp+44]
+    mov ecx, [rsp+36]                  ; buffer_cidx
+    lea rdx, [rel g_graph]
+    add rdx, GRAPH_ENTITY_LOCATION
+    mov [rdx + rax*4], ecx
+
+.pd_eload_pop_next:
+    inc r12d
+    jmp .pd_eload_pop_loop
+
+.pd_eload_done:
+    lea rcx, [rel str_ser_eload_e4]
+    call serial_print
+
+    ; Set editor_ctl.cursor_pos = file_size
+    lea rcx, [rel str_cn_ed_ctl]
+    xor edx, edx
+    call herb_container_entity
+    test eax, eax
+    js .pd_eload_serial
+
+    mov ecx, eax
+    lea rdx, [rel str_prop_cursor_pos]
+    mov r8d, [rsp+32]                   ; file_size
+    call herb_set_prop_int
+
+.pd_eload_serial:
+    ; Set mode = 2 (enter editor mode)
+    mov ecx, [rel input_ctl_eid]
+    test ecx, ecx
+    js .pd_eload_action
+    lea rdx, [rel str_mode]
+    mov r8d, 2
+    call herb_set_prop_int
+    ; Focus editor window
+%ifdef GRAPHICS_MODE
+    mov ecx, [rel flow_editor_win_id]
+    test ecx, ecx
+    js .pd_eload_no_focus
+    call wm_set_focus
+    mov ecx, [rel flow_editor_win_id]
+    call wm_bring_to_front
+.pd_eload_no_focus:
+%endif
+
+.pd_eload_action:
+    lea rcx, [rel str_ser_eload_e5]
+    call serial_print
+
+    ; === DEBUG: print pre-HAM counts ===
+    lea rcx, [rel str_ser_eload_pre]
+    call serial_print
+    lea rcx, [rel str_cn_ed_buffer]
+    call herb_container_count
+    mov ecx, eax
+    call serial_print_int
+    lea rcx, [rel str_ser_eload_gly]
+    call serial_print
+    lea rcx, [rel str_cn_ed_glyphs]
+    call herb_container_count
+    mov ecx, eax
+    call serial_print_int
+    lea rcx, [rel str_ser_eload_dirty]
+    call serial_print
+    lea rax, [rel g_ham_dirty]
+    mov ecx, [rax]
+    call serial_print_int
+    lea rcx, [rel str_ser_eload_flow]
+    call serial_print
+    mov ecx, [rel g_flow_count]
+    call serial_print_int
+    lea rcx, [rel str_newline]
+    call serial_print
+
+    ; Trigger HAM to run flow pass (derive GLYPHS from BUFFER)
+    call ham_mark_dirty
+    mov ecx, 100
+    call ham_run_ham
+    mov [rsp+48], eax                      ; save ops count
+
+    ; === DEBUG: print post-HAM counts ===
+    lea rcx, [rel str_ser_eload_post]
+    call serial_print
+    lea rcx, [rel str_cn_ed_buffer]
+    call herb_container_count
+    mov ecx, eax
+    call serial_print_int
+    lea rcx, [rel str_ser_eload_gly]
+    call serial_print
+    lea rcx, [rel str_cn_ed_glyphs]
+    call herb_container_count
+    mov ecx, eax
+    call serial_print_int
+    lea rcx, [rel str_ser_eload_ops]
+    call serial_print
+    mov ecx, [rsp+48]
+    call serial_print_int
+    lea rcx, [rel str_newline]
+    call serial_print
+
+    ; Serial
+    lea rcx, [rel str_ser_eload]
+    call serial_print
+    lea rcx, [rsp+56]
+    call serial_print
+    lea rcx, [rel str_newline]
+    call serial_print
+
+    ; last_action
+    lea rcx, [rel last_action]
+    mov edx, 80
+    lea r8, [rel str_la_eload]
+    lea r9, [rsp+56]                    ; name
+    mov eax, [rsp+32]
+    mov [rsp+32], eax                   ; 5th arg = size
+    call herb_snprintf
+    jmp .pd_report
+
+.pd_eload_no_disk:
     lea rcx, [rel str_fs_nodisk]
     call serial_print
     jmp .pd_report
@@ -7132,11 +7882,40 @@ handle_key:
     movsx ecx, r13b
     call create_key_signal
 
+    ; HAM trace disabled — editor bug fixed (container syntax)
+
     ; ops = ham_run_ham(100)
     mov ecx, 100
     call ham_run_ham
     mov ebx, eax
     add [rel total_ops], eax
+
+    ; Editor mode debug: print key + buffer/pool counts
+    cmp esi, 2                          ; prev_mode == 2?
+    jne .hk_edkey_debug_skip
+    push rbx
+    sub rsp, 32
+    lea rcx, [rel str_ser_edkey]
+    call serial_print
+    movsx ecx, r13b
+    call serial_print_int
+    lea rcx, [rel str_ser_edbuf]
+    call serial_print
+    lea rcx, [rel str_cn_ed_buffer]
+    call herb_container_count
+    mov ecx, eax
+    call serial_print_int
+    lea rcx, [rel str_ser_edpool]
+    call serial_print
+    lea rcx, [rel str_cn_ed_pool]
+    call herb_container_count
+    mov ecx, eax
+    call serial_print_int
+    lea rcx, [rel str_newline]
+    call serial_print
+    add rsp, 32
+    pop rbx
+.hk_edkey_debug_skip:
 
     ; Read routing decisions
     mov ecx, [rel input_ctl_eid]
@@ -10016,6 +10795,233 @@ gfx_draw_game:
 %endif  ; KERNEL_MODE (gfx_draw_game)
 
 ; ============================================================
+; FLOW EDITOR DRAW FUNCTION — renders HERB-flow editor inside WM window
+; void flow_editor_draw_fn(int cx, int cy, int cw, int ch, void* win_ptr)
+; MS x64: ECX=cx, EDX=cy, R8D=cw, R9D=ch, [rbp+48]=win_ptr
+; ============================================================
+%ifdef KERNEL_MODE
+
+; Locals for flow_editor_draw_fn
+%define FED_CX   64
+%define FED_CY   68
+%define FED_CW   72
+%define FED_CH   76
+%define FED_VI   80
+%define FED_NV   84
+%define FED_SID  88
+%define FED_SX   92
+%define FED_SY   96
+
+flow_editor_draw_fn:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    sub rsp, 120                        ; shadow(32) + locals(88)
+    ; 6 pushes + sub 120 = 8 + 48 + 120 = 176. 176 % 16 = 0. ✓
+
+    ; Save client area params
+    mov dword [rsp + FED_CX], ecx
+    mov dword [rsp + FED_CY], edx
+    mov dword [rsp + FED_CW], r8d
+    mov dword [rsp + FED_CH], r9d
+
+    ; 1. Set clip rect to client area
+    call wm_set_clip                    ; ecx/edx/r8d/r9d already set
+
+    ; 2. Fill background
+    mov ecx, [rsp + FED_CX]
+    mov edx, [rsp + FED_CY]
+    mov r8d, [rsp + FED_CW]
+    mov r9d, [rsp + FED_CH]
+    mov dword [rsp + 32], 0x001A1A2E   ; dark blue editor bg
+    call fb_fill_rect
+
+    ; 3. Info bar at top of content area
+    mov ecx, [rsp + FED_CX]
+    mov edx, [rsp + FED_CY]
+    mov r8d, [rsp + FED_CW]
+    mov r9d, 20
+    mov dword [rsp + 32], 0x00252540   ; status bar bg
+    call fb_fill_rect
+
+    ; "EDITOR" title
+    mov ecx, [rsp + FED_CX]
+    add ecx, 10
+    mov edx, [rsp + FED_CY]
+    add edx, 3
+    lea r8, [rel str_gfx_editor_title]
+    mov r9d, 0x004A90D9                ; blue title
+    mov dword [rsp + 32], 0x00252540
+    call fb_draw_string
+    mov ebx, eax                       ; ebx = end x after title
+
+    ; "Chars:" label
+    lea ecx, [ebx + 16]
+    mov edx, [rsp + FED_CY]
+    add edx, 3
+    lea r8, [rel str_gfx_ed_chars]
+    mov r9d, 0x00808090
+    mov dword [rsp + 32], 0x00252540
+    call fb_draw_string
+    mov ebx, eax
+
+    ; char count = herb_container_count("editor.BUFFER")
+    lea rcx, [rel str_cn_ed_buffer]
+    call herb_container_count
+    xor ecx, ecx
+    test eax, eax
+    cmovs eax, ecx
+    mov r12d, eax                      ; r12 = char count
+
+    mov ecx, ebx
+    mov edx, [rsp + FED_CY]
+    add edx, 3
+    mov r8d, r12d
+    mov r9d, COL_TEXT_VAL
+    mov dword [rsp + 32], 0x00252540
+    call fb_draw_int
+
+    ; 4. Separator line
+    mov ecx, [rsp + FED_CX]
+    mov edx, [rsp + FED_CY]
+    add edx, 20
+    mov r8d, [rsp + FED_CW]
+    mov r9d, 0x004A90D9
+    call fb_hline
+
+    ; 5. Draw glyphs from editor.GLYPHS
+    lea rcx, [rel str_cn_ed_glyphs]
+    call herb_container_count
+    test eax, eax
+    jle .fed_no_glyphs
+    mov dword [rsp + FED_NV], eax
+    mov dword [rsp + FED_VI], 0
+
+.fed_glyph_loop:
+    mov eax, [rsp + FED_VI]
+    cmp eax, [rsp + FED_NV]
+    jge .fed_no_glyphs
+
+    ; eid = herb_container_entity("editor.GLYPHS", i)
+    lea rcx, [rel str_cn_ed_glyphs]
+    mov edx, [rsp + FED_VI]
+    call herb_container_entity
+    test eax, eax
+    js .fed_glyph_next
+    mov [rsp + FED_SID], eax
+
+    ; screen_x (relative, 0-based from flow)
+    mov ecx, eax
+    lea rdx, [rel str_gfx_screen_x]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov [rsp + FED_SX], eax
+
+    ; screen_y (relative, 0-based from flow)
+    mov ecx, [rsp + FED_SID]
+    lea rdx, [rel str_gfx_screen_y]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov [rsp + FED_SY], eax
+
+    ; ascii
+    mov ecx, [rsp + FED_SID]
+    lea rdx, [rel str_ascii_prop]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    test eax, eax
+    jle .fed_glyph_next
+
+    ; fb_draw_char(cx + screen_x, cy + 22 + screen_y, ascii, fg, bg)
+    mov ecx, [rsp + FED_CX]
+    add ecx, [rsp + FED_SX]
+    mov edx, [rsp + FED_CY]
+    add edx, 22
+    add edx, [rsp + FED_SY]
+    mov r8d, eax                       ; ascii
+    mov r9d, 0x00C0C0C0               ; light gray text
+    mov dword [rsp + 32], 0x001A1A2E  ; editor bg
+    call fb_draw_char
+
+.fed_glyph_next:
+    inc dword [rsp + FED_VI]
+    jmp .fed_glyph_loop
+
+.fed_no_glyphs:
+
+    ; 6. Cursor
+    lea rcx, [rel str_cn_ed_ctl]
+    xor edx, edx
+    call herb_container_entity
+    test eax, eax
+    js .fed_cursor_done
+
+    mov ecx, eax
+    lea rdx, [rel str_prop_cursor_pos]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    ; eax = cursor_pos
+    ; cursor_x = cx + (cursor_pos % 49) * 8
+    ; cursor_y = cy + 22 + (cursor_pos / 49) * 16
+    xor edx, edx
+    mov ebx, 49
+    div ebx                            ; eax = row, edx = col
+    shl edx, 3                         ; col * 8
+    add edx, [rsp + FED_CX]           ; + cx
+    shl eax, 4                         ; row * 16
+    add eax, [rsp + FED_CY]           ; + cy
+    add eax, 22                        ; + info bar height
+
+    ; Draw cursor block
+    mov ecx, edx                       ; x
+    mov edx, eax                       ; y
+    mov r8d, 8
+    mov r9d, 16
+    mov dword [rsp + 32], 0x00FFFFFF  ; white cursor
+    call fb_fill_rect
+
+.fed_cursor_done:
+
+    ; 7. Status bar at bottom of content area
+    mov ecx, [rsp + FED_CX]
+    mov eax, [rsp + FED_CY]
+    add eax, [rsp + FED_CH]
+    sub eax, 20
+    mov edx, eax                       ; bar_y = cy + ch - 20
+    mov r8d, [rsp + FED_CW]
+    mov r9d, 20
+    mov dword [rsp + 32], 0x00161622
+    call fb_fill_rect
+
+    mov ecx, [rsp + FED_CX]
+    add ecx, 8
+    mov edx, [rsp + FED_CY]
+    add edx, [rsp + FED_CH]
+    sub edx, 17
+    lea r8, [rel str_gfx_ed_status]
+    mov r9d, 0x00808090
+    mov dword [rsp + 32], 0x00161622
+    call fb_draw_string
+
+    ; 8. Clear clip rect
+    call wm_clear_clip
+
+    add rsp, 120
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+%endif  ; KERNEL_MODE (flow_editor_draw_fn)
+
+; ============================================================
 ; WINDOW MANAGER ADAPTERS — Bridge between WM draw_fn and kernel content renderers
 ; ============================================================
 
@@ -10038,6 +11044,12 @@ wm_draw_region_adapter:
     sub rsp, 72                         ; shadow(32) + 5 stack args(40)
     ; 6 pushes + sub 72 = 8 + 48 + 72 = 128. 128 % 16 = 0. ✓
 
+    ; Save client-area args from registers (before clobbered)
+    mov dword [rsp + 56], ecx           ; save cx
+    mov dword [rsp + 60], edx           ; save cy
+    mov dword [rsp + 64], r8d           ; save cw
+    mov dword [rsp + 68], r9d           ; save ch
+
     mov rbx, [rbp + 48]                 ; win_ptr
 
     ; Read region_id from window content_id
@@ -10048,16 +11060,16 @@ wm_draw_region_adapter:
     jg .wdra_done
     mov r12d, eax                       ; r12 = region_id
 
-    ; Read window outer bounds and colors
+    ; Read window colors
     mov r13d, dword [rbx + 40]          ; border_color (WIN_BORDER_COLOR)
     mov esi, dword [rbx + 44]           ; fill_color (WIN_FILL_COLOR)
 
-    ; Call gfx_draw_procs_in_region(rx, ry, rw, rh, container_name, bc, fc)
-    ; 7 args: rcx=x, rdx=y, r8=w, r9=h, [rsp+32]=container, [rsp+40]=bc, [rsp+48]=fc
-    mov ecx, dword [rbx + 8]            ; WIN_X
-    mov edx, dword [rbx + 12]           ; WIN_Y
-    mov r8d, dword [rbx + 16]           ; WIN_W
-    mov r9d, dword [rbx + 20]           ; WIN_H
+    ; Call gfx_draw_procs_in_region(cx, cy, cw, ch, container_name, bc, fc)
+    ; Use saved client rect, not window outer bounds
+    mov ecx, dword [rsp + 56]           ; client cx
+    mov edx, dword [rsp + 60]           ; client cy
+    mov r8d, dword [rsp + 64]           ; client cw
+    mov r9d, dword [rsp + 68]           ; client ch
     movsxd rax, r12d
     lea rdi, [rel region_containers]
     mov rdi, [rdi + rax*8]
@@ -10087,12 +11099,16 @@ wm_draw_region_adapter:
 wm_draw_tension_adapter:
     push rbp
     mov rbp, rsp
-    sub rsp, 32                         ; shadow space
-    ; 1 push + sub 32 = 40. 40 % 16 = 8. ✓
+    sub rsp, 48                         ; shadow space + align
+    ; 1 push + sub 48 = 56. (8+56)%16 = 0. ✓
 
+    ; Set clip rect to client area before drawing
+    ; ECX/EDX/R8D/R9D already = cx/cy/cw/ch from wm_draw_all
+    call wm_set_clip
     call gfx_draw_tension_panel
+    call wm_clear_clip
 
-    add rsp, 32
+    add rsp, 48
     pop rbp
     ret
 %endif  ; KERNEL_MODE
@@ -10318,6 +11334,33 @@ wm_init_default_windows:
     jmp .wmiw_loop
 
 .wmiw_done:
+    ; Create flow editor window
+    mov ecx, 400                        ; x
+    mov edx, 76                         ; y
+    mov r8d, 400                        ; w
+    mov r9d, 500                        ; h
+    mov dword [rsp + 32], 3             ; type = WCT_CUSTOM
+    mov dword [rsp + 40], 0             ; content_id = 0
+    lea rdi, [rel str_editor_title]
+    mov [rsp + 48], rdi                 ; title = "EDITOR"
+    mov dword [rsp + 56], (1 << 5) | (1 << 6) ; WF_CLOSABLE | WF_RESIZABLE
+    call wm_create_window
+    mov [rel flow_editor_win_id], eax
+
+    ; Set colors and draw_fn
+    cmp eax, -1
+    je .wmiw_ed_skip
+    mov ecx, eax
+    call wm_window_ptr
+    test rax, rax
+    jz .wmiw_ed_skip
+    mov dword [rax + 40], 0x002A2A4E   ; WIN_BORDER_COLOR = dark blue
+    mov dword [rax + 44], 0x001A1A2E   ; WIN_FILL_COLOR = editor bg
+    mov dword [rax + 48], 0x002A2A4E   ; WIN_TITLE_BG
+    lea rbx, [rel flow_editor_draw_fn]
+    mov [rax + 80], rbx                ; WIN_DRAW_FN
+.wmiw_ed_skip:
+
 %else
     ; Non-KERNEL_MODE: create windows from hardcoded positions
     ; CPU0 window
@@ -10914,6 +11957,9 @@ gfx_draw_full:
     jmp .gdf_epilogue
 
 .gdf_no_game:
+
+    ; ---- 4b. Editor now renders via WM window (flow_editor_draw_fn) ----
+    ; No early-exit path needed — editor renders through wm_draw_all
 %endif  ; KERNEL_MODE (game mode)
 
     ; ---- 5. Key legend ----
@@ -11966,7 +13012,7 @@ boot_compile_programs:
     lea     rax, [rel src_interactive_kernel_len]
     mov     edx, [rax]
     lea     r8, [rel bin_interactive_kernel]
-    mov     r9d, 20480
+    mov     r9d, 24576
     call    herb_compile_source
     test    eax, eax
     jle     .bcp_fail
@@ -12118,6 +13164,24 @@ boot_compile_programs:
     mov     [rel bin_turing_len], eax
     mov     ebx, eax
     lea     rcx, [rel str_compile_tm]
+    call    serial_print
+    mov     ecx, ebx
+    call    serial_print_int
+    lea     rcx, [rel str_compile_bytes]
+    call    serial_print
+
+    ; ---- test_flow ----
+    lea     rcx, [rel src_test_flow]
+    lea     rax, [rel src_test_flow_len]
+    mov     edx, [rax]
+    lea     r8, [rel bin_test_flow]
+    mov     r9d, 2048
+    call    herb_compile_source
+    test    eax, eax
+    jle     .bcp_fail
+    mov     [rel bin_test_flow_len], eax
+    mov     ebx, eax
+    lea     rcx, [rel str_compile_tf]
     call    serial_print
     mov     ecx, ebx
     call    serial_print_int

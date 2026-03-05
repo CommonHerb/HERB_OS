@@ -48,6 +48,8 @@ extern serial_print
 extern g_graph          ; Graph (720568 bytes)
 extern container_order_keys  ; parallel array: order_key per container
 extern tension_step_flags    ; parallel array: step flag per tension
+extern g_container_entities       ; Session 76: parallel array: entity IDs per container
+extern g_container_entity_counts  ; Session 76: parallel array: entity count per container
 ; Session 74: standalone tension data (from herb_graph.asm)
 extern g_tensions
 extern g_tension_count
@@ -63,6 +65,9 @@ global herb_load_program
 global herb_init
 global herb_load
 global g_arena_ptr
+; Session 76: Flow data
+global g_flows
+global g_flow_count
 
 section .bss
     g_bin_str_ids:   resd MAX_STRINGS      ; int[2048] — binary string table mapping
@@ -70,6 +75,9 @@ section .bss
     arena_storage:   resb SIZEOF_ARENA      ; HerbArena — static storage for herb_init
     g_arena_ptr:     resq 1                 ; HerbArena* — pointer to arena_storage
     g_graph_initialized: resd 1             ; flag: 0 = first load, 1 = already initialized
+    ; Session 76: Flow runtime data
+    g_flows:         resb MAX_FLOWS * SIZEOF_FLOW    ; 16 × 488 = 7808 bytes
+    g_flow_count:    resd 1
 
 section .rdata
     str_expr_full:    db "expr pool full", 0
@@ -225,6 +233,27 @@ br_i64:
 
 
 ; ============================================================
+; br_i32(BinReader* r) -> int32_t in EAX — Session 76
+;
+; Leaf function — reads 4 bytes LE as signed 32-bit.
+; RCX = BinReader*
+; ============================================================
+br_i32:
+    mov     rax, [rcx + BR_POS]
+    lea     rdx, [rax + 4]
+    cmp     rdx, [rcx + BR_LEN]
+    jg      .br_i32_eof
+    mov     rdx, [rcx + BR_DATA]
+    add     rdx, rax
+    mov     eax, [rdx]          ; read 4 bytes LE
+    add     qword [rcx + BR_POS], 4
+    ret
+.br_i32_eof:
+    xor     eax, eax
+    ret
+
+
+; ============================================================
 ; br_f64(BinReader* r) -> double in XMM0
 ;
 ; Leaf function — reads 8 bytes LE as double.
@@ -323,6 +352,10 @@ br_expr:
     je      .bre_unary
     cmp     edi, 0x0A
     je      .bre_in_of
+    cmp     edi, 0x0B
+    je      .bre_seed
+    cmp     edi, 0x0C
+    je      .bre_ternary
     ; Unknown kind — return NULL
     jmp     .bre_null
 
@@ -469,6 +502,29 @@ br_expr:
     movzx   ecx, ax
     call    bstr
     mov     [rsi + EX_INOF_EREF], eax
+    jmp     .bre_done
+
+.bre_seed:
+    ; Session 76: e->kind = EX_SEED; e->seed_slot = br_u8(r)
+    mov     dword [rsi + EX_KIND], EX_SEED_T
+    mov     rcx, rbx
+    call    br_u8
+    movzx   eax, al
+    mov     [rsi + EX_SEED_SLOT], eax
+    jmp     .bre_done
+
+.bre_ternary:
+    ; Session 76: e->kind = EX_TERNARY; cond = br_expr, true = br_expr, false = br_expr
+    mov     dword [rsi + EX_KIND], EX_TERNARY_T
+    mov     rcx, rbx
+    call    br_expr
+    mov     [rsi + EX_TERNARY_COND], rax
+    mov     rcx, rbx
+    call    br_expr
+    mov     [rsi + EX_TERNARY_TRUE], rax
+    mov     rcx, rbx
+    call    br_expr
+    mov     [rsi + EX_TERNARY_FALSE], rax
     jmp     .bre_done
 
 .bre_done:
@@ -1103,6 +1159,15 @@ load_program_binary:
     ; Session 74: zero standalone tension count
     mov     dword [g_tension_count], 0
 
+    ; Session 76: zero container entity counts
+    lea     rcx, [g_container_entity_counts]
+    xor     edx, edx
+    mov     r8d, MAX_CONTAINERS * 4         ; 256 × 4 = 1024 bytes
+    call    herb_memset
+
+    ; Session 76: zero flow count
+    mov     dword [g_flow_count], 0
+
     ; g_graph.entity_location[i] = -1 for all i
     lea     rdi, [g_graph + GRAPH_ENTITY_LOCATION]
     xor     esi, esi
@@ -1165,6 +1230,8 @@ load_program_binary:
     je      .lpb_sec_config
     cmp     r12d, 0x09
     je      .lpb_sec_tensions
+    cmp     r12d, 0x0A
+    je      .lpb_sec_flows
     ; Unknown section
     jmp     .lpb_unknown_sec
 
@@ -1796,8 +1863,10 @@ load_program_binary:
     ; bc->entity_type = ch->entity_type
     mov     eax, [rdi + CH_ENTITY_TYPE]
     mov     [r12 + CNT_ENTITY_TYPE], eax
-    ; bc->entity_count = 0 (already 0)
-    mov     dword [r12 + CNT_ENTITY_COUNT], 0
+    ; Session 76: entity_count = 0 in parallel array
+    movsxd  rax, esi
+    lea     rcx, [g_container_entity_counts]
+    mov     dword [rcx + rax*4], 0
     ; bc->owner = -1
     mov     dword [r12 + CNT_OWNER], -1
     ; ch->buffer = buf_ci
@@ -1913,6 +1982,193 @@ load_program_binary:
 .lpb_ten_next:
     inc     r14d
     jmp     .lpb_ten_loop
+
+
+; ---- Section 0x0A: Flows (Session 76) ----
+.lpb_sec_flows:
+    mov     rcx, rbx
+    call    br_u16
+    movzx   r13d, ax            ; R13 = flow count
+
+    xor     r14d, r14d          ; R14 = loop index
+.lpb_fl_loop:
+    cmp     r14d, r13d
+    jge     .lpb_section_loop
+
+    ; Allocate flow slot in g_flows
+    mov     eax, [g_flow_count]
+    cmp     eax, MAX_FLOWS
+    jge     .lpb_section_loop   ; skip if full
+    mov     edi, eax            ; EDI = flow index
+    inc     dword [g_flow_count]
+
+    ; Compute flow pointer: g_flows + fi * SIZEOF_FLOW
+    imul    eax, edi, SIZEOF_FLOW
+    lea     r15, [g_flows + rax] ; R15 = flow struct ptr (callee-saved)
+
+    ; Zero the flow struct
+    mov     rcx, r15
+    xor     edx, edx
+    mov     r8d, SIZEOF_FLOW
+    call    herb_memset
+
+    ; name = bstr(br_u16)
+    mov     rcx, rbx
+    call    br_u16
+    movzx   ecx, ax
+    call    bstr
+    mov     [r15 + FLOW_NAME_ID], eax
+
+    ; source = graph_find_container_by_name(bstr(br_u16))
+    mov     rcx, rbx
+    call    br_u16
+    movzx   ecx, ax
+    call    bstr
+    mov     ecx, eax
+    call    graph_find_container_by_name
+    mov     [r15 + FLOW_SRC_CIDX], eax
+
+    ; order_key = intern(bstr(br_u16))  — property name ID
+    mov     rcx, rbx
+    call    br_u16
+    movzx   ecx, ax
+    call    bstr
+    mov     [r15 + FLOW_ORDER_KEY_PID], eax
+
+    ; dest = graph_find_container_by_name(bstr(br_u16))
+    mov     rcx, rbx
+    call    br_u16
+    movzx   ecx, ax
+    call    bstr
+    mov     ecx, eax
+    push    rax                 ; save dest name ID for etype lookup
+    call    graph_find_container_by_name
+    mov     [r15 + FLOW_DST_CIDX], eax
+    pop     rcx                 ; discard saved name ID
+
+    ; Look up dest container entity type name for entity creation
+    ; dst_cidx → containers[dst_cidx].entity_type → type_names[etype]
+    mov     eax, [r15 + FLOW_DST_CIDX]
+    test    eax, eax
+    js      .lpb_fl_no_etype
+    movsxd  rdx, eax
+    imul    rdx, SIZEOF_CONTAINER
+    lea     rcx, [g_graph + GRAPH_CONTAINERS + rdx]
+    mov     eax, [rcx + CNT_ENTITY_TYPE]
+    test    eax, eax
+    js      .lpb_fl_no_etype
+    ; type_names[etype] = the name_id
+    movsxd  rdx, eax
+    lea     rcx, [g_graph + GRAPH_TYPE_NAMES]
+    mov     eax, [rcx + rdx*4]
+    mov     [r15 + FLOW_DST_ETYPE_NID], eax
+    jmp     .lpb_fl_etype_done
+.lpb_fl_no_etype:
+    mov     dword [r15 + FLOW_DST_ETYPE_NID], -1
+.lpb_fl_etype_done:
+
+    ; bind_src = bstr(br_u16)
+    mov     rcx, rbx
+    call    br_u16
+    movzx   ecx, ax
+    call    bstr
+    mov     [r15 + FLOW_BIND_SRC_ID], eax
+
+    ; bind_dst = bstr(br_u16)
+    mov     rcx, rbx
+    call    br_u16
+    movzx   ecx, ax
+    call    bstr
+    mov     [r15 + FLOW_BIND_DST_ID], eax
+
+    ; seed_count = br_u8
+    mov     rcx, rbx
+    call    br_u8
+    movzx   eax, al
+    mov     [r15 + FLOW_SEED_CNT], eax
+
+    ; Read seeds
+    xor     esi, esi            ; seed loop index
+.lpb_fl_seed_loop:
+    cmp     esi, [r15 + FLOW_SEED_CNT]
+    jge     .lpb_fl_seeds_done
+    ; seed name = bstr(br_u16)
+    mov     rcx, rbx
+    call    br_u16
+    movzx   ecx, ax
+    call    bstr
+    movsxd  rcx, esi
+    imul    rcx, SIZEOF_FLOW_SEED
+    mov     [r15 + FLOW_SEEDS + rcx + FLOW_SEED_NAME_ID], eax
+    ; seed initial = br_i32
+    mov     rcx, rbx
+    call    br_i32
+    movsxd  rcx, esi
+    imul    rcx, SIZEOF_FLOW_SEED
+    mov     [r15 + FLOW_SEEDS + rcx + FLOW_SEED_INITIAL], eax
+    inc     esi
+    jmp     .lpb_fl_seed_loop
+.lpb_fl_seeds_done:
+
+    ; set_count = br_u8
+    mov     rcx, rbx
+    call    br_u8
+    movzx   eax, al
+    mov     [r15 + FLOW_SET_CNT], eax
+
+    ; Read sets
+    xor     esi, esi
+.lpb_fl_set_loop:
+    cmp     esi, [r15 + FLOW_SET_CNT]
+    jge     .lpb_fl_sets_done
+    ; prop = bstr(br_u16)
+    mov     rcx, rbx
+    call    br_u16
+    movzx   ecx, ax
+    call    bstr
+    movsxd  rcx, esi
+    imul    rcx, SIZEOF_FLOW_SET
+    mov     [r15 + FLOW_SETS + rcx + FLOW_SET_PROP_ID], eax
+    ; expr = br_expr(r)
+    mov     rcx, rbx
+    call    br_expr
+    movsxd  rcx, esi
+    imul    rcx, SIZEOF_FLOW_SET
+    mov     [r15 + FLOW_SETS + rcx + FLOW_SET_EXPR], rax
+    inc     esi
+    jmp     .lpb_fl_set_loop
+.lpb_fl_sets_done:
+
+    ; step_count = br_u8
+    mov     rcx, rbx
+    call    br_u8
+    movzx   eax, al
+    mov     [r15 + FLOW_STEP_CNT], eax
+
+    ; Read steps
+    xor     esi, esi
+.lpb_fl_step_loop:
+    cmp     esi, [r15 + FLOW_STEP_CNT]
+    jge     .lpb_fl_steps_done
+    ; slot = br_u8
+    mov     rcx, rbx
+    call    br_u8
+    movzx   eax, al
+    movsxd  rcx, esi
+    imul    rcx, SIZEOF_FLOW_STEP
+    mov     [r15 + FLOW_STEPS + rcx + FLOW_STEP_SLOT], eax
+    ; expr = br_expr(r)
+    mov     rcx, rbx
+    call    br_expr
+    movsxd  rcx, esi
+    imul    rcx, SIZEOF_FLOW_STEP
+    mov     [r15 + FLOW_STEPS + rcx + FLOW_STEP_EXPR], rax
+    inc     esi
+    jmp     .lpb_fl_step_loop
+.lpb_fl_steps_done:
+
+    inc     r14d
+    jmp     .lpb_fl_loop
 
 
 ; ---- Error handlers ----

@@ -1,6 +1,6 @@
 # HERB OS — Human Testing Guide
 
-**Session 73 — Testing every interaction path before continuing Phase 4**
+**Updated Session 77 — Testing every interaction path**
 
 ## Setup
 
@@ -70,6 +70,12 @@
 | `swap` | Swap scheduling policy (same as S) |
 | `list` | List all processes |
 | `help` | Show help text |
+| `edit` | Enter the flow editor (type characters, ESC to exit) |
+| `esave <name>` | Save editor buffer to disk |
+| `eload <name>` | Load file from disk into editor |
+| `save <name>` | Save text to disk |
+| `read <name>` | Read file from disk |
+| `files` | List saved files |
 
 ---
 
@@ -287,6 +293,62 @@ or
 | Ready | Yellow/brown | Dark yellow |
 | Blocked | Red | Dark red |
 | Terminated | Gray | Dark gray |
+
+---
+
+### Test 11: Editor Window (Session 77)
+
+**Action:** Look at the boot screen.
+
+**Expected visual:**
+- An "EDITOR" window visible on the right side (position 400,76, size 400x500)
+- Dark blue background inside the window
+- Title bar says "EDITOR"
+- Dashboard/region windows visible alongside it
+
+**Pass if:** Editor window is visible alongside dashboard windows.
+
+---
+
+### Test 12: Editor Typing in Window
+
+**Action:**
+1. Press `/` then type `edit` and press Enter
+2. Type some characters (e.g., "hello world")
+3. Press ESC to exit
+
+**Expected visual:**
+- Editor window gets focus (highlight on title bar)
+- Characters appear inside the editor window at the top
+- Characters wrap at 49 per line (stay within window bounds)
+- White cursor block visible
+- Status bar at bottom shows "ESC=exit  /esave  /eload"
+- ESC returns to hotkey mode
+
+**Expected serial output:**
+```
+[EDIT] entering editor mode
+[EDKEY] ascii=104 buf=1 pool=127
+[EDIT] GLYPHS=1 g[0] ascii=104 x=0 y=0
+```
+
+**Pass if:** Characters render inside the window, wrap correctly, no bleed-through.
+
+---
+
+### Test 13: Window Overlap and Clipping
+
+**Action:**
+1. Drag the editor window to overlap a dashboard window
+2. Click on the dashboard window to bring it to front
+3. Click on the editor window to bring it back
+
+**Expected visual:**
+- Windows clip correctly — no bleed-through
+- Front window fully covers rear window content where they overlap
+- Focus highlight changes correctly
+
+**Pass if:** No rendering artifacts at window boundaries.
 
 ---
 

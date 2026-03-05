@@ -44,6 +44,7 @@ extern herb_memset      ; Phase 4f
 extern herb_memcpy      ; Phase 4f
 extern ham_compile_all  ; Phase 4f — int ham_compile_all(uint8_t* buf, int buf_size, int* out_count)
 extern ham_run          ; Phase 4f — int ham_run(uint8_t* bytecode_ptr, int bytecode_len)
+extern ham_dirty_mark   ; Session 79 — void ham_dirty_mark(int container_idx)
 extern alloc_expr       ; Phase 4f — Expr* alloc_expr(void)
 
 ; External data
@@ -57,6 +58,7 @@ extern g_ham_dirty          ; int (from herb_ham.asm)
 global g_strings, g_string_count, g_graph, g_expr_pool, g_expr_count
 global container_order_keys, tension_step_flags
 global g_tensions, g_tension_count
+global g_container_entities, g_container_entity_counts
 
 ; Export our functions — Phase 4b Part 1
 global intern
@@ -148,6 +150,11 @@ tension_step_flags:   resd MAX_TENSIONS    ; parallel array: step flag per tensi
 align 16
 g_tensions:       resb MAX_TENSIONS * SIZEOF_TENSION  ; Tension[256] (~490KB)
 g_tension_count:  resd 1                               ; int — number of active tensions
+
+; Session 76: Container entity lists extracted from Container struct into standalone BSS
+align 16
+g_container_entities:      resd MAX_CONTAINERS * MAX_ENTITY_PER_CONTAINER  ; 256 × 256 × 4 = 256KB
+g_container_entity_counts: resd MAX_CONTAINERS                             ; 256 × 4 = 1KB
 
 ; ============================================================
 ; DATA — Graph counters (Phase D Step 7d: migrated from C)
@@ -438,24 +445,26 @@ entity_set_prop:
 ; If entity_count < MAX_ENTITY_PER_CONTAINER, append ei.
 ; ============================================================
 container_add:
-    ; Compute container base: &g_graph.containers[ci]
-    ; = &g_graph + GRAPH_CONTAINERS + ci * SIZEOF_CONTAINER
-    movsxd  rax, ecx
-    imul    rax, SIZEOF_CONTAINER
-    lea     r9, [g_graph + GRAPH_CONTAINERS]
-    add     r9, rax         ; R9 = &container
+    ; Session 76: Use parallel BSS arrays instead of in-struct entity list
+    ; ECX = ci, EDX = ei
+    movsxd  rax, ecx                        ; RAX = ci (sign-extended)
 
     ; Check entity_count < MAX_ENTITY_PER_CONTAINER
-    mov     eax, [r9 + CNT_ENTITY_COUNT]
-    cmp     eax, MAX_ENTITY_PER_CONTAINER
+    lea     r9, [g_container_entity_counts]
+    mov     r8d, [r9 + rax*4]               ; R8D = entity_count
+    cmp     r8d, MAX_ENTITY_PER_CONTAINER
     jge     .ca_full
 
-    ; entities[entity_count] = ei
-    mov     [r9 + CNT_ENTITIES + rax*4], edx
+    ; g_container_entities[ci * 256 + count] = ei
+    imul    r10, rax, MAX_ENTITY_PER_CONTAINER  ; R10 = ci * 256
+    lea     r11, [g_container_entities]
+    movsxd  rcx, r8d                        ; RCX = count (for indexing)
+    add     rcx, r10                        ; RCX = ci * 256 + count
+    mov     [r11 + rcx*4], edx              ; entities[count] = ei
 
     ; entity_count++
-    inc     eax
-    mov     [r9 + CNT_ENTITY_COUNT], eax
+    inc     r8d
+    mov     [r9 + rax*4], r8d
 
 .ca_full:
     ret
@@ -470,23 +479,28 @@ container_add:
 ; Linear scan for ei, swap with last element, decrement count.
 ; ============================================================
 container_remove:
-    ; Compute container base
-    movsxd  rax, ecx
-    imul    rax, SIZEOF_CONTAINER
-    lea     r9, [g_graph + GRAPH_CONTAINERS]
-    add     r9, rax         ; R9 = &container
+    ; Session 76: Use parallel BSS arrays instead of in-struct entity list
+    ; ECX = ci, EDX = ei
+    movsxd  rax, ecx                        ; RAX = ci (sign-extended)
 
-    ; Load entity_count
-    mov     r10d, [r9 + CNT_ENTITY_COUNT]
-    xor     r11d, r11d      ; R11 = loop counter
+    ; Load entity_count from parallel array
+    lea     r9, [g_container_entity_counts]
+    mov     r10d, [r9 + rax*4]              ; R10D = entity_count
+
+    ; Compute entity list base: &g_container_entities[ci * 256]
+    imul    r8, rax, MAX_ENTITY_PER_CONTAINER  ; R8 = ci * 256
+    lea     r9, [g_container_entities]
+    lea     r9, [r9 + r8*4]                 ; R9 = base of this container's entity list
+
+    xor     r11d, r11d                      ; R11 = loop counter
 
 .cr_loop:
     cmp     r11d, r10d
     jge     .cr_not_found
 
     ; Compare entities[i] with ei
-    mov     eax, [r9 + CNT_ENTITIES + r11*4]
-    cmp     eax, edx
+    mov     ecx, [r9 + r11*4]
+    cmp     ecx, edx
     je      .cr_found
 
     inc     r11d
@@ -495,9 +509,11 @@ container_remove:
 .cr_found:
     ; Swap with last: entities[i] = entities[--entity_count]
     dec     r10d
-    mov     eax, [r9 + CNT_ENTITIES + r10*4]  ; last element
-    mov     [r9 + CNT_ENTITIES + r11*4], eax   ; overwrite found slot
-    mov     [r9 + CNT_ENTITY_COUNT], r10d      ; store decremented count
+    mov     ecx, [r9 + r10*4]              ; last element
+    mov     [r9 + r11*4], ecx              ; overwrite found slot
+    ; Store decremented count
+    lea     r9, [g_container_entity_counts]
+    mov     [r9 + rax*4], r10d
 
 .cr_not_found:
     ret
@@ -708,7 +724,10 @@ try_move:
 
     cmp     dword [rcx + CNT_KIND], CK_SLOT_V
     jne     .tm_reg_slot_ok
-    cmp     dword [rcx + CNT_ENTITY_COUNT], 0
+    ; Session 76: entity count from parallel array
+    movsxd  rax, edi
+    lea     r8, [g_container_entity_counts]
+    cmp     dword [r8 + rax*4], 0
     jg      .tm_return_0
 .tm_reg_slot_ok:
 
@@ -829,7 +848,10 @@ try_move:
 
     cmp     dword [rcx + CNT_KIND], CK_SLOT_V
     jne     .tm_sc_slot_ok
-    cmp     dword [rcx + CNT_ENTITY_COUNT], 0
+    ; Session 76: entity count from parallel array
+    movsxd  rax, edi
+    lea     r8, [g_container_entity_counts]
+    cmp     dword [r8 + rax*4], 0
     jg      .tm_return_0
 .tm_sc_slot_ok:
 
@@ -856,6 +878,12 @@ try_move:
     movsxd  rax, esi
     lea     rcx, [g_graph + GRAPH_ENTITY_LOCATION]
     mov     [rcx + rax*4], edi
+
+    ; Session 79: Mark source and dest containers dirty
+    mov     ecx, ebx          ; EBX = from (callee-saved)
+    call    ham_dirty_mark
+    mov     ecx, edi          ; EDI = to (callee-saved)
+    call    ham_dirty_mark
 
     ; op_count++
     lea     rcx, [g_graph + GRAPH_OP_COUNT]
@@ -1015,7 +1043,10 @@ do_channel_receive:
     ; Slot constraint
     cmp     dword [rcx + CNT_KIND], CK_SLOT_V
     jne     .dcr_slot_ok
-    cmp     dword [rcx + CNT_ENTITY_COUNT], 0
+    ; Session 76: entity count from parallel array
+    movsxd  rax, edi
+    lea     r8, [g_container_entity_counts]
+    cmp     dword [r8 + rax*4], 0
     jg      .dcr_return_0
 .dcr_slot_ok:
 
@@ -1085,11 +1116,10 @@ ham_ecnt:
     cmp     ecx, [rax]
     jge     .hecnt_zero
 
-    ; return containers[container_idx].entity_count
+    ; Session 76: return entity count from parallel array
     movsxd  rax, ecx
-    imul    rax, SIZEOF_CONTAINER
-    lea     rcx, [g_graph + GRAPH_CONTAINERS]
-    mov     eax, [rcx + rax + CNT_ENTITY_COUNT]
+    lea     rcx, [g_container_entity_counts]
+    mov     eax, [rcx + rax*4]
     ret
 
 .hecnt_zero:
@@ -1143,23 +1173,26 @@ ham_scan:
     cmp     ecx, [rax]
     jge     .hscan_zero
 
-    ; Compute container base
-    movsxd  rax, ecx
-    imul    rax, SIZEOF_CONTAINER
-    lea     r9, [g_graph + GRAPH_CONTAINERS]
-    add     r9, rax             ; R9 = &containers[container_idx]
+    ; Session 76: Use parallel BSS arrays
+    movsxd  rax, ecx            ; RAX = container_idx
 
     ; n = min(entity_count, max_count)
-    mov     r10d, [r9 + CNT_ENTITY_COUNT]
+    lea     r9, [g_container_entity_counts]
+    mov     r10d, [r9 + rax*4]
     cmp     r10d, r8d
     cmovg   r10d, r8d           ; R10D = min(entity_count, max_count)
+
+    ; Compute entity list base: &g_container_entities[ci * 256]
+    imul    r9, rax, MAX_ENTITY_PER_CONTAINER
+    lea     r11, [g_container_entities]
+    lea     r9, [r11 + r9*4]   ; R9 = base of entity list
 
     ; Copy loop: buf[i] = entities[i] for i in 0..n-1
     xor     ecx, ecx            ; ECX = loop counter
 .hscan_loop:
     cmp     ecx, r10d
     jge     .hscan_done
-    mov     eax, [r9 + CNT_ENTITIES + rcx*4]
+    mov     eax, [r9 + rcx*4]
     mov     [rdx + rcx*4], eax
     inc     ecx
     jmp     .hscan_loop
@@ -1303,6 +1336,15 @@ ham_eset:
     mov     edx, esi            ; prop_id
     lea     r8, [rbp - 40]      ; &PropVal
     call    entity_set_prop
+
+    ; Session 79: Mark entity's container dirty
+    movsxd  rax, ebx                    ; entity_idx (callee-saved)
+    lea     rcx, [g_graph + GRAPH_ENTITY_LOCATION]
+    mov     ecx, [rcx + rax*4]
+    test    ecx, ecx
+    js      .hes_no_dirty
+    call    ham_dirty_mark
+.hes_no_dirty:
 
     mov     eax, 1              ; return 1 (changed)
     jmp     .hes_done
@@ -1475,11 +1517,10 @@ herb_container_count:
     test    eax, eax
     js      .hcc_done              ; -1 already in EAX
 
-    ; return containers[ci].entity_count
+    ; Session 76: return entity count from parallel array
     movsxd  rdx, eax
-    imul    rdx, SIZEOF_CONTAINER
-    lea     rcx, [g_graph + GRAPH_CONTAINERS]
-    mov     eax, [rcx + rdx + CNT_ENTITY_COUNT]
+    lea     rcx, [g_container_entity_counts]
+    mov     eax, [rcx + rdx*4]
 
 .hcc_done:
     leave
@@ -1514,19 +1555,20 @@ herb_container_entity:
     test    eax, eax
     js      .hce_fail
 
-    ; bounds check: idx < 0 || idx >= containers[ci].entity_count
+    ; Session 76: bounds check using parallel arrays
     test    esi, esi
     js      .hce_fail
-    movsxd  rdx, eax
-    imul    rdx, SIZEOF_CONTAINER
-    lea     rcx, [g_graph + GRAPH_CONTAINERS]
-    add     rcx, rdx               ; RCX = &containers[ci]
-    cmp     esi, [rcx + CNT_ENTITY_COUNT]
+    movsxd  rdx, eax               ; RDX = ci (sign-extended)
+    lea     rcx, [g_container_entity_counts]
+    cmp     esi, [rcx + rdx*4]
     jge     .hce_fail
 
-    ; return containers[ci].entities[idx]
+    ; return g_container_entities[ci * 256 + idx]
+    imul    rcx, rdx, MAX_ENTITY_PER_CONTAINER  ; RCX = ci * 256
     movsxd  rax, esi
-    mov     eax, [rcx + CNT_ENTITIES + rax*4]
+    add     rax, rcx                            ; RAX = ci * 256 + idx
+    lea     rcx, [g_container_entities]
+    mov     eax, [rcx + rax*4]
     jmp     .hce_done
 
 .hce_fail:
@@ -1997,7 +2039,20 @@ herb_set_prop_int:
 
 .hspi_err:
     mov     eax, -1
+    jmp     .hspi_ret
 .hspi_done:
+    ; Session 79: Mark entity's container dirty on successful property set
+    movsxd  rax, ebx                    ; entity_id (callee-saved)
+    lea     rcx, [g_graph + GRAPH_ENTITY_LOCATION]
+    mov     ecx, [rcx + rax*4]
+    test    ecx, ecx
+    js      .hspi_no_dirty
+    push    rax                         ; preserve return value (xor eax,eax = 0)
+    call    ham_dirty_mark
+    pop     rax
+.hspi_no_dirty:
+    xor     eax, eax                    ; return 0 (success)
+.hspi_ret:
     add     rsp, 48
     pop     r12
     pop     rdi
@@ -2062,8 +2117,10 @@ herb_create_container:
     mov     [rcx + CNT_KIND], ebx
     ; c->entity_type = -1
     mov     dword [rcx + CNT_ENTITY_TYPE], -1
-    ; c->entity_count = 0
-    mov     dword [rcx + CNT_ENTITY_COUNT], 0
+    ; Session 76: entity_count = 0 in parallel array
+    movsxd  rax, r8d
+    lea     rdx, [g_container_entity_counts]
+    mov     dword [rdx + rax*4], 0
     ; c->owner = -1
     mov     dword [rcx + CNT_OWNER], -1
 
@@ -2531,6 +2588,9 @@ create_entity:
     mov     ecx, r12d
     mov     edx, ebx
     call    container_add
+    ; Session 79: Mark dest container dirty
+    mov     ecx, r12d         ; R12D = container_idx (callee-saved)
+    call    ham_dirty_mark
 .ce_no_add:
 
     ; tsi = get_type_scope_idx(type_name_id)
@@ -2602,7 +2662,10 @@ create_entity:
     mov     [rcx + CNT_KIND], eax
     mov     eax, [rdi + ST_ENTITY_TYPE]    ; st->entity_type
     mov     [rcx + CNT_ENTITY_TYPE], eax
-    mov     dword [rcx + CNT_ENTITY_COUNT], 0
+    ; Session 76: entity_count = 0 in parallel array
+    movsxd  rax, esi
+    lea     rdx, [g_container_entity_counts]
+    mov     dword [rdx + rax*4], 0
     mov     [rcx + CNT_OWNER], ebx         ; ei
 
     ; Track scope: si = entity_scope_count[ei]++
