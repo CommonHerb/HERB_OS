@@ -51,7 +51,14 @@ extern do_channel_send
 extern do_channel_receive
 ; Parallel arrays (from herb_graph.asm)
 extern container_order_keys
+extern container_remove
 extern tension_step_flags
+extern g_container_entities
+extern g_container_entity_counts
+; Session 76: Flow data (from herb_loader.asm)
+extern g_flows
+extern g_flow_count
+extern create_entity
 ; Session 74: standalone tension data (from herb_graph.asm)
 extern g_tensions
 extern g_tension_count
@@ -62,6 +69,7 @@ extern graph_find_entity_by_name
 extern graph_find_container_by_name
 extern str_of
 extern serial_print
+extern serial_print_int
 extern herb_snprintf
 
 ; Export entry point and debug counters
@@ -79,6 +87,9 @@ global fixpoint_iters
 global ham_compile_all
 ; Phase D Step 7d — HAM data exports (migrated from C)
 global g_ham_bytecode, g_ham_bytecode_len, g_ham_compiled_count, g_ham_dirty
+global ham_trace_mode
+; Session 79: Incremental HAM exports
+global ham_dirty_mark, ham_dbg_eval
 
 ; ============================================================
 ; BSS — Static data for HAM execution
@@ -87,7 +98,7 @@ global g_ham_bytecode, g_ham_bytecode_len, g_ham_compiled_count, g_ham_dirty
 section .bss
 
 expr_stack:      resq 16       ; 16-slot expression stack (128 bytes)
-scan_buf:        resd 64       ; scan results: up to 64 entity indices (256 bytes)
+scan_buf:        resd 256      ; scan results: up to 256 entity indices (1024 bytes)
 scan_count:      resd 1        ; number of entities in scan buffer
 action_buf:      resb 960      ; action buffer: 40 actions × 24 bytes each
 action_count:    resd 1        ; number of buffered actions
@@ -103,7 +114,7 @@ changed_flag:    resd 1        ; fixpoint changed flag (was R15, freed for B3)
 fixpoint_iters:  resd 1        ; safety: count fixpoint iterations
 each_mode:       resd 1        ; 0 = normal, 1 = in each-mode iteration
 each_start:      resq 1        ; PC to jump back to after each iteration
-each_buf:        resd 64       ; copy of scan_buf at SEL_EACH time
+each_buf:        resd 256      ; copy of scan_buf at SEL_EACH time
 each_total:      resd 1        ; total entities in each_buf
 each_idx:        resd 1        ; current iteration index
 each_bind:       resd 1        ; which binding register (0-3) to update
@@ -112,6 +123,7 @@ thdr_run_ctnr:   resd 1        ; saved run_container from THDR (Phase 3c)
 scan_last_ctnr:  resd 1        ; last scanned container index (for ordered sort)
 ham_pass_mode:   resd 1        ; 0 = step pass, 1 = converge pass
 thdr_flags:      resd 1        ; flags byte from current THDR
+thdr_pri:        resd 1        ; priority byte from current THDR (for trace)
 ; Debug counters (read by C after ham_run returns)
 ham_dbg_thdr:    resd 1        ; number of THDR entries
 ham_dbg_fail:    resd 1        ; number of FAILs
@@ -122,6 +134,28 @@ ham_dbg_require: resd 1        ; number of REQUIREs reached
 ham_dbg_guard:   resd 1        ; number of GUARDs reached
 ham_dbg_skip:    resd 1        ; number of THDR owner-check skips (Phase 3c)
 ham_dbg_emov:    resd 1        ; number of EMOV instructions executed
+ham_trace_mode:  resd 1        ; 1 = verbose trace on (set externally)
+
+; Session 79: Incremental HAM — dirty-set propagation
+ham_dirty_bitmap:  resq 4     ; 32 bytes — which containers changed (256 bits)
+ham_eval_bitmap:   resq 4     ; 32 bytes — swap target for current iteration
+ham_tension_deps:  resq 1024  ; 32 bytes × 256 tensions = 8KB dep bitmaps
+ham_tension_idx:   resd 1     ; current tension index (incremented at each THDR)
+ham_dbg_eval:      resd 1     ; tensions actually evaluated (not dirty-skipped)
+ham_compile_idx:   resd 1     ; current compile-order index (set before ham_compile_tension)
+
+; Session 76: Flow execution state
+flow_seed_cur:    resq 8      ; current seed values (64 bytes)
+flow_seed_next:   resq 8      ; next-iteration seed values (64 bytes)
+flow_src_count:   resd 1      ; number of source entities
+flow_dst_cidx:    resd 1      ; dest container index
+flow_dst_etype:   resd 1      ; dest entity type name ID
+flow_body_pc:     resq 1      ; PC to loop back to from FEND
+flow_idx:         resd 1      ; current iteration index
+flow_end_p:       resq 1      ; end of flow (for skip in non-flow passes)
+flow_dst_count:   resd 1      ; existing dest entity count before flow runs
+flow_dst_buf:     resd 256    ; dest entity IDs for reuse
+flow_dst_name:    resd 1      ; interned "_flow" name ID
 
 ; Phase D Step 7d — HAM data (migrated from C)
 g_ham_bytecode:  resb 8192     ; uint8_t[8192] — compiled bytecode buffer
@@ -178,6 +212,23 @@ hc_ham_lp:        db "(", 0
 hc_ham_rp:        db ")", 0
 hc_newline:       db 10, 0
 hc_intfmt:        db "%d", 0
+hc_trace_thdr:    db "[T]p=", 0
+hc_trace_scan:    db " S:", 0
+hc_trace_eq:      db "=", 0
+hc_trace_req_f:   db " R!",0
+hc_trace_where:   db "→", 0
+hc_trace_tend:    db " OK", 10, 0
+hc_trace_fire:    db "[FIRE] p=", 0
+hc_trace_act:     db " acts=", 0
+hc_trace_nl:      db 10, 0
+hc_trace_fail:    db " FAIL", 10, 0
+hc_trace_switch_c: db "[PASS] step->converge", 10, 0
+hc_trace_switch_f: db "[PASS] converge->flow", 10, 0
+hc_trace_done:     db "[PASS] done", 10, 0
+hc_trace_fixpt:    db "[FIX] pm=", 0
+; Session 79: Incremental HAM debug strings
+hc_eval_pfx:       db "[HAM] eval=", 0
+hc_eval_sep:       db "/", 0
 ; ============================================================
 ; TEXT — HAM engine code
 ; ============================================================
@@ -191,6 +242,15 @@ section .text
 ;        RSI points past the opcode byte
 ; Jumps to the appropriate handler.
 ; ============================================================
+
+; ============================================================
+; ham_dirty_mark — mark a container dirty in the bitmap
+; ECX = container_idx (0..255). Leaf function, clobbers RAX only.
+; ============================================================
+ham_dirty_mark:
+    lea  rax, [ham_dirty_bitmap]
+    bts  [rax], ecx
+    ret
 
 ham_dispatch:
     ; Control (most likely at tension boundaries)
@@ -267,6 +327,24 @@ ham_dispatch:
     cmp  al, 0x35
     je   ham_op_erecv_s
 
+    ; Session 76: Flow opcodes
+    cmp  al, 0x50
+    je   ham_op_fhdr
+    cmp  al, 0x51
+    je   ham_op_fseed
+    cmp  al, 0x52
+    je   ham_op_fbody
+    cmp  al, 0x53
+    je   ham_op_fset
+    cmp  al, 0x54
+    je   ham_op_fstep
+    cmp  al, 0x55
+    je   ham_op_fend
+    cmp  al, 0x56
+    je   ham_op_fseedv
+    cmp  al, 0x57
+    je   ham_op_ternary
+
     ; Unknown opcode — skip to tension end
     jmp  ham_invalid
 
@@ -339,6 +417,27 @@ ham_run:
     mov  dword [ham_dbg_guard], 0
     mov  dword [ham_dbg_skip], 0
 
+    ; Session 79: Incremental HAM — init counters + swap dirty→eval
+    mov  dword [ham_tension_idx], 0
+    mov  dword [ham_dbg_eval], 0
+
+    ; Swap dirty → eval, clear dirty
+    lea  rcx, [ham_dirty_bitmap]
+    lea  rdx, [ham_eval_bitmap]
+    mov  rax, [rcx]
+    mov  [rdx], rax
+    mov  rax, [rcx+8]
+    mov  [rdx+8], rax
+    mov  rax, [rcx+16]
+    mov  [rdx+16], rax
+    mov  rax, [rcx+24]
+    mov  [rdx+24], rax
+    xor  eax, eax
+    mov  [rcx], rax
+    mov  [rcx+8], rax
+    mov  [rcx+16], rax
+    mov  [rcx+24], rax
+
     ; Begin dispatch: fetch first opcode
     cmp  rsi, [bytecode_end_p]
     jge  .done
@@ -347,6 +446,31 @@ ham_run:
     jmp  ham_dispatch
 
 .done:
+    ; Session 79: Print [HAM] eval=N/M
+    ; ham_run already has 40 bytes sub rsp (32 shadow + 8 alignment)
+    lea  rcx, [hc_eval_pfx]
+    call serial_print
+    mov  ecx, [ham_dbg_eval]
+    call serial_print_int
+    lea  rcx, [hc_eval_sep]
+    call serial_print
+    mov  ecx, [ham_dbg_thdr]
+    call serial_print_int
+    lea  rcx, [hc_trace_nl]
+    call serial_print
+
+    ; TRACE
+    cmp  dword [ham_trace_mode], 0
+    je   .done_no_trace
+    push rsi
+    push rdi
+    sub  rsp, 32
+    lea  rcx, [hc_trace_done]
+    call serial_print
+    add  rsp, 32
+    pop  rdi
+    pop  rsi
+.done_no_trace:
     ; Return total_ops in EAX
     mov  eax, [total_ops]
 
@@ -390,6 +514,7 @@ ham_op_thdr:
     inc  dword [ham_dbg_thdr]
     movzx eax, byte [rsi]          ; pri (1 byte)
     inc  rsi
+    mov  [thdr_pri], eax            ; save priority for trace
 
     movzx eax, byte [rsi]          ; flags (1 byte)
     inc  rsi
@@ -412,8 +537,13 @@ ham_op_thdr:
     add  rdx, rcx                   ; + tension_len
     mov  [tension_end_p], rdx
 
+    ; Session 79: Every THDR increments tension index (regardless of skip)
+    inc  dword [ham_tension_idx]
+
     ; === Pass-mode filtering ===
     mov  eax, [ham_pass_mode]
+    cmp  eax, 2
+    je   .thdr_skip                  ; flow pass: skip ALL tensions
     mov  ecx, [thdr_flags]
     and  ecx, 1                     ; step_flag
     test eax, eax
@@ -450,6 +580,38 @@ ham_op_thdr:
     jmp  ham_op_fail                 ; skip this tension
 
 .thdr_proceed:
+    ; Session 79: Dirty check — skip if no dep containers changed
+    mov  eax, [ham_tension_idx]
+    dec  eax                       ; we already incremented, need current index
+    shl  eax, 5                    ; × 32 bytes per dep bitmap
+    lea  rcx, [ham_tension_deps + rax]
+    mov  rax, [rcx]
+    and  rax, [ham_eval_bitmap]
+    mov  rdx, [rcx + 8]
+    and  rdx, [ham_eval_bitmap + 8]
+    or   rax, rdx
+    mov  rdx, [rcx + 16]
+    and  rdx, [ham_eval_bitmap + 16]
+    or   rax, rdx
+    mov  rdx, [rcx + 24]
+    and  rdx, [ham_eval_bitmap + 24]
+    or   rax, rdx
+    jz   .thdr_skip                ; no overlap → skip
+    inc  dword [ham_dbg_eval]
+    ; TRACE: print tension priority if trace mode on
+    cmp  dword [ham_trace_mode], 0
+    je   .thdr_no_trace
+    push rsi
+    push rdi
+    sub  rsp, 32
+    lea  rcx, [hc_trace_thdr]
+    call serial_print
+    mov  ecx, [thdr_pri]
+    call serial_print_int
+    add  rsp, 32
+    pop  rdi
+    pop  rsi
+.thdr_no_trace:
     ; Reset expression stack
     lea  rdi, [expr_stack]
 
@@ -465,6 +627,26 @@ ham_op_tend:
     mov  ecx, [action_count]
     test ecx, ecx
     jz   .no_actions
+    ; TRACE: print "[FIRE] p=<pri> acts=<count>" on success if trace on
+    cmp  dword [ham_trace_mode], 0
+    je   .tend_no_trace
+    push rsi
+    push rcx
+    sub  rsp, 32
+    lea  rcx, [hc_trace_fire]
+    call serial_print
+    mov  ecx, [thdr_pri]
+    call serial_print_int
+    lea  rcx, [hc_trace_act]
+    call serial_print
+    mov  ecx, [action_count]
+    call serial_print_int
+    lea  rcx, [hc_trace_nl]
+    call serial_print
+    add  rsp, 32
+    pop  rcx
+    pop  rsi
+.tend_no_trace:
     inc  dword [ham_dbg_tend]       ; count TENDs with actions
 
     ; Iterate action buffer
@@ -633,21 +815,61 @@ ham_op_tend:
     mov  dword [each_mode], 0       ; exit each-mode
 
 .no_actions:
+    ; TRACE: print pass_mode and rsi vs bytecode_end
+    cmp  dword [ham_trace_mode], 0
+    je   .no_act_trace_skip
+    push rsi
+    push rdi
+    sub  rsp, 32
+    lea  rcx, [hc_trace_fixpt]
+    call serial_print
+    mov  ecx, [ham_pass_mode]
+    call serial_print_int
+    add  rsp, 32
+    pop  rdi
+    pop  rsi
+.no_act_trace_skip:
     ; Fixpoint check: are we at the end of all bytecode?
     cmp  rsi, [bytecode_end_p]
     jl   .not_end
 
-    ; Two-pass fixpoint: step pass → converge pass
+    ; Three-pass fixpoint: step pass → converge pass → flow pass
     cmp  dword [ham_pass_mode], 0
     je   .switch_to_converge        ; step pass done → switch to converge
 
+    cmp  dword [ham_pass_mode], 2
+    je   ham_run.done               ; flow pass done → return
+
     ; Converge pass: normal fixpoint loop
     cmp  dword [changed_flag], 0
-    je   ham_run.done               ; no changes → equilibrium, return
+    jne  .converge_continue
 
+    ; Equilibrium reached — switch to flow pass if flows exist
+    cmp  dword [g_flow_count], 0
+    je   ham_run.done               ; no flows → done
+    jmp  .switch_to_flow
+
+.converge_continue:
     inc  dword [fixpoint_iters]
     cmp  dword [fixpoint_iters], 100
     jge  ham_run.done               ; safety limit
+    ; Session 79: Swap dirty→eval, clear dirty, reset tension_idx
+    lea  rcx, [ham_dirty_bitmap]
+    lea  rdx, [ham_eval_bitmap]
+    mov  rax, [rcx]
+    mov  [rdx], rax
+    mov  rax, [rcx+8]
+    mov  [rdx+8], rax
+    mov  rax, [rcx+16]
+    mov  [rdx+16], rax
+    mov  rax, [rcx+24]
+    mov  [rdx+24], rax
+    xor  eax, eax
+    mov  [rcx], rax
+    mov  [rcx+8], rax
+    mov  [rcx+16], rax
+    mov  [rcx+24], rax
+    mov  dword [ham_tension_idx], 0
     mov  rsi, rbx                   ; PC = bytecode start
     mov  dword [changed_flag], 0
     jmp  .not_end                   ; continue converge pass
@@ -656,6 +878,25 @@ ham_op_tend:
     mov  dword [ham_pass_mode], 1   ; enter converge pass
     mov  rsi, rbx                   ; reset PC to bytecode start
     mov  dword [changed_flag], 0    ; clear changed flag for converge pass
+    mov  dword [ham_tension_idx], 0
+    ; TRACE
+    cmp  dword [ham_trace_mode], 0
+    je   .not_end
+    push rsi
+    push rdi
+    sub  rsp, 32
+    lea  rcx, [hc_trace_switch_c]
+    call serial_print
+    add  rsp, 32
+    pop  rdi
+    pop  rsi
+    jmp  .not_end
+
+.switch_to_flow:
+    mov  dword [ham_pass_mode], 2   ; enter flow pass
+    mov  rsi, rbx                   ; reset PC to bytecode start
+    mov  dword [ham_tension_idx], 0
+    jmp  .not_end
 
 .not_end:
     DISPATCH
@@ -666,6 +907,18 @@ ham_op_tend:
 ham_op_fail:
     inc  dword [ham_dbg_fail]
     mov  dword [action_count], 0
+    ; TRACE: print FAIL newline if trace on
+    cmp  dword [ham_trace_mode], 0
+    je   .fail_no_trace
+    push rsi
+    push rdi
+    sub  rsp, 32
+    lea  rcx, [hc_trace_fail]
+    call serial_print
+    add  rsp, 32
+    pop  rdi
+    pop  rsi
+.fail_no_trace:
 
     ; If in each-mode, advance to next entity instead of aborting
     cmp  dword [each_mode], 0
@@ -835,6 +1088,24 @@ ham_op_scan:
     call ham_sort_scan_buf
 
 .scan_zero:
+    ; TRACE: print scan cidx=count if trace mode on
+    cmp  dword [ham_trace_mode], 0
+    je   .scan_no_trace
+    push rsi
+    push rdi
+    sub  rsp, 32
+    lea  rcx, [hc_trace_scan]
+    call serial_print
+    mov  ecx, [scan_last_ctnr]
+    call serial_print_int
+    lea  rcx, [hc_trace_eq]
+    call serial_print
+    mov  ecx, [scan_count]
+    call serial_print_int
+    add  rsp, 32
+    pop  rdi
+    pop  rsi
+.scan_no_trace:
     DISPATCH
 
 ; SCAN_SCOPED (0x02): Scan a scoped container
@@ -1185,8 +1456,21 @@ ham_op_sel_each:
 ham_op_require:
     inc  dword [ham_dbg_require]
     cmp  dword [scan_count], 0
-    je   ham_op_fail
+    je   .require_fail_trace
     DISPATCH
+.require_fail_trace:
+    ; TRACE: print "R!" on require fail if trace on
+    cmp  dword [ham_trace_mode], 0
+    je   ham_op_fail
+    push rsi
+    push rdi
+    sub  rsp, 32
+    lea  rcx, [hc_trace_req_f]
+    call serial_print
+    add  rsp, 32
+    pop  rdi
+    pop  rsi
+    jmp  ham_op_fail
 
 ; WHERE (0x10): Begin filter loop over scan buffer
 ; Format: WHERE bind(1)
@@ -2034,6 +2318,312 @@ ham_bind_alloc:
     ret
 
 ; ============================================================
+; SESSION 76: FLOW OPCODE HANDLERS
+; ============================================================
+
+; FHDR (0x50): Flow header
+; Format: pri(1) src_cidx(2) dst_cidx(2) order_key_pid(2) flow_len(2) = 9 bytes
+; Scans source container (sorted), preps dest entity buffer.
+ham_op_fhdr:
+    ; Save FHDR start position (opcode byte was already consumed)
+    lea     rax, [rsi - 1]          ; back to opcode byte
+    movzx   ecx, byte [rsi]        ; pri (1 byte, unused for now)
+    inc     rsi
+
+    movzx   r8d, word [rsi]        ; src_cidx (2 bytes)
+    add     rsi, 2
+    movzx   r9d, word [rsi]        ; dst_cidx (2 bytes)
+    add     rsi, 2
+    movzx   r10d, word [rsi]       ; order_key_pid (2 bytes, unused at runtime)
+    add     rsi, 2
+    movzx   ecx, word [rsi]        ; flow_len (2 bytes)
+    add     rsi, 2
+
+    ; Compute flow_end_p = FHDR_opcode_pos + flow_len
+    add     rax, rcx
+    mov     [flow_end_p], rax
+
+    ; If not flow pass: skip entire flow
+    cmp     dword [ham_pass_mode], 2
+    jne     .fhdr_skip
+
+    ; Save src_cidx and dst_cidx to BSS (survive function calls)
+    mov     [flow_dst_cidx], r9d
+    mov     [scan_last_ctnr], r8d   ; save src_cidx for sort
+
+    ; Scan source container into scan_buf
+    mov     ecx, r8d                ; container_idx
+    lea     rdx, [scan_buf]
+    mov     r8d, 256                ; max_count
+    call    ham_scan
+    mov     [scan_count], eax
+    mov     [flow_src_count], eax
+
+    ; Sort scan_buf by order_key (ham_sort_scan_buf reads scan_last_ctnr)
+    mov     ecx, [scan_last_ctnr]
+    call    ham_sort_scan_buf
+
+    ; Scan dest container into flow_dst_buf
+    mov     ecx, [flow_dst_cidx]
+    lea     rdx, [flow_dst_buf]
+    mov     r8d, 256
+    call    ham_scan
+    mov     [flow_dst_count], eax
+
+    ; Look up dest entity type name ID from container
+    movsxd  rax, dword [flow_dst_cidx]
+    imul    rax, SIZEOF_CONTAINER
+    mov     eax, [g_graph + GRAPH_CONTAINERS + rax + CNT_ENTITY_TYPE]
+    ; eax = type index; look up type name
+    movsxd  rcx, eax
+    mov     eax, [g_graph + GRAPH_TYPE_NAMES + rcx*4]
+    mov     [flow_dst_etype], eax
+
+    ; Reset expression stack and flow iteration
+    lea     rdi, [expr_stack]
+    mov     dword [flow_idx], 0
+
+    DISPATCH
+
+.fhdr_skip:
+    mov     rsi, [flow_end_p]
+    cmp     rsi, [bytecode_end_p]
+    jge     ham_op_tend.no_actions
+    DISPATCH
+
+; FSEED (0x51): Initialize seed register
+; Format: slot(1) value(4) = 5 bytes
+ham_op_fseed:
+    movzx   eax, byte [rsi]        ; slot
+    inc     rsi
+    movsxd  rcx, dword [rsi]       ; value (sign-extended i32 → i64)
+    add     rsi, 4
+    ; flow_seed_cur[slot] = value
+    lea     rdx, [flow_seed_cur]
+    mov     [rdx + rax*8], rcx
+    ; flow_seed_next[slot] = value
+    lea     rdx, [flow_seed_next]
+    mov     [rdx + rax*8], rcx
+    DISPATCH
+
+; FBODY (0x52): Flow body — bind source/dest entities per iteration
+; Format: bind_src(1) bind_dst(1) = 2 bytes
+; Loops via FEND jumping back here.
+ham_op_fbody:
+    ; Save body PC (pointing to this opcode) for FEND loop-back
+    lea     rax, [rsi - 1]
+    mov     [flow_body_pc], rax
+
+    movzx   eax, byte [rsi]        ; bind_src register
+    inc     rsi
+    movzx   ecx, byte [rsi]        ; bind_dst register
+    inc     rsi
+
+    ; Check if iteration complete
+    mov     edx, [flow_idx]
+    cmp     edx, [flow_src_count]
+    jge     .fbody_done
+
+    ; B[bind_src] = scan_buf[flow_idx]
+    lea     r8, [scan_buf]
+    mov     r8d, [r8 + rdx*4]      ; source entity ID
+    ; Store in binding register (bind_src should be 0)
+    mov     r12d, r8d               ; B0 = source entity
+
+    ; Find or create dest entity
+    cmp     edx, [flow_dst_count]
+    jge     .fbody_create
+
+    ; Reuse existing dest entity
+    lea     r8, [flow_dst_buf]
+    mov     r8d, [r8 + rdx*4]
+    mov     r13d, r8d               ; B1 = existing dest entity
+    jmp     .fbody_bound
+
+.fbody_create:
+    ; Create new dest entity
+    push    rsi
+    sub     rsp, 32                 ; shadow space
+    mov     ecx, [flow_dst_etype]   ; type_name_id
+    mov     edx, [flow_dst_etype]   ; name_id (use type name as entity name)
+    mov     r8d, [flow_dst_cidx]    ; container_idx
+    call    create_entity
+    add     rsp, 32
+    pop     rsi
+    mov     r13d, eax               ; B1 = new dest entity
+
+.fbody_bound:
+    ; Copy seed_cur → seed_next for evaluate-then-apply
+    lea     rcx, [flow_seed_cur]
+    lea     rdx, [flow_seed_next]
+    %assign _si 0
+    %rep 8
+    mov     rax, [rcx + _si*8]
+    mov     [rdx + _si*8], rax
+    %assign _si _si+1
+    %endrep
+
+    ; Reset expression stack
+    lea     rdi, [expr_stack]
+    DISPATCH
+
+.fbody_done:
+    ; Truncate excess dest entities if source shrank
+    ; (remove dest entities beyond flow_src_count)
+    mov     ecx, [flow_src_count]
+    cmp     ecx, [flow_dst_count]
+    jge     .fbody_no_truncate
+    ; For each excess dest entity, remove from container + set location=-1
+    mov     edx, ecx                ; start from flow_src_count
+.fbody_trunc_loop:
+    cmp     edx, [flow_dst_count]
+    jge     .fbody_no_truncate
+    push    rdx
+    push    rsi
+    sub     rsp, 32
+    ; Get entity_idx from flow_dst_buf
+    lea     rax, [flow_dst_buf]
+    movsxd  rcx, edx
+    mov     ecx, [rax + rcx*4]     ; entity_idx
+    mov     [rsp], ecx              ; save entity_idx on stack
+    ; container_remove(flow_dst_cidx, entity_idx)
+    mov     ecx, [flow_dst_cidx]
+    mov     edx, [rsp]              ; entity_idx
+    call    container_remove
+    ; Set entity location to -1
+    mov     ecx, [rsp]              ; restore entity_idx
+    lea     r8, [g_graph + GRAPH_ENTITY_LOCATION]
+    movsxd  rax, ecx
+    mov     dword [r8 + rax*4], -1
+    add     rsp, 32
+    pop     rsi
+    pop     rdx
+    inc     edx
+    jmp     .fbody_trunc_loop
+.fbody_no_truncate:
+    ; Skip to flow end
+    mov     rsi, [flow_end_p]
+    cmp     rsi, [bytecode_end_p]
+    jge     ham_op_tend.no_actions
+    DISPATCH
+
+; FSET (0x53): Set property on bound entity
+; Format: bind(1) prop_id(2) = 3 bytes
+; Pops expression stack → value, calls ham_eset
+ham_op_fset:
+    movzx   eax, byte [rsi]        ; bind register
+    inc     rsi
+    movzx   r10d, word [rsi]       ; prop_id
+    add     rsi, 2
+
+    ; Pop value from expression stack
+    sub     rdi, 8
+    mov     r8, [rdi]               ; value (i64)
+
+    ; Get entity from binding register
+    cmp     al, 0
+    je      .fset_b0
+    cmp     al, 1
+    je      .fset_b1
+    cmp     al, 2
+    je      .fset_b2
+    mov     ecx, r15d
+    jmp     .fset_call
+.fset_b0:
+    mov     ecx, r12d
+    jmp     .fset_call
+.fset_b1:
+    mov     ecx, r13d
+    jmp     .fset_call
+.fset_b2:
+    mov     ecx, r14d
+
+.fset_call:
+    ; ham_eset(entity_idx, prop_id, value)
+    push    rsi
+    sub     rsp, 32
+    ; ECX = entity_idx (set above)
+    mov     edx, r10d               ; prop_id
+    ; R8 already has value
+    call    ham_eset
+    add     rsp, 32
+    pop     rsi
+    inc     dword [total_ops]
+    DISPATCH
+
+; FSTEP (0x54): Update seed register (next iteration)
+; Format: slot(1) = 1 byte
+; Pops expression stack → value, stores in flow_seed_next[slot]
+ham_op_fstep:
+    movzx   eax, byte [rsi]        ; slot
+    inc     rsi
+
+    ; Pop value from expression stack
+    sub     rdi, 8
+    mov     rcx, [rdi]
+
+    ; flow_seed_next[slot] = value
+    lea     rdx, [flow_seed_next]
+    mov     [rdx + rax*8], rcx
+    DISPATCH
+
+; FEND (0x55): End of flow body — advance iteration, loop back to FBODY
+; No operands.
+ham_op_fend:
+    ; Apply seed updates: current = next
+    lea     rcx, [flow_seed_cur]
+    lea     rdx, [flow_seed_next]
+    %assign _si 0
+    %rep 8
+    mov     rax, [rdx + _si*8]
+    mov     [rcx + _si*8], rax
+    %assign _si _si+1
+    %endrep
+
+    ; Advance iteration
+    inc     dword [flow_idx]
+
+    ; Loop back to FBODY (which checks flow_idx and handles completion)
+    mov     rsi, [flow_body_pc]
+    DISPATCH
+
+; FSEEDV (0x56): Push current seed value onto expression stack
+; Format: slot(1) = 1 byte
+ham_op_fseedv:
+    movzx   eax, byte [rsi]        ; slot
+    inc     rsi
+    lea     rcx, [flow_seed_cur]
+    mov     rax, [rcx + rax*8]     ; seed value
+    mov     [rdi], rax              ; push to expr stack
+    add     rdi, 8
+    DISPATCH
+
+; TERNARY (0x57): Conditional select
+; Stack: [top] cond, false_val, true_val → result
+ham_op_ternary:
+    ; Pop condition (top)
+    sub     rdi, 8
+    mov     rax, [rdi]              ; condition
+    ; Pop false_val
+    sub     rdi, 8
+    mov     rcx, [rdi]              ; false_val
+    ; Pop true_val
+    sub     rdi, 8
+    mov     rdx, [rdi]              ; true_val
+
+    test    rax, rax
+    jz      .ternary_false
+    ; condition != 0 → push true_val
+    mov     [rdi], rdx
+    add     rdi, 8
+    DISPATCH
+.ternary_false:
+    ; condition == 0 → push false_val
+    mov     [rdi], rcx
+    add     rdi, 8
+    DISPATCH
+
+; ============================================================
 ; ham_expr_compilable(Expr* e) -> int (1=compilable, 0=not)
 ;
 ; RCX = e (Expr*)
@@ -2077,6 +2667,14 @@ ham_expr_compilable:
     cmp     ebx, EX_UNARY_T
     je      .hec_unary
 
+    ; EX_SEED (9) -> return 1 (always compilable)
+    cmp     ebx, EX_SEED_T
+    je      .hec_one
+
+    ; EX_TERNARY (10) -> recurse on 3 children
+    cmp     ebx, EX_TERNARY_T
+    je      .hec_ternary
+
     ; default (EX_FLOAT, EX_STRING, EX_IN_OF) -> return 0
     jmp     .hec_zero
 
@@ -2112,6 +2710,22 @@ ham_expr_compilable:
     mov     rcx, [rsi + EX_UNARY_ARG]
     call    ham_expr_compilable
     jmp     .hec_done           ; return result of arg
+
+.hec_ternary:
+    ; recurse on condition
+    mov     rcx, [rsi + EX_TERNARY_COND]
+    call    ham_expr_compilable
+    test    eax, eax
+    jz      .hec_zero
+    ; recurse on true branch
+    mov     rcx, [rsi + EX_TERNARY_TRUE]
+    call    ham_expr_compilable
+    test    eax, eax
+    jz      .hec_zero
+    ; recurse on false branch
+    mov     rcx, [rsi + EX_TERNARY_FALSE]
+    call    ham_expr_compilable
+    jmp     .hec_done
 
 .hec_one:
     mov     eax, 1
@@ -2326,6 +2940,12 @@ ham_compile_expr:
     cmp     ecx, EX_UNARY_T
     je      .hce_unary
 
+    cmp     ecx, EX_SEED_T
+    je      .hce_seed
+
+    cmp     ecx, EX_TERNARY_T
+    je      .hce_ternary
+
     ; default -> return 0
     jmp     .hce_zero
 
@@ -2387,6 +3007,13 @@ ham_compile_expr:
     mov     [rsi + rax], cx
     add     eax, 2
     mov     [rdi], eax
+    ; Session 79: Record dep — ECX has container_idx
+    push    rax
+    movsxd  rax, dword [ham_compile_idx]
+    shl     eax, 5
+    lea     rdx, [ham_tension_deps + rax]
+    bts     [rdx], ecx
+    pop     rax
     jmp     .hce_one
 
 .hce_binary:
@@ -2481,6 +3108,55 @@ ham_compile_expr:
     ; buf[pos++] = 0x2F (NOT)
     mov     eax, [rdi]
     mov     byte [rsi + rax], 0x2F
+    inc     eax
+    mov     [rdi], eax
+    jmp     .hce_one
+
+.hce_seed:
+    ; buf[pos++] = 0x56 (FSEEDV), buf[pos++] = u8(seed_slot)
+    mov     eax, [rdi]
+    mov     byte [rsi + rax], 0x56
+    inc     eax
+    mov     ecx, [rbx + EX_SEED_SLOT]
+    mov     [rsi + rax], cl
+    inc     eax
+    mov     [rdi], eax
+    jmp     .hce_one
+
+.hce_ternary:
+    ; Compile true expr (pushed deepest on stack)
+    mov     rcx, [rbx + EX_TERNARY_TRUE]
+    mov     rdx, rsi
+    mov     r8, rdi
+    mov     r9, r12
+    mov     dword [rsp + 32], r13d
+    call    ham_compile_expr
+    test    eax, eax
+    jz      .hce_zero
+
+    ; Compile false expr (pushed second)
+    mov     rcx, [rbx + EX_TERNARY_FALSE]
+    mov     rdx, rsi
+    mov     r8, rdi
+    mov     r9, r12
+    mov     dword [rsp + 32], r13d
+    call    ham_compile_expr
+    test    eax, eax
+    jz      .hce_zero
+
+    ; Compile condition (pushed last, on top)
+    mov     rcx, [rbx + EX_TERNARY_COND]
+    mov     rdx, rsi
+    mov     r8, rdi
+    mov     r9, r12
+    mov     dword [rsp + 32], r13d
+    call    ham_compile_expr
+    test    eax, eax
+    jz      .hce_zero
+
+    ; Emit TERNARY opcode (0x57)
+    mov     eax, [rdi]
+    mov     byte [rsi + rax], 0x57
     inc     eax
     mov     [rdi], eax
     jmp     .hce_one
@@ -2673,6 +3349,14 @@ ham_compile_tension:
     mov     [rsi + rcx], ax     ; u16 LE
     add     ecx, 2
     mov     [rdi], ecx
+    ; Session 79: Record dep — EAX has container_idx
+    push    rax
+    movsxd  rcx, dword [ham_compile_idx]
+    shl     ecx, 5
+    lea     rdx, [ham_tension_deps + rcx]
+    mov     ecx, eax
+    bts     [rdx], ecx
+    pop     rax
     jmp     .hct_mc_ei_where
 
 .hct_mc_ei_scoped:
@@ -2700,6 +3384,14 @@ ham_compile_tension:
     mov     [rsi + rcx], ax     ; u16 LE
     add     ecx, 2
     mov     [rdi], ecx
+    ; Session 79: Record dep — EAX has resolved cidx
+    push    rax
+    movsxd  rcx, dword [ham_compile_idx]
+    shl     ecx, 5
+    lea     rdx, [ham_tension_deps + rcx]
+    mov     ecx, eax
+    bts     [rdx], ecx
+    pop     rax
     jmp     .hct_mc_ei_where
 
 .hct_mc_ei_scoped_bound:
@@ -2714,6 +3406,17 @@ ham_compile_tension:
     mov     [rsi + rcx], ax     ; u16 LE
     add     ecx, 2
     mov     [rdi], ecx
+    ; Session 79: SCAN_SCOPED — runtime-resolved, set ALL dep bits
+    push    rax
+    movsxd  rax, dword [ham_compile_idx]
+    shl     rax, 5
+    lea     rdx, [ham_tension_deps + rax]
+    mov     rax, -1
+    mov     [rdx], rax
+    mov     [rdx+8], rax
+    mov     [rdx+16], rax
+    mov     [rdx+24], rax
+    pop     rax
     jmp     .hct_mc_ei_where
 
 .hct_mc_ei_channel:
@@ -2729,6 +3432,14 @@ ham_compile_tension:
     mov     [rsi + rcx], ax     ; u16 LE
     add     ecx, 2
     mov     [rdi], ecx
+    ; Session 79: Record dep — EAX has buffer_ctnr
+    push    rax
+    movsxd  rcx, dword [ham_compile_idx]
+    shl     ecx, 5
+    lea     rdx, [ham_tension_deps + rcx]
+    mov     ecx, eax
+    bts     [rdx], ecx
+    pop     rax
 
 .hct_mc_ei_where:
     ; WHERE filter (if where_expr && bind_id >= 0)
@@ -2860,6 +3571,14 @@ ham_compile_tension:
     mov     eax, [r13 + MC_CONTAINERS]   ; containers[0]
     mov     [rsi + rcx], ax
     add     ecx, 2
+    ; Session 79: Record dep — EAX has containers[0]
+    push    rcx
+    movsxd  rcx, dword [ham_compile_idx]
+    shl     ecx, 5
+    lea     rdx, [ham_tension_deps + rcx]
+    mov     ecx, eax
+    bts     [rdx], ecx
+    pop     rcx
     mov     byte [rsi + rcx], 0x20       ; IPUSH
     inc     ecx
     mov     dword [rsi + rcx], 0         ; i32 = 0
@@ -2882,6 +3601,14 @@ ham_compile_tension:
     mov     eax, [r13 + MC_GUARD_CNT_IDX]
     mov     [rsi + rcx], ax
     add     ecx, 2
+    ; Session 79: Record dep — EAX has guard_ctnr_idx
+    push    rcx
+    movsxd  rcx, dword [ham_compile_idx]
+    shl     ecx, 5
+    lea     rdx, [ham_tension_deps + rcx]
+    mov     ecx, eax
+    bts     [rdx], ecx
+    pop     rcx
     mov     byte [rsi + rcx], 0x20       ; IPUSH
     inc     ecx
     mov     dword [rsi + rcx], 0
@@ -3229,7 +3956,11 @@ ham_compile_tension:
 %define HCA_TMPCIDX   1072
 %define HCA_TMPJ      1076
 %define HCA_TMPBUF    1080
-%define HCA_FRAME     1112
+; Session 76: Flow compilation locals
+%define HCA_FLOWBM    1112    ; HamBindMap (36 bytes: ids[4]=16, regs[4]=16, count=4)
+%define HCA_FLOWSAVE  1148    ; flow_len field offset for backpatch (4 bytes)
+%define HCA_FLOWSTART 1152    ; FHDR start pos for flow_len calc (4 bytes)
+%define HCA_FRAME     1160
 
 ham_compile_all:
     push    rbp
@@ -3427,6 +4158,17 @@ ham_compile_all:
     mov     eax, [rsp + HCA_POS]
     mov     [rsp + HCA_SAVE_POS], eax
 
+    ; --- Session 79: Clear dep bitmap for this tension, set compile_idx ---
+    mov     [ham_compile_idx], r13d
+    movsxd  rax, r13d
+    shl     rax, 5                    ; × 32 bytes
+    lea     rcx, [ham_tension_deps + rax]
+    xor     edx, edx
+    mov     [rcx], rdx
+    mov     [rcx+8], rdx
+    mov     [rcx+16], rdx
+    mov     [rcx+24], rdx
+
     ; --- ham_compile_tension(t, buf, &pos, buf_size, tension_idx) ---
     mov     rcx, rdi            ; t
     mov     rdx, rbx            ; buf
@@ -3464,6 +4206,188 @@ ham_compile_all:
     jmp     .hca_loop
 
 .hca_done:
+    ; --- Session 76: Compile flows after tensions ---
+    mov     eax, [g_flow_count]
+    test    eax, eax
+    jz      .hca_flows_done
+
+    xor     r14d, r14d              ; flow index
+
+.hca_flow_loop:
+    cmp     r14d, [g_flow_count]
+    jge     .hca_flows_done
+
+    ; flow_ptr = g_flows + r14 * SIZEOF_FLOW
+    movsxd  rax, r14d
+    imul    rax, SIZEOF_FLOW
+    lea     rdi, [g_flows + rax]    ; RDI = flow ptr (callee-saved)
+
+    ; --- Set up bind map: bind_src → reg 0, bind_dst → reg 1 ---
+    mov     eax, [rdi + FLOW_BIND_SRC_ID]
+    mov     [rsp + HCA_FLOWBM + HBM_IDS], eax
+    mov     eax, [rdi + FLOW_BIND_DST_ID]
+    mov     [rsp + HCA_FLOWBM + HBM_IDS + 4], eax
+    mov     dword [rsp + HCA_FLOWBM + HBM_REGS], 0
+    mov     dword [rsp + HCA_FLOWBM + HBM_REGS + 4], 1
+    mov     dword [rsp + HCA_FLOWBM + HBM_COUNT], 2
+
+    ; Save flow start position
+    mov     eax, [rsp + HCA_POS]
+    mov     [rsp + HCA_FLOWSTART], eax
+
+    ; --- Emit FHDR (0x50): pri(1) src_cidx(2) dst_cidx(2) order_key_pid(2) flow_len(2) ---
+    mov     eax, [rsp + HCA_POS]
+    mov     byte [rbx + rax], 0x50
+    inc     eax
+    mov     byte [rbx + rax], 1             ; pri = 1
+    inc     eax
+    mov     ecx, [rdi + FLOW_SRC_CIDX]
+    mov     [rbx + rax], cx
+    add     eax, 2
+    mov     ecx, [rdi + FLOW_DST_CIDX]
+    mov     [rbx + rax], cx
+    add     eax, 2
+    mov     ecx, [rdi + FLOW_ORDER_KEY_PID]
+    mov     [rbx + rax], cx
+    add     eax, 2
+    ; Save position of flow_len field for backpatch
+    mov     [rsp + HCA_FLOWSAVE], eax
+    xor     ecx, ecx
+    mov     [rbx + rax], cx                 ; flow_len placeholder
+    add     eax, 2
+    mov     [rsp + HCA_POS], eax
+
+    ; --- Emit FSEEDs (0x51): slot(1) value(4) ---
+    xor     esi, esi
+.hca_flow_seed_loop:
+    cmp     esi, [rdi + FLOW_SEED_CNT]
+    jge     .hca_flow_seeds_done
+    mov     eax, [rsp + HCA_POS]
+    mov     byte [rbx + rax], 0x51
+    inc     eax
+    mov     [rbx + rax], sil               ; slot = seed index
+    inc     eax
+    movsxd  rdx, esi
+    imul    rdx, SIZEOF_FLOW_SEED
+    mov     ecx, [rdi + FLOW_SEEDS + rdx + FLOW_SEED_INITIAL]
+    mov     [rbx + rax], ecx               ; initial value (4 bytes LE)
+    add     eax, 4
+    mov     [rsp + HCA_POS], eax
+    inc     esi
+    jmp     .hca_flow_seed_loop
+.hca_flow_seeds_done:
+
+    ; --- Emit FBODY (0x52): bind_src(1) bind_dst(1) ---
+    mov     eax, [rsp + HCA_POS]
+    mov     byte [rbx + rax], 0x52
+    inc     eax
+    mov     byte [rbx + rax], 0             ; bind_src = reg 0
+    inc     eax
+    mov     byte [rbx + rax], 1             ; bind_dst = reg 1
+    inc     eax
+    mov     [rsp + HCA_POS], eax
+
+    ; --- Emit FSETs: compiled expr + FSET(0x53) bind(1) prop_id(2) ---
+    xor     esi, esi
+.hca_flow_set_loop:
+    cmp     esi, [rdi + FLOW_SET_CNT]
+    jge     .hca_flow_sets_done
+
+    mov     [rsp + HCA_TMPJ], esi
+
+    ; Compile set expression
+    movsxd  rax, esi
+    imul    rax, SIZEOF_FLOW_SET
+    mov     rcx, [rdi + FLOW_SETS + rax + FLOW_SET_EXPR]
+    mov     rdx, rbx
+    lea     r8, [rsp + HCA_POS]
+    lea     r9, [rsp + HCA_FLOWBM]
+    mov     dword [rsp + 32], r12d
+    call    ham_compile_expr
+    mov     esi, [rsp + HCA_TMPJ]
+    test    eax, eax
+    jz      .hca_flow_set_skip
+
+    ; Emit FSET + bind(1) + prop_id(2)
+    mov     eax, [rsp + HCA_POS]
+    mov     byte [rbx + rax], 0x53
+    inc     eax
+    mov     byte [rbx + rax], 1             ; bind = 1 (dst entity)
+    inc     eax
+    movsxd  rdx, esi
+    imul    rdx, SIZEOF_FLOW_SET
+    mov     ecx, [rdi + FLOW_SETS + rdx + FLOW_SET_PROP_ID]
+    mov     [rbx + rax], cx
+    add     eax, 2
+    mov     [rsp + HCA_POS], eax
+
+.hca_flow_set_skip:
+    inc     esi
+    jmp     .hca_flow_set_loop
+.hca_flow_sets_done:
+
+    ; --- Emit FSTEPs: compiled expr + FSTEP(0x54) slot(1) ---
+    xor     esi, esi
+.hca_flow_step_loop:
+    cmp     esi, [rdi + FLOW_STEP_CNT]
+    jge     .hca_flow_steps_done
+
+    mov     [rsp + HCA_TMPJ], esi
+
+    ; Compile step expression
+    movsxd  rax, esi
+    imul    rax, SIZEOF_FLOW_STEP
+    mov     rcx, [rdi + FLOW_STEPS + rax + FLOW_STEP_EXPR]
+    mov     rdx, rbx
+    lea     r8, [rsp + HCA_POS]
+    lea     r9, [rsp + HCA_FLOWBM]
+    mov     dword [rsp + 32], r12d
+    call    ham_compile_expr
+    mov     esi, [rsp + HCA_TMPJ]
+    test    eax, eax
+    jz      .hca_flow_step_skip
+
+    ; Emit FSTEP + slot(1)
+    mov     eax, [rsp + HCA_POS]
+    mov     byte [rbx + rax], 0x54
+    inc     eax
+    movsxd  rdx, esi
+    imul    rdx, SIZEOF_FLOW_STEP
+    mov     ecx, [rdi + FLOW_STEPS + rdx + FLOW_STEP_SLOT]
+    mov     [rbx + rax], cl
+    inc     eax
+    mov     [rsp + HCA_POS], eax
+
+.hca_flow_step_skip:
+    inc     esi
+    jmp     .hca_flow_step_loop
+.hca_flow_steps_done:
+
+    ; --- Emit FEND (0x55) ---
+    mov     eax, [rsp + HCA_POS]
+    mov     byte [rbx + rax], 0x55
+    inc     eax
+    mov     [rsp + HCA_POS], eax
+
+    ; --- Backpatch flow_len = current_pos - fhdr_start ---
+    mov     eax, [rsp + HCA_POS]
+    sub     eax, [rsp + HCA_FLOWSTART]
+    mov     ecx, [rsp + HCA_FLOWSAVE]
+    mov     [rbx + rcx], ax                 ; write as u16
+
+    inc     r13d                             ; count compiled flow
+    inc     r14d
+    jmp     .hca_flow_loop
+
+.hca_flows_done:
+    ; --- Session 79: First run — set all containers dirty ---
+    mov     rax, -1
+    lea     rcx, [ham_dirty_bitmap]
+    mov     [rcx], rax
+    mov     [rcx+8], rax
+    mov     [rcx+16], rax
+    mov     [rcx+24], rax
+
     ; --- Write *out_count = compiled ---
     mov     rax, [rsp + HCA_OUTCOUNT]
     test    rax, rax

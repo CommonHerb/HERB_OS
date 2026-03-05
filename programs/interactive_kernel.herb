@@ -57,6 +57,10 @@ type display.Legend
 
 type display.HelpCmd
 
+type editor.Glyph
+
+type editor.EditorCtl
+
 container proc.READY simple proc.Process
 container proc.CPU0 slot proc.Process
 container proc.BLOCKED simple proc.Process
@@ -103,6 +107,10 @@ container display.HIDDEN simple display.Surface
 container display.DISPLAY_STATE slot display.DisplayCtl
 container display.LEGEND simple display.Legend
 container display.HELP_TEXT simple display.HelpCmd
+container editor.BUFFER simple input.Char order_key pos
+container editor.GLYPHS simple editor.Glyph
+container editor.CTL slot editor.EditorCtl
+container editor.POOL simple input.Char
 
 move proc.schedule proc.Process from proc.READY to proc.CPU0
 move proc.preempt proc.Process from proc.CPU0 to proc.READY
@@ -125,6 +133,8 @@ move spawn.assign_prog spawn.ProgToken from spawn.PROG_POOL to spawn.PROG_USED
 move spawn.return_prog spawn.ProgToken from spawn.PROG_USED to spawn.PROG_POOL
 move display.show_surface display.Surface from display.HIDDEN to display.VISIBLE
 move display.hide_surface display.Surface from display.VISIBLE to display.HIDDEN
+move editor.insert input.Char from editor.POOL to editor.BUFFER
+move editor.recycle input.Char from editor.BUFFER to editor.POOL
 
 channel msg_pipe server client ipc.Message
 
@@ -516,6 +526,59 @@ tension display.click_panel priority 5
 tension display.click_miss priority 3
   match click in proc.CLICK_SIG select first
   emit move proc.consume_signal click to proc.SIG_DONE
+
+tension editor.type_char priority 22
+  match key in proc.KEY_SIG select first
+    where key.ascii >= 32
+  match ctl in input.INPUT_STATE
+    where ctl.mode == 2
+  match ectl in editor.CTL
+  match ch in editor.POOL select first
+  emit set ch ascii key.ascii
+  emit set ch pos ectl.cursor_pos
+  emit move editor.insert ch to editor.BUFFER
+  emit set ectl cursor_pos ectl.cursor_pos + 1
+  emit move proc.consume_signal key to proc.SIG_DONE
+
+tension editor.backspace priority 22
+  match key in proc.KEY_SIG select first
+    where key.ascii == 8
+  match ctl in input.INPUT_STATE
+    where ctl.mode == 2
+  match ectl in editor.CTL
+    where ectl.cursor_pos > 0
+  match ch in editor.BUFFER select max_by pos
+  emit set ch ascii 0
+  emit set ch pos 0
+  emit move editor.recycle ch to editor.POOL
+  emit set ectl cursor_pos ectl.cursor_pos - 1
+  emit move proc.consume_signal key to proc.SIG_DONE
+
+tension editor.exit_editor priority 25
+  match key in proc.KEY_SIG select first
+    where key.ascii == 27
+  match ctl in input.INPUT_STATE
+    where ctl.mode == 2
+  emit set ctl mode 0
+  emit move proc.consume_signal key to proc.SIG_DONE
+
+tension editor.key_overflow priority 18
+  match key in proc.KEY_SIG select first
+  match ctl in input.INPUT_STATE
+    where ctl.mode == 2
+  emit move proc.consume_signal key to proc.SIG_DONE
+
+flow render_editor
+  from editor.BUFFER order_by pos
+  into editor.GLYPHS
+  seed x 0
+  seed y 0
+  each char -> glyph
+    set glyph.ascii char.ascii
+    set glyph.screen_x x
+    set glyph.screen_y y
+    step x if x > 376 then 0 else x + 8
+    step y if x > 376 then y + 16 else y
 
 entity server proc.Process in proc.READY
   prop priority 5
@@ -1216,5 +1279,412 @@ entity c30 input.Char in input.CHAR_POOL
   prop ascii 0
   prop pos 0
 entity c31 input.Char in input.CHAR_POOL
+  prop ascii 0
+  prop pos 0
+entity tcmd_edit input.TextCmd in input.TEXTCMD
+  prop text_key 25956
+  prop cmd_id 14
+entity tcmd_esave input.TextCmd in input.TEXTCMD
+  prop text_key 25971
+  prop cmd_id 15
+entity tcmd_eload input.TextCmd in input.TEXTCMD
+  prop text_key 25964
+  prop cmd_id 16
+entity help_edit display.HelpCmd in display.HELP_TEXT
+  prop order 11
+  prop cmd_text "edit"
+entity help_esave display.HelpCmd in display.HELP_TEXT
+  prop order 12
+  prop cmd_text "esave <name>"
+entity help_eload display.HelpCmd in display.HELP_TEXT
+  prop order 13
+  prop cmd_text "eload <name>"
+entity editor_ctl editor.EditorCtl in editor.CTL
+  prop mode 0
+  prop cursor_pos 0
+  prop dirty 0
+  prop buf_len 0
+entity ec00 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec01 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec02 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec03 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec04 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec05 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec06 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec07 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec08 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec09 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec10 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec11 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec12 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec13 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec14 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec15 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec16 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec17 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec18 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec19 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec20 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec21 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec22 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec23 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec24 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec25 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec26 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec27 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec28 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec29 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec30 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec31 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec32 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec33 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec34 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec35 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec36 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec37 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec38 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec39 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec40 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec41 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec42 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec43 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec44 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec45 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec46 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec47 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec48 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec49 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec50 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec51 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec52 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec53 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec54 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec55 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec56 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec57 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec58 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec59 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec60 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec61 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec62 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec63 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec64 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec65 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec66 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec67 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec68 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec69 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec70 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec71 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec72 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec73 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec74 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec75 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec76 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec77 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec78 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec79 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec80 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec81 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec82 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec83 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec84 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec85 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec86 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec87 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec88 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec89 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec90 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec91 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec92 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec93 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec94 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec95 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec96 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec97 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec98 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec99 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec100 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec101 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec102 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec103 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec104 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec105 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec106 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec107 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec108 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec109 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec110 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec111 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec112 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec113 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec114 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec115 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec116 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec117 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec118 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec119 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec120 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec121 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec122 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec123 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec124 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec125 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec126 input.Char in editor.POOL
+  prop ascii 0
+  prop pos 0
+entity ec127 input.Char in editor.POOL
   prop ascii 0
   prop pos 0

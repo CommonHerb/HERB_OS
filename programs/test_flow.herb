@@ -1,0 +1,24 @@
+type FlowSrc
+type FlowDst
+
+container FLOW_SRC kind simple type FlowSrc order_key pos
+container FLOW_DST kind simple type FlowDst
+
+entity item0 FlowSrc in FLOW_SRC
+  prop val 10
+  prop pos 0
+entity item1 FlowSrc in FLOW_SRC
+  prop val 20
+  prop pos 1
+entity item2 FlowSrc in FLOW_SRC
+  prop val 30
+  prop pos 2
+
+flow test_double
+  from FLOW_SRC order_by pos
+  into FLOW_DST
+  seed total 0
+  each src -> dst
+    set dst.doubled src.val + src.val
+    set dst.cumsum total + src.val
+    step total total + src.val

@@ -89,6 +89,15 @@ global cursor_y
 global cursor_old_x
 global cursor_old_y
 
+; Clip rectangle
+global wm_clip_x
+global wm_clip_y
+global wm_clip_w
+global wm_clip_h
+global wm_clip_enabled
+global wm_set_clip
+global wm_clear_clip
+
 ; Utility (from herb_freestanding.asm)
 extern herb_snprintf
 ; Privileged ops (defined in this file, referenced internally)
@@ -950,6 +959,29 @@ fb_fill_rect:
     mov r12d, FB_HEIGHT
     cmovl r12d, eax             ; r12d = min(y+h, 600)
 
+    ; Intersect with clip rect if enabled
+    cmp dword [rel wm_clip_enabled], 0
+    je .ffr_no_clip
+    ; x0 = max(x0, clip_x)
+    mov eax, [rel wm_clip_x]
+    cmp ebx, eax
+    cmovl ebx, eax
+    ; y0 = max(y0, clip_y)
+    mov eax, [rel wm_clip_y]
+    cmp esi, eax
+    cmovl esi, eax
+    ; x1 = min(x1, clip_x + clip_w)
+    mov eax, [rel wm_clip_x]
+    add eax, [rel wm_clip_w]
+    cmp edi, eax
+    cmovg edi, eax
+    ; y1 = min(y1, clip_y + clip_h)
+    mov eax, [rel wm_clip_y]
+    add eax, [rel wm_clip_h]
+    cmp r12d, eax
+    cmovg r12d, eax
+.ffr_no_clip:
+
     ; color = 5th arg
     mov r13d, [rbp + 48]
 
@@ -1219,6 +1251,29 @@ fb_draw_char:
     mov r12d, r9d               ; fg
     mov r13d, [rbp + 48]        ; bg (5th arg)
 
+    ; Coarse clip reject: if char bbox fully outside clip rect, skip
+    cmp dword [rel wm_clip_enabled], 0
+    je .fdc_clip_ok
+    ; Check: x + 8 <= clip_x  →  fully left
+    lea eax, [ebx + FONT_WIDTH]
+    cmp eax, [rel wm_clip_x]
+    jle .fdc_done
+    ; Check: x >= clip_x + clip_w  →  fully right
+    mov eax, [rel wm_clip_x]
+    add eax, [rel wm_clip_w]
+    cmp ebx, eax
+    jge .fdc_done
+    ; Check: y + 16 <= clip_y  →  fully above
+    lea eax, [esi + FONT_HEIGHT]
+    cmp eax, [rel wm_clip_y]
+    jle .fdc_done
+    ; Check: y >= clip_y + clip_h  →  fully below
+    mov eax, [rel wm_clip_y]
+    add eax, [rel wm_clip_h]
+    cmp esi, eax
+    jge .fdc_done
+.fdc_clip_ok:
+
     ; Glyph pointer: font_8x16 + ch * 16
     shl edi, 4                  ; ch * 16
     lea r14, [rel font_8x16]
@@ -1229,6 +1284,17 @@ fb_draw_char:
 .fdc_row:
     cmp r15d, FONT_HEIGHT
     jge .fdc_done
+    ; Per-row clip: skip if y+row outside clip rect
+    cmp dword [rel wm_clip_enabled], 0
+    je .fdc_row_ok
+    lea eax, [esi + r15d]      ; y + row
+    cmp eax, [rel wm_clip_y]
+    jl .fdc_next_row
+    mov ecx, [rel wm_clip_y]
+    add ecx, [rel wm_clip_h]
+    cmp eax, ecx
+    jge .fdc_done               ; all remaining rows are outside
+.fdc_row_ok:
     movzx edi, byte [r14 + r15] ; bits = glyph[row]
     ; Inner loop: col = 0..7
     mov dword [rsp + 32], 0     ; col = 0
@@ -1236,6 +1302,20 @@ fb_draw_char:
     mov ecx, [rsp + 32]
     cmp ecx, FONT_WIDTH
     jge .fdc_next_row
+    ; Per-col clip: skip if x+col outside clip rect
+    cmp dword [rel wm_clip_enabled], 0
+    je .fdc_col_ok
+    lea eax, [ebx + ecx]       ; x + col
+    cmp eax, [rel wm_clip_x]
+    jl .fdc_skip
+    mov eax, [rel wm_clip_x]
+    add eax, [rel wm_clip_w]
+    lea ecx, [ebx]
+    add ecx, [rsp + 32]
+    cmp ecx, eax
+    jge .fdc_skip
+    mov ecx, [rsp + 32]        ; restore col
+.fdc_col_ok:
     ; Test bit: bits & (0x80 >> col)
     mov eax, 0x80
     mov cl, [rsp + 32]         ; col into CL for shift
@@ -1950,6 +2030,25 @@ fb_cursor_draw:
     ret
 
 ; ============================================================
+; CLIP RECTANGLE
+; ============================================================
+
+; void wm_set_clip(int x, int y, int w, int h)
+; MS x64: ECX=x, EDX=y, R8D=w, R9D=h
+wm_set_clip:
+    mov [rel wm_clip_x], ecx
+    mov [rel wm_clip_y], edx
+    mov [rel wm_clip_w], r8d
+    mov [rel wm_clip_h], r9d
+    mov dword [rel wm_clip_enabled], 1
+    ret
+
+; void wm_clear_clip(void)
+wm_clear_clip:
+    mov dword [rel wm_clip_enabled], 0
+    ret
+
+; ============================================================
 ; DATA SECTIONS
 ; ============================================================
 
@@ -1974,6 +2073,13 @@ fb_back:   resq 1
 fb_w:      resd 1
 fb_h:      resd 1
 fb_active: resd 1
+
+; Clip rectangle (WM integration)
+wm_clip_x:       resd 1
+wm_clip_y:       resd 1
+wm_clip_w:       resd 1
+wm_clip_h:       resd 1
+wm_clip_enabled: resd 1
 
 section .rdata
 
