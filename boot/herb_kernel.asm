@@ -86,6 +86,12 @@ extern intern
 extern container_add
 extern container_remove
 
+; Network (from herb_net.asm)
+extern net_init
+extern net_send_arp_request
+extern net_poll_rx
+extern net_present
+
 ; Disk + filesystem (from herb_disk.asm)
 extern disk_identify
 extern fs_init
@@ -101,6 +107,7 @@ extern fs_data_buf
 extern timer_isr_stub
 extern keyboard_isr_stub
 extern mouse_isr_stub
+extern e1000_isr_stub
 
 ; Volatile flags set by ISRs (from kernel_entry.asm)
 extern volatile_timer_fired
@@ -2305,6 +2312,14 @@ kernel_main:
 .skip_fs:
 
     ; ================================================================
+    ; NETWORK INIT (E1000 PCI scan + MMIO map + device init)
+    ; ================================================================
+
+    call net_init
+    ; net_init returns IRQ number in EAX if found, or -1 if not
+    ; We'll set up the IDT gate below if NIC was found
+
+    ; ================================================================
     ; SET UP INTERRUPTS
     ; ================================================================
 
@@ -2328,6 +2343,15 @@ kernel_main:
     mov ecx, 44
     lea rdx, [rel mouse_isr_stub]
     call idt_set_gate
+
+    ; idt_set_gate(43, e1000_isr_stub) — IRQ11 = vector 43
+    ; Only set if NIC was found
+    cmp dword [rel net_present], 0
+    je .skip_net_idt
+    mov ecx, 43
+    lea rdx, [rel e1000_isr_stub]
+    call idt_set_gate
+.skip_net_idt:
 
     call idt_install
 
@@ -2841,6 +2865,9 @@ kernel_main:
 
 .no_mouse_move:
 %endif  ; GRAPHICS_MODE
+
+    ; ---- Network: poll for received packets ----
+    call net_poll_rx
 
     jmp .mainloop
 

@@ -89,6 +89,9 @@ global cursor_y
 global cursor_old_x
 global cursor_old_y
 
+; PCI config read (used by herb_net.asm)
+global hw_pci_read
+
 ; Clip rectangle
 global wm_clip_x
 global wm_clip_y

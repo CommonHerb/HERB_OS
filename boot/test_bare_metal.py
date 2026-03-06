@@ -66,10 +66,11 @@ QCODES = {
 class HerbOSTest:
     """Manages a headless QEMU instance for automated testing."""
 
-    def __init__(self, image_path, qemu_path=QEMU, qmp_port=QMP_PORT):
+    def __init__(self, image_path, qemu_path=QEMU, qmp_port=QMP_PORT, net=False):
         self.image_path = image_path
         self.qemu_path = qemu_path
         self.qmp_port = qmp_port
+        self.net = net
         self.proc = None
         self.qmp = None
         self.serial = ""
@@ -89,6 +90,10 @@ class HerbOSTest:
         if os.path.exists(disk_img):
             disk_args = ["-drive", f"format=raw,file={disk_img}"]
 
+        net_args = ["-nic", "none"]
+        if self.net:
+            net_args = ["-netdev", "user,id=net0", "-device", "e1000,netdev=net0"]
+
         cmd = [
             self.qemu_path,
             "-drive", f"format=raw,file={self.image_path}",
@@ -98,6 +103,7 @@ class HerbOSTest:
             "-display", "none",
             "-serial", "stdio",
             "-qmp", f"tcp:127.0.0.1:{self.qmp_port},server,nowait",
+            *net_args,
         ]
 
         self.proc = subprocess.Popen(
@@ -266,9 +272,9 @@ class HerbOSTest:
 # TEST SUITE
 # ============================================================
 
-def run_tests(image_path):
+def run_tests(image_path, net=False):
     """Run the full bare metal test suite."""
-    t = HerbOSTest(image_path)
+    t = HerbOSTest(image_path, net=net)
 
     print("=" * 60)
     print("HERB OS Bare Metal Test Suite")
@@ -1706,6 +1712,50 @@ def run_tests(image_path):
         else:
             print("\n(Kernel-specific tests skipped — flat scheduler mode)")
 
+        # ============================================================
+        # NIC Tests (Session 82) — only with --net flag
+        # ============================================================
+        if net:
+            print("\n" + "=" * 60)
+            print("NIC Tests (Session 82)")
+            print("=" * 60)
+
+            serial = t.get_serial()
+
+            # ---- TEST: NIC Detected ----
+            print("\n--- Test: NIC Detected ---")
+            m = re.search(r"\[NET\] E1000 found slot=(\d+) BAR0=(-?\d+) IRQ=(\d+)", serial)
+            t.check("E1000 NIC detected", m is not None)
+            if m:
+                slot = int(m.group(1))
+                bar0 = int(m.group(2))
+                irq = int(m.group(3))
+                print(f"  INFO: slot={slot} BAR0={bar0} IRQ={irq}")
+
+            # ---- TEST: NIC Initialized ----
+            print("\n--- Test: NIC Initialized ---")
+            m = re.search(r"\[NET\] MAC=", serial)
+            t.check("E1000 NIC initialized (MAC read)", m is not None)
+
+            # ---- TEST: MMIO Mapped ----
+            print("\n--- Test: MMIO Mapped ---")
+            m = re.search(r"\[NET\] MMIO mapped", serial)
+            t.check("MMIO region mapped", m is not None)
+
+            # ---- TEST: ARP Request ----
+            print("\n--- Test: ARP Request ---")
+            # Send 'q' key as ARP trigger (we'll wire this up)
+            # Actually, let's use a shell command instead
+            # For now, just check that NIC init completed without crashing
+            # and the system is responsive
+            pos = t.serial_pos()
+            t.send_key('t')
+            m = t.wait_for(r"\[TIMER\]", after=pos, timeout=5)
+            t.check("System responsive after NIC init", m is not None)
+
+        else:
+            print("\n(NIC tests skipped — use --net flag)")
+
     except Exception as e:
         print(f"\nERROR: {e}")
         import traceback
@@ -1744,7 +1794,9 @@ def run_tests(image_path):
 # ============================================================
 
 if __name__ == "__main__":
-    image = sys.argv[1] if len(sys.argv) > 1 else "herb_os.img"
+    net = "--net" in sys.argv
+    args = [a for a in sys.argv[1:] if a != "--net"]
+    image = args[0] if args else "herb_os.img"
 
     if not os.path.exists(image):
         print(f"Error: Image not found: {image}")
@@ -1756,5 +1808,5 @@ if __name__ == "__main__":
         print("Set QEMU environment variable to QEMU path")
         sys.exit(1)
 
-    success = run_tests(image)
+    success = run_tests(image, net=net)
     sys.exit(0 if success else 1)

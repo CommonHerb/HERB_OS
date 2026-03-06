@@ -22,6 +22,7 @@ global _start
 global timer_isr_stub
 global keyboard_isr_stub
 global mouse_isr_stub
+global e1000_isr_stub
 
 ; Exported variables for C code to read
 global volatile_timer_fired
@@ -30,6 +31,9 @@ global volatile_key_pressed
 global mouse_ring
 global mouse_ring_head
 global mouse_ring_tail
+
+; NIC flag (from herb_net.asm)
+extern net_rx_flag
 
 ; ============================================================
 ; ENTRY POINT
@@ -143,6 +147,25 @@ mouse_isr_stub:
     out 0x20, al
 
     pop rcx
+    pop rdi
+    pop rax
+    iretq
+
+; ---- E1000 NIC interrupt (IRQ11 -> IDT entry 43) ----
+; IRQ11 is on the slave PIC, so EOI goes to both slave and master.
+e1000_isr_stub:
+    push rax
+    push rdi
+
+    ; Set net_rx_flag = 1
+    lea rdi, [rel net_rx_flag]
+    mov dword [rdi], 1
+
+    ; Send EOI to slave PIC then master PIC
+    mov al, 0x20
+    out 0xA0, al
+    out 0x20, al
+
     pop rdi
     pop rax
     iretq
