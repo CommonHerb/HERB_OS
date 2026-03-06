@@ -115,7 +115,7 @@ herb_os.img: boot.bin kernel.bin
 
 # ---- Data disk image (persistent storage, 1MB) ----
 herb_disk.img:
-	$(PYTHON) -c "open('herb_disk.img','wb').write(b'\x00'*1048576)"
+	$(PYTHON) -c "open('herb_disk.img','wb').write(b'\x00'*8388608)"
 
 # ---- Run in QEMU (graphics mode, default) ----
 run: herb_os.img herb_disk.img
@@ -131,7 +131,7 @@ run-text:
 test-bare-metal:
 	$(MAKE) clean
 	$(MAKE) GRAPHICS=0
-	$(PYTHON) -c "open('herb_disk.img','wb').write(b'\x00'*1048576)"
+	$(PYTHON) -c "open('herb_disk.img','wb').write(b'\x00'*8388608)"
 	@echo "Running bare metal tests..."
 	$(PYTHON) test_bare_metal.py herb_os.img
 

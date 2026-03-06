@@ -334,7 +334,7 @@ last_action:     resb 80        ; char[80]
 last_key_name:   resb 16        ; char[16]
 mouse_packet:    resb 4         ; uint8_t[3] + padding
 ; Boot-compiled program binaries (compiled from .herb source at boot)
-bin_interactive_kernel: resb 24576    ; 24KB (actual ~22KB with 332 entities)
+bin_interactive_kernel: resb 32768    ; 32KB (actual ~25KB with NPC tensions)
 bin_ik_len:            resd 1
 bin_shell:             resb 2048
 bin_shell_len:         resd 1
@@ -398,6 +398,9 @@ ed_debug_counter:   dd 0
 
 ; Flow editor WM window ID (-1 = not created)
 flow_editor_win_id: dd -1
+
+; Game WM window ID (-1 = not created)
+game_win_id:        dd -1
 
 ; ============================================================
 ; RDATA — String literals + const data
@@ -754,6 +757,7 @@ str_cn_game_trees:  db "world.TREES", 0
 str_cn_game_move_sig: db "world.MOVE_SIG", 0
 str_cn_game_gather_sig: db "world.GATHER_SIG", 0
 str_cn_game_tree_gathered: db "world.TREE_GATHERED", 0
+str_cn_game_npcs:   db "world.NPCS", 0
 
 ; Property names — Phase C (new)
 str_cmd_id:         db "cmd_id", 0
@@ -972,6 +976,8 @@ str_ser_eload_e5:  db "[ELOAD] cursor set", 10, 0
 str_prop_cursor_pos: db "cursor_pos", 0
 str_gfx_editor_title: db "EDITOR", 0
 str_editor_title: db "EDITOR", 0
+str_game_title:   db "COMMON HERB", 0
+str_prop_wood:    db "wood", 0
 str_gfx_ed_chars:   db "Chars:", 0
 str_gfx_ed_status:  db "ESC=exit  /esave <name>  /eload <name>", 0
 str_gfx_screen_x:   db "screen_x", 0
@@ -1219,6 +1225,10 @@ str_gfx_controls:   db "Controls", 0
 str_gfx_ctrl_arrow: db "Arrows  Move", 0
 str_gfx_ctrl_space: db "Space   Gather", 0
 str_gfx_ctrl_g:     db "G       OS view", 0
+str_gfx_npc_lbl:    db "NPCs", 0
+str_gfx_guard_lbl:  db "Guard: ", 0
+str_gfx_scout_lbl:  db "Scout: ", 0
+str_gfx_wood_w_lbl: db "Wood: ", 0
 str_gfx_pri_fmt:    db "%d", 0
 str_gfx_surf_fmt:   db "%s::SURFACE", 0
 %endif  ; KERNEL_MODE
@@ -1332,6 +1342,14 @@ COL_TREE         equ 0x0066BB6A
 COL_TREE_TRUNK   equ 0x00795548
 COL_GAME_BG      equ 0x00101818
 COL_GAME_TITLE   equ 0x0088CCAA
+COL_NPC_GUARD    equ 0x0000CCCC
+COL_NPC_SCOUT    equ 0x00CC44CC
+
+; Windowed game layout
+WGAME_TILE_SIZE  equ 32
+WGAME_GRID_PAD   equ 4
+WGAME_GRID_SIZE  equ 256
+WGAME_INFO_Y_OFF equ 264
 COL_RES_FREE     equ 0x00338855
 COL_RES_USED     equ 0x00CC4444
 COL_RES_FD_F     equ 0x00335588
@@ -3570,6 +3588,19 @@ cmd_toggle_game:
     lea rcx, [rel str_newline]
     call serial_print
 
+    ; If entering game mode, bring game window to front
+%ifdef GRAPHICS_MODE
+    test ebx, ebx
+    jz .ctg_no_focus
+    mov ecx, [rel game_win_id]
+    test ecx, ecx
+    js .ctg_no_focus
+    call wm_bring_to_front
+    mov ecx, [rel game_win_id]
+    call wm_set_focus
+.ctg_no_focus:
+%endif
+
     ; herb_snprintf(last_action, 80, next ? "Game view..." : "OS view")
     lea rcx, [rel last_action]
     mov edx, 80
@@ -5592,6 +5623,9 @@ post_dispatch:
     jmp .pd_report
 
 .pd_edit:
+%ifndef GRAPHICS_MODE
+    jmp .pd_report                  ; editor not available in text mode
+%endif
     ; Set input_ctl.mode = 2 (editor mode)
     mov ecx, [rel input_ctl_eid]
     test ecx, ecx
@@ -10795,6 +10829,572 @@ gfx_draw_game:
 %endif  ; KERNEL_MODE (gfx_draw_game)
 
 ; ============================================================
+; GAME WINDOW DRAW FUNCTION — renders game inside a WM window
+; void game_draw_fn(int cx, int cy, int cw, int ch, void* win_ptr)
+; MS x64: ECX=cx, EDX=cy, R8D=cw, R9D=ch, [rbp+48]=win_ptr
+;
+; Stack: push rbp + 7 pushes + sub rsp 96
+;   8(ret)+8(rbp)+56(pushes)+96 = 168. 168%16=8. Need +8.
+;   Actually: 8(ret)+8(rbp)+56(pushes) = 72 on stack. sub rsp 104 → 72+104=176. 176%16=0 ✓
+;
+; Locals:
+;   [rsp+32..39] shadow/arg5
+;   [rsp+40..43] temp
+;   [rsp+44..47] temp
+;   [rsp+48..51] temp eid
+;   [rsp+52..55] temp tx
+;   [rsp+56..59] temp ty
+;   [rsp+60..63] temp terrain/color
+;   [rsp+64..67] cx save
+;   [rsp+68..71] cy save
+;   [rsp+72..75] cw save
+;   [rsp+76..79] ch save
+;   [rsp+80..83] tile_count
+;   [rsp+84..87] info_y (for text panel)
+;   [rsp+88..95] spare
+;   [rsp+96..103] spare
+; ============================================================
+
+%ifdef KERNEL_MODE
+
+game_draw_fn:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 104
+
+    ; Save client rect params
+    mov dword [rsp + 64], ecx          ; cx
+    mov dword [rsp + 68], edx          ; cy
+    mov dword [rsp + 72], r8d          ; cw
+    mov dword [rsp + 76], r9d          ; ch
+
+    ; wm_set_clip(cx, cy, cw, ch) — params already in registers
+    call wm_set_clip
+
+    ; Fill background
+    mov ecx, [rsp + 64]
+    mov edx, [rsp + 68]
+    mov r8d, [rsp + 72]
+    mov r9d, [rsp + 76]
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_fill_rect
+
+    ; --- Tile grid (32px tiles) ---
+    lea rcx, [rel str_cn_game_tiles]
+    call herb_container_count
+    mov dword [rsp + 80], eax          ; tile_count
+    test eax, eax
+    jle .gwf_tiles_done
+    xor r13d, r13d                     ; loop index
+
+.gwf_tile_loop:
+    cmp r13d, [rsp + 80]
+    jge .gwf_tiles_done
+
+    lea rcx, [rel str_cn_game_tiles]
+    mov edx, r13d
+    call herb_container_entity
+    test eax, eax
+    js .gwf_tile_next
+    mov dword [rsp + 48], eax          ; eid
+
+    mov ecx, eax
+    lea rdx, [rel str_tile_x]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 52], eax          ; tx
+
+    mov ecx, [rsp + 48]
+    lea rdx, [rel str_tile_y]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 56], eax          ; ty
+
+    mov ecx, [rsp + 48]
+    lea rdx, [rel str_terrain]
+    xor r8d, r8d
+    call herb_entity_prop_int
+
+    mov ecx, eax
+    call terrain_color
+    mov dword [rsp + 60], eax          ; terrain color
+
+    ; px = cx + WGAME_GRID_PAD + tx * WGAME_TILE_SIZE
+    mov eax, [rsp + 52]
+    imul eax, WGAME_TILE_SIZE
+    add eax, [rsp + 64]
+    add eax, WGAME_GRID_PAD
+    mov dword [rsp + 48], eax          ; px
+
+    ; py = cy + WGAME_GRID_PAD + ty * WGAME_TILE_SIZE
+    mov eax, [rsp + 56]
+    imul eax, WGAME_TILE_SIZE
+    add eax, [rsp + 68]
+    add eax, WGAME_GRID_PAD
+    mov dword [rsp + 52], eax          ; py
+
+    ; fb_fill_rect(px+1, py+1, 30, 30, terrain_color)
+    mov ecx, [rsp + 48]
+    add ecx, 1
+    mov edx, [rsp + 52]
+    add edx, 1
+    mov r8d, WGAME_TILE_SIZE - 2
+    mov r9d, WGAME_TILE_SIZE - 2
+    mov eax, [rsp + 60]
+    mov dword [rsp + 32], eax
+    call fb_fill_rect
+
+    ; fb_draw_rect(px, py, 32, 32, grid_color)
+    mov ecx, [rsp + 48]
+    mov edx, [rsp + 52]
+    mov r8d, WGAME_TILE_SIZE
+    mov r9d, WGAME_TILE_SIZE
+    mov dword [rsp + 32], COL_TILE_GRID
+    call fb_draw_rect
+
+.gwf_tile_next:
+    inc r13d
+    jmp .gwf_tile_loop
+.gwf_tiles_done:
+
+    ; --- Tree markers (small green squares) ---
+    lea rcx, [rel str_cn_game_trees]
+    call herb_container_count
+    mov esi, eax
+    test esi, esi
+    jle .gwf_trees_done
+    xor r13d, r13d
+
+.gwf_tree_loop:
+    cmp r13d, esi
+    jge .gwf_trees_done
+
+    lea rcx, [rel str_cn_game_trees]
+    mov edx, r13d
+    call herb_container_entity
+    test eax, eax
+    js .gwf_tree_next
+    mov dword [rsp + 48], eax
+
+    mov ecx, eax
+    lea rdx, [rel str_tile_x]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 52], eax
+
+    mov ecx, [rsp + 48]
+    lea rdx, [rel str_tile_y]
+    xor r8d, r8d
+    call herb_entity_prop_int
+
+    ; px = cx + pad + tx*32 + 8
+    mov ecx, [rsp + 52]
+    imul ecx, WGAME_TILE_SIZE
+    add ecx, [rsp + 64]
+    add ecx, WGAME_GRID_PAD
+    add ecx, 8
+    ; py = cy + pad + ty*32 + 4
+    imul eax, WGAME_TILE_SIZE
+    add eax, [rsp + 68]
+    add eax, WGAME_GRID_PAD
+    add eax, 4
+
+    ; Trunk: fb_fill_rect(px+5, py+12, 4, 10, COL_TREE_TRUNK)
+    mov dword [rsp + 48], ecx
+    mov dword [rsp + 52], eax
+    add ecx, 5
+    add eax, 12
+    mov edx, eax
+    mov r8d, 4
+    mov r9d, 10
+    mov dword [rsp + 32], COL_TREE_TRUNK
+    call fb_fill_rect
+
+    ; Canopy: fb_fill_rect(px, py, 16, 14, COL_TREE)
+    mov ecx, [rsp + 48]
+    mov edx, [rsp + 52]
+    mov r8d, 16
+    mov r9d, 14
+    mov dword [rsp + 32], COL_TREE
+    call fb_fill_rect
+
+.gwf_tree_next:
+    inc r13d
+    jmp .gwf_tree_loop
+.gwf_trees_done:
+
+    ; --- Player marker ---
+    mov eax, [rel player_eid]
+    test eax, eax
+    js .gwf_player_done
+    mov dword [rsp + 48], eax
+
+    mov ecx, eax
+    lea rdx, [rel str_tile_x]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 52], eax          ; ptx
+
+    mov ecx, [rsp + 48]
+    lea rdx, [rel str_tile_y]
+    xor r8d, r8d
+    call herb_entity_prop_int
+
+    ; px = cx + pad + ptx*32
+    mov ecx, [rsp + 52]
+    imul ecx, WGAME_TILE_SIZE
+    add ecx, [rsp + 64]
+    add ecx, WGAME_GRID_PAD
+    ; py = cy + pad + pty*32
+    imul eax, WGAME_TILE_SIZE
+    add eax, [rsp + 68]
+    add eax, WGAME_GRID_PAD
+
+    mov dword [rsp + 48], ecx
+    mov dword [rsp + 52], eax
+
+    ; Player rect with margin=6
+    add ecx, 6
+    add eax, 6
+    mov edx, eax
+    mov r8d, WGAME_TILE_SIZE - 12
+    mov r9d, WGAME_TILE_SIZE - 12
+    mov dword [rsp + 32], COL_PLAYER
+    call fb_fill_rect
+
+    ; Player border
+    mov ecx, [rsp + 48]
+    add ecx, 5
+    mov edx, [rsp + 52]
+    add edx, 5
+    mov r8d, WGAME_TILE_SIZE - 10
+    mov r9d, WGAME_TILE_SIZE - 10
+    mov dword [rsp + 32], COL_PLAYER_BDR
+    call fb_draw_rect
+
+.gwf_player_done:
+
+    ; --- NPC markers ---
+    lea rcx, [rel str_cn_game_npcs]
+    call herb_container_count
+    mov r14d, eax                      ; npc_count
+    test r14d, r14d
+    jle .gwf_npcs_done
+    xor r13d, r13d
+
+.gwf_npc_loop:
+    cmp r13d, r14d
+    jge .gwf_npcs_done
+
+    lea rcx, [rel str_cn_game_npcs]
+    mov edx, r13d
+    call herb_container_entity
+    test eax, eax
+    js .gwf_npc_next
+    mov dword [rsp + 48], eax
+
+    mov ecx, eax
+    lea rdx, [rel str_tile_x]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 52], eax
+
+    mov ecx, [rsp + 48]
+    lea rdx, [rel str_tile_y]
+    xor r8d, r8d
+    call herb_entity_prop_int
+
+    ; px = cx + pad + tx*32
+    mov ecx, [rsp + 52]
+    imul ecx, WGAME_TILE_SIZE
+    add ecx, [rsp + 64]
+    add ecx, WGAME_GRID_PAD
+    ; py = cy + pad + ty*32
+    imul eax, WGAME_TILE_SIZE
+    add eax, [rsp + 68]
+    add eax, WGAME_GRID_PAD
+
+    ; NPC diamond: fill_rect(px+10, py+10, 12, 12, color)
+    ; Color: first NPC = cyan, second = magenta
+    add ecx, 10
+    add eax, 10
+    mov edx, eax
+    mov r8d, 12
+    mov r9d, 12
+    cmp r13d, 0
+    jne .gwf_npc_col2
+    mov dword [rsp + 32], COL_NPC_GUARD
+    jmp .gwf_npc_draw
+.gwf_npc_col2:
+    mov dword [rsp + 32], COL_NPC_SCOUT
+.gwf_npc_draw:
+    call fb_fill_rect
+
+.gwf_npc_next:
+    inc r13d
+    jmp .gwf_npc_loop
+.gwf_npcs_done:
+
+    ; --- Info panel below grid ---
+    mov eax, [rsp + 68]               ; cy
+    add eax, WGAME_INFO_Y_OFF
+    mov dword [rsp + 84], eax         ; info_y
+    mov edi, [rsp + 64]               ; cx
+    add edi, 8                         ; left margin
+    mov r12d, eax                      ; current y
+
+    ; "COMMON HERB"
+    mov ecx, edi
+    mov edx, r12d
+    lea r8, [rel str_gfx_common_herb]
+    mov r9d, COL_GAME_TITLE
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+    add r12d, 18
+
+    ; Player pos and stats (if player_eid >= 0)
+    mov eax, [rel player_eid]
+    test eax, eax
+    js .gwf_skip_info
+    mov dword [rsp + 48], eax
+
+    ; Read tile_x
+    mov ecx, eax
+    lea rdx, [rel str_tile_x]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 52], eax
+
+    ; Read tile_y
+    mov ecx, [rsp + 48]
+    lea rdx, [rel str_tile_y]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 56], eax
+
+    ; Read hp
+    mov ecx, [rsp + 48]
+    lea rdx, [rel str_hp]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 60], eax
+
+    ; Read wood
+    mov ecx, [rsp + 48]
+    lea rdx, [rel str_prop_wood]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 88], eax         ; wood
+
+    ; "Pos: (" x "," y ")"
+    mov ecx, edi
+    mov edx, r12d
+    lea r8, [rel str_gfx_pos_open]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+
+    mov ecx, eax
+    mov edx, r12d
+    mov r8d, [rsp + 52]
+    mov r9d, COL_TEXT_VAL
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_int
+
+    mov ecx, eax
+    mov edx, r12d
+    lea r8, [rel str_gfx_comma]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+
+    mov ecx, eax
+    mov edx, r12d
+    mov r8d, [rsp + 56]
+    mov r9d, COL_TEXT_VAL
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_int
+
+    mov ecx, eax
+    mov edx, r12d
+    lea r8, [rel str_gfx_paren_close]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+    add r12d, 16
+
+    ; "HP: " hp
+    mov ecx, edi
+    mov edx, r12d
+    lea r8, [rel str_gfx_hp_lbl]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+
+    mov ecx, eax
+    mov edx, r12d
+    mov r8d, [rsp + 60]
+    mov r9d, COL_RUNNING
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_int
+    add r12d, 16
+
+    ; "Wood: " wood
+    mov ecx, edi
+    mov edx, r12d
+    lea r8, [rel str_gfx_wood_w_lbl]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+
+    mov ecx, eax
+    mov edx, r12d
+    mov r8d, [rsp + 88]
+    mov r9d, COL_TREE
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_int
+    add r12d, 16
+
+.gwf_skip_info:
+
+    ; --- NPC info ---
+    ; "NPCs"
+    mov ecx, edi
+    mov edx, r12d
+    lea r8, [rel str_gfx_npc_lbl]
+    mov r9d, COL_TEXT_HI
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+    add r12d, 16
+
+    ; Guard info
+    lea rcx, [rel str_cn_game_npcs]
+    call herb_container_count
+    test eax, eax
+    jle .gwf_npc_info_done
+
+    ; NPC 0 (guard)
+    lea rcx, [rel str_cn_game_npcs]
+    xor edx, edx
+    call herb_container_entity
+    test eax, eax
+    js .gwf_npc_info_done
+    mov dword [rsp + 48], eax
+
+    mov ecx, eax
+    lea rdx, [rel str_tile_x]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 52], eax
+
+    mov ecx, [rsp + 48]
+    lea rdx, [rel str_tile_y]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 56], eax
+
+    mov ecx, edi
+    mov edx, r12d
+    lea r8, [rel str_gfx_guard_lbl]
+    mov r9d, COL_NPC_GUARD
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+
+    mov ecx, eax
+    mov edx, r12d
+    mov r8d, [rsp + 52]
+    mov r9d, COL_TEXT_VAL
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_int
+
+    mov ecx, eax
+    mov edx, r12d
+    lea r8, [rel str_gfx_comma]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+
+    mov ecx, eax
+    mov edx, r12d
+    mov r8d, [rsp + 56]
+    mov r9d, COL_TEXT_VAL
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_int
+    add r12d, 14
+
+    ; NPC 1 (scout)
+    lea rcx, [rel str_cn_game_npcs]
+    mov edx, 1
+    call herb_container_entity
+    test eax, eax
+    js .gwf_npc_info_done
+    mov dword [rsp + 48], eax
+
+    mov ecx, eax
+    lea rdx, [rel str_tile_x]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 52], eax
+
+    mov ecx, [rsp + 48]
+    lea rdx, [rel str_tile_y]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + 56], eax
+
+    mov ecx, edi
+    mov edx, r12d
+    lea r8, [rel str_gfx_scout_lbl]
+    mov r9d, COL_NPC_SCOUT
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+
+    mov ecx, eax
+    mov edx, r12d
+    mov r8d, [rsp + 52]
+    mov r9d, COL_TEXT_VAL
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_int
+
+    mov ecx, eax
+    mov edx, r12d
+    lea r8, [rel str_gfx_comma]
+    mov r9d, COL_TEXT_DIM
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_string
+
+    mov ecx, eax
+    mov edx, r12d
+    mov r8d, [rsp + 56]
+    mov r9d, COL_TEXT_VAL
+    mov dword [rsp + 32], COL_GAME_BG
+    call fb_draw_int
+
+.gwf_npc_info_done:
+
+    call wm_clear_clip
+
+    add rsp, 104
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+%endif  ; KERNEL_MODE (game_draw_fn)
+
+; ============================================================
 ; FLOW EDITOR DRAW FUNCTION — renders HERB-flow editor inside WM window
 ; void flow_editor_draw_fn(int cx, int cy, int cw, int ch, void* win_ptr)
 ; MS x64: ECX=cx, EDX=cy, R8D=cw, R9D=ch, [rbp+48]=win_ptr
@@ -11361,6 +11961,32 @@ wm_init_default_windows:
     mov [rax + 80], rbx                ; WIN_DRAW_FN
 .wmiw_ed_skip:
 
+    ; Create game window
+    mov ecx, 10                         ; x
+    mov edx, 76                         ; y
+    mov r8d, 500                        ; w
+    mov r9d, 520                        ; h
+    mov dword [rsp + 32], 3             ; type = WCT_CUSTOM
+    mov dword [rsp + 40], 0             ; content_id
+    lea rdi, [rel str_game_title]
+    mov [rsp + 48], rdi                 ; title
+    mov dword [rsp + 56], (1 << 5) | (1 << 6) ; WF_CLOSABLE | WF_RESIZABLE
+    call wm_create_window
+    mov [rel game_win_id], eax
+
+    cmp eax, -1
+    je .wmiw_game_skip
+    mov ecx, eax
+    call wm_window_ptr
+    test rax, rax
+    jz .wmiw_game_skip
+    mov dword [rax + 40], 0x00204030   ; border: dark green
+    mov dword [rax + 44], COL_GAME_BG  ; fill
+    mov dword [rax + 48], 0x00204030   ; title bg: dark green
+    lea rbx, [rel game_draw_fn]
+    mov [rax + 80], rbx                ; WIN_DRAW_FN
+.wmiw_game_skip:
+
 %else
     ; Non-KERNEL_MODE: create windows from hardcoded positions
     ; CPU0 window
@@ -11740,21 +12366,11 @@ gfx_draw_full:
 .gdf_no_lastkey:
 
 %ifdef KERNEL_MODE
-    ; ---- 4. Game mode check + early return ----
-    mov eax, dword [rel game_ctl_eid]
-    test eax, eax
-    js .gdf_no_game
+    ; ---- 4. Game mode — game now renders via WM window (game_draw_fn) ----
+    ; No full-screen early exit needed. Fall through to normal WM rendering.
+    jmp .gdf_no_game
 
-    mov ecx, eax
-    lea rdx, [rel str_display_mode]
-    xor r8d, r8d
-    call herb_entity_prop_int
-    cmp eax, 1
-    jne .gdf_no_game
-
-    ; Game mode active — draw game-specific UI
-
-    ; Game legend bar
+    ; Game legend bar (legacy full-screen — unreachable)
     xor ecx, ecx
     mov edx, GFX_LEGEND_Y
     mov r8d, FB_WIDTH
@@ -13012,7 +13628,7 @@ boot_compile_programs:
     lea     rax, [rel src_interactive_kernel_len]
     mov     edx, [rax]
     lea     r8, [rel bin_interactive_kernel]
-    mov     r9d, 24576
+    mov     r9d, 32768
     call    herb_compile_source
     test    eax, eax
     jle     .bcp_fail

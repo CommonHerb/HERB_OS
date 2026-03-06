@@ -1,8 +1,11 @@
-; boot/herb_disk.asm — ATA PIO disk driver + flat filesystem
+; boot/herb_disk.asm — ATA PIO disk driver + bitmap filesystem
 ;
 ; Session 75: Persistent storage for HERB OS.
+; Session 80: Filesystem hardening — free-sector bitmap, overwrite,
+;             256 entries, 8MB disk, "/" in filenames.
+;
 ; ATA PIO driver targets drive 1 (slave) — the data disk (herb_disk.img).
-; Flat filesystem: superblock + directory (42 entries) + forward-only data allocation.
+; Bitmap filesystem: superblock v2 + directory (256 entries) + bitmap + data.
 ;
 ; Assembled with: nasm -f win64 herb_disk.asm -o herb_disk.o
 
@@ -67,15 +70,18 @@ extern outb, inb, io_wait
 %define ATA_STATUS_DRQ  0x08
 %define ATA_STATUS_ERR  0x01
 
-; Filesystem constants
-%define FS_MAGIC        0x48455242      ; "HERB"
-%define FS_VERSION      1
-%define FS_DIR_SECTORS  4
-%define FS_DIR_START    1
-%define FS_DATA_START   5
-%define FS_MAX_ENTRIES  42
-%define FS_ENTRY_SIZE   48
-%define FS_NAME_LEN     32
+; Filesystem constants (v2)
+%define FS_MAGIC          0x48455242      ; "HERB"
+%define FS_VERSION        2
+%define FS_DIR_SECTORS    24
+%define FS_DIR_START      1
+%define FS_BITMAP_START   25
+%define FS_BITMAP_SECTORS 4
+%define FS_DATA_START     29
+%define FS_TOTAL_SECTORS  16384
+%define FS_MAX_ENTRIES    256
+%define FS_ENTRY_SIZE     48
+%define FS_NAME_LEN       32
 
 ; ============================================================
 ; BSS
@@ -85,7 +91,8 @@ section .bss
 align 16
 disk_sector_buf:    resb 512        ; scratch buffer for identify/self-test
 fs_superblock:      resb 512        ; cached superblock (sector 0)
-fs_dir_buf:         resb 2048       ; cached directory (sectors 1-4)
+fs_dir_buf:         resb 12288      ; cached directory (sectors 1-24, 256 entries × 48)
+fs_bitmap_buf:      resb 2048       ; free-sector bitmap (sectors 25-28, 16384 bits)
 fs_data_buf:        resb 4096       ; general-purpose data buffer (8 sectors)
 global fs_data_buf
 
@@ -126,8 +133,8 @@ str_fs_list_total:  db " files total", 10, 0
 str_fs_err_full:    db "[FS] error: disk full", 10, 0
 str_fs_err_nf:      db "[FS] error: file not found", 10, 0
 str_fs_err_nodisk:  db "[FS] error: no disk", 10, 0
-str_fs_err_dup:     db "[FS] error: file exists", 10, 0
 str_fs_err_nodir:   db "[FS] error: directory full", 10, 0
+str_fs_migrate:     db "[FS] migrating v1 -> v2, reformatting", 10, 0
 
 ; ============================================================
 ; TEXT — ATA PIO DRIVER
@@ -138,8 +145,7 @@ section .text
 ; ---- disk_identify() → 0 success, -1 no disk ----
 ; Detects ATA slave drive (drive 1) via IDENTIFY command.
 ; No args. Returns EAX = 0 on success, -1 on failure.
-; Stack: push rbp + sub rsp 40 = 48 aligned. 8+8+40=56. 56%16=8.
-;   Need sub rsp 48: 8+8+48=64. 64%16=0. Good.
+; Stack: push rbp + sub rsp 48. 8+8+48=64. 64%16=0. Good.
 disk_identify:
     push rbp
     mov rbp, rsp
@@ -249,8 +255,8 @@ disk_identify:
 
 
 ; ---- disk_self_test() ----
-; Internal. Write 0xDEADBEEF pattern to sector 2047, read back, compare.
-; Stack: push rbp,rbx + sub rsp 40 = 56 aligned. 8+16+40=64. 64%16=0. Good.
+; Internal. Write 0xDEADBEEF pattern to last sector, read back, compare.
+; Stack: push rbp,rbx + sub rsp 40. 8+16+40=64. 64%16=0. Good.
 disk_self_test:
     push rbp
     mov rbp, rsp
@@ -266,8 +272,8 @@ disk_self_test:
     mov r8d, 508
     call herb_memset
 
-    ; Write to sector 2047 (last sector of 1MB disk)
-    mov ecx, 2047
+    ; Write to last sector (FS_TOTAL_SECTORS - 1)
+    mov ecx, FS_TOTAL_SECTORS - 1
     mov rdx, rbx
     call disk_write_sector
     test eax, eax
@@ -279,8 +285,8 @@ disk_self_test:
     mov r8d, 512
     call herb_memset
 
-    ; Read sector 2047 back into disk_sector_buf
-    mov ecx, 2047
+    ; Read last sector back into disk_sector_buf
+    mov ecx, FS_TOTAL_SECTORS - 1
     lea rdx, [rel disk_sector_buf]
     call disk_read_sector
     test eax, eax
@@ -310,8 +316,7 @@ disk_self_test:
 ; Read one 512-byte sector from ATA slave drive.
 ; Args: ECX = LBA (u32), RDX = buffer ptr
 ; Returns: EAX = 0 success, -1 error
-; Stack: push rbp,rbx,rsi + sub rsp 40 = 64 aligned. 8+24+40=72. 72%16=8.
-;   Need sub rsp 48: 8+24+48=80. 80%16=0. Good.
+; Stack: push rbp,rbx,rsi + sub rsp 48. 8+24+48=80. 80%16=0. Good.
 disk_read_sector:
     push rbp
     mov rbp, rsp
@@ -502,17 +507,20 @@ disk_write_sector:
 
 
 ; ============================================================
-; TEXT — FLAT FILESYSTEM
+; TEXT — BITMAP FILESYSTEM (v2)
 ; ============================================================
 
-; Superblock layout (sector 0, 512 bytes):
+; Superblock v2 layout (sector 0, 512 bytes):
 ;   Offset 0:   u32 magic (0x48455242 = "HERB")
-;   Offset 4:   u16 version (1)
+;   Offset 4:   u16 version (2)
 ;   Offset 6:   u16 entry_count (active files)
-;   Offset 8:   u32 first_free_sector (starts at 5)
-;   Offset 12:  500 bytes reserved (zero)
+;   Offset 8:   u32 total_sectors (16384)
+;   Offset 12:  u32 bitmap_start (25)
+;   Offset 16:  u32 bitmap_sectors (4)
+;   Offset 20:  u32 data_start (29)
+;   Offset 24:  488 bytes reserved (zero)
 ;
-; Directory entry (48 bytes, 42 per 4 sectors):
+; Directory entry (48 bytes, 256 per 24 sectors):
 ;   Offset 0:   char[32] filename (null-terminated, max 31 chars)
 ;   Offset 32:  u32 start_sector
 ;   Offset 36:  u32 size_bytes
@@ -522,7 +530,10 @@ disk_write_sector:
 %define SB_MAGIC        0
 %define SB_VERSION      4
 %define SB_ENTRY_COUNT  6
-%define SB_FIRST_FREE   8
+%define SB_TOTAL_SECTORS 8
+%define SB_BITMAP_START 12
+%define SB_BITMAP_SECTS 16
+%define SB_DATA_START   20
 
 %define DE_NAME         0
 %define DE_START        32
@@ -530,8 +541,253 @@ disk_write_sector:
 %define DE_FLAGS        40
 
 
+; ============================================================
+; BITMAP PRIMITIVES
+; ============================================================
+
+; ---- fs_read_bitmap() → EAX = 0/-1 ----
+; Read 4 bitmap sectors into fs_bitmap_buf.
+; Stack: push rbp,rbx + sub rsp 40. 8+16+40=64. 64%16=0. Good.
+fs_read_bitmap:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    sub rsp, 40
+
+    xor ebx, ebx           ; i = 0
+.frb_loop:
+    cmp ebx, FS_BITMAP_SECTORS
+    jge .frb_ok
+
+    lea ecx, [ebx + FS_BITMAP_START]  ; LBA
+    lea rdx, [rel fs_bitmap_buf]
+    lea rax, [rbx * 8]
+    shl rax, 6                        ; * 512
+    add rdx, rax
+    call disk_read_sector
+    test eax, eax
+    jnz .frb_error
+
+    inc ebx
+    jmp .frb_loop
+
+.frb_ok:
+    xor eax, eax
+    jmp .frb_done
+.frb_error:
+    mov eax, -1
+.frb_done:
+    add rsp, 40
+    pop rbx
+    pop rbp
+    ret
+
+
+; ---- fs_write_bitmap() → EAX = 0/-1 ----
+; Write fs_bitmap_buf to disk (4 sectors), then superblock.
+; Stack: push rbp,rbx + sub rsp 40. 8+16+40=64. 64%16=0. Good.
+fs_write_bitmap:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    sub rsp, 40
+
+    xor ebx, ebx
+.fwb_loop:
+    cmp ebx, FS_BITMAP_SECTORS
+    jge .fwb_super
+
+    lea ecx, [ebx + FS_BITMAP_START]
+    lea rdx, [rel fs_bitmap_buf]
+    lea rax, [rbx * 8]
+    shl rax, 6
+    add rdx, rax
+    call disk_write_sector
+    test eax, eax
+    jnz .fwb_error
+
+    inc ebx
+    jmp .fwb_loop
+
+.fwb_super:
+    ; Write superblock
+    xor ecx, ecx
+    lea rdx, [rel fs_superblock]
+    call disk_write_sector
+    test eax, eax
+    jnz .fwb_error
+
+    xor eax, eax
+    jmp .fwb_done
+.fwb_error:
+    mov eax, -1
+.fwb_done:
+    add rsp, 40
+    pop rbx
+    pop rbp
+    ret
+
+
+; ---- fs_bitmap_set(ECX=sector) ----
+; Set bit in bitmap (mark allocated). Leaf function.
+fs_bitmap_set:
+    mov eax, ecx
+    shr eax, 3              ; byte_idx = sector >> 3
+    lea rdx, [rel fs_bitmap_buf]
+    mov ecx, ecx            ; keep original sector in ecx
+    and ecx, 7              ; bit_idx = sector & 7
+    mov r8d, 1
+    shl r8d, cl             ; mask = 1 << bit_idx
+    or byte [rdx + rax], r8b
+    ret
+
+
+; ---- fs_bitmap_clear(ECX=sector) ----
+; Clear bit in bitmap (mark free). Leaf function.
+fs_bitmap_clear:
+    mov eax, ecx
+    shr eax, 3
+    lea rdx, [rel fs_bitmap_buf]
+    and ecx, 7
+    mov r8d, 1
+    shl r8d, cl
+    not r8b
+    and byte [rdx + rax], r8b
+    ret
+
+
+; ---- fs_bitmap_test(ECX=sector) → EAX = 0/1 ----
+; Test if sector is allocated. Leaf function.
+fs_bitmap_test:
+    mov eax, ecx
+    shr eax, 3
+    lea rdx, [rel fs_bitmap_buf]
+    and ecx, 7
+    movzx eax, byte [rdx + rax]
+    shr eax, cl
+    and eax, 1
+    ret
+
+
+; ---- fs_bitmap_alloc_contiguous(ECX=count) → EAX = start sector or -1 ----
+; Scan from FS_DATA_START for count contiguous free bits.
+; Stack: push rbp,rbx,rsi,rdi + sub rsp 32. 8+32+32=72. 72%16=8.
+;   Need sub rsp 40: 8+32+40=80. 80%16=0. Good.
+;   rbx=needed, esi=scan_pos, edi=run_start, r12d=run_len (but we use stack for r12)
+;   Actually: rbx=needed, esi=scan_pos, edi=run_start
+fs_bitmap_alloc_contiguous:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    sub rsp, 40
+
+    mov ebx, ecx            ; needed count
+    mov esi, FS_DATA_START   ; scan from data start
+    mov edi, esi             ; run_start = scan_pos
+    xor ecx, ecx            ; run_len = 0 (in local, we use stack slot)
+    mov [rsp+0], ecx         ; run_len at [rsp+0]
+
+.fba_scan:
+    cmp esi, FS_TOTAL_SECTORS
+    jge .fba_fail
+
+    ; Test bit at esi
+    mov ecx, esi
+    ; Inline test (avoid call overhead — leaf)
+    mov eax, ecx
+    shr eax, 3
+    lea rdx, [rel fs_bitmap_buf]
+    and ecx, 7
+    movzx eax, byte [rdx + rax]
+    shr eax, cl
+    and eax, 1
+
+    test eax, eax
+    jnz .fba_reset          ; allocated — reset run
+
+    ; Free bit — extend run
+    mov eax, [rsp+0]
+    inc eax
+    mov [rsp+0], eax
+    cmp eax, ebx
+    jge .fba_found
+
+    inc esi
+    jmp .fba_scan
+
+.fba_reset:
+    inc esi
+    mov edi, esi             ; new run_start
+    mov dword [rsp+0], 0    ; run_len = 0
+    jmp .fba_scan
+
+.fba_found:
+    mov eax, edi             ; return run_start
+    jmp .fba_done
+
+.fba_fail:
+    mov eax, -1
+
+.fba_done:
+    add rsp, 40
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+
+; ---- fs_bitmap_count_free() → EAX = free sector count ----
+; Count free (unallocated) sectors from FS_DATA_START to FS_TOTAL_SECTORS.
+; Stack: push rbp,rbx + sub rsp 40. 8+16+40=64. 64%16=0. Good.
+fs_bitmap_count_free:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    sub rsp, 40
+
+    xor ebx, ebx            ; count = 0
+    mov ecx, FS_DATA_START   ; sector = DATA_START
+
+.fbcf_loop:
+    cmp ecx, FS_TOTAL_SECTORS
+    jge .fbcf_done
+
+    ; Inline test
+    mov eax, ecx
+    shr eax, 3
+    lea rdx, [rel fs_bitmap_buf]
+    push rcx                 ; save sector
+    and ecx, 7
+    movzx eax, byte [rdx + rax]
+    shr eax, cl
+    and eax, 1
+    pop rcx                  ; restore sector
+
+    test eax, eax
+    jnz .fbcf_next           ; allocated, skip
+    inc ebx                  ; free
+
+.fbcf_next:
+    inc ecx
+    jmp .fbcf_loop
+
+.fbcf_done:
+    mov eax, ebx
+    add rsp, 40
+    pop rbx
+    pop rbp
+    ret
+
+
+; ============================================================
+; FILESYSTEM INIT / FORMAT
+; ============================================================
+
 ; ---- fs_init() → 0 success, -1 error ----
-; Initialize filesystem. Read superblock, format if needed, cache directory.
+; Initialize filesystem. Read superblock, detect version, format if needed.
 ; Stack: push rbp,rbx + sub rsp 40. 8+16+40=64. 64%16=0. Good.
 fs_init:
     push rbp
@@ -555,8 +811,25 @@ fs_init:
     cmp dword [rax + SB_MAGIC], FS_MAGIC
     jne .fsi_format
 
-    ; Valid superblock — read directory (sectors 1-4)
+    ; Check version
+    lea rax, [rel fs_superblock]
+    movzx eax, word [rax + SB_VERSION]
+    cmp eax, 2
+    je .fsi_v2
+
+    ; Version 1 → migrate (lossy reformat)
+    lea rcx, [rel str_fs_migrate]
+    call serial_print
+    jmp .fsi_format
+
+.fsi_v2:
+    ; Valid v2 superblock — read directory (24 sectors)
     call fs_read_dir
+    test eax, eax
+    jnz .fsi_error
+
+    ; Read bitmap (4 sectors)
+    call fs_read_bitmap
     test eax, eax
     jnz .fsi_error
 
@@ -573,11 +846,9 @@ fs_init:
     lea rcx, [rel str_fs_files]
     call serial_print
 
-    ; Free sectors = 2048 - first_free
-    lea rax, [rel fs_superblock]
-    mov eax, [rax + SB_FIRST_FREE]
-    mov ecx, 2048
-    sub ecx, eax
+    ; Free sectors via bitmap count
+    call fs_bitmap_count_free
+    mov ecx, eax
     call serial_print_int
     lea rcx, [rel str_fs_free]
     call serial_print
@@ -608,12 +879,13 @@ fs_init:
 
 
 ; ---- fs_format() ----
-; Internal. Write fresh superblock + empty directory.
-; Stack: push rbp + sub rsp 48. 8+8+48=64. 64%16=0. Good.
+; Internal. Write fresh v2 superblock + empty directory + empty bitmap.
+; Stack: push rbp,rbx + sub rsp 40. 8+16+40=64. 64%16=0. Good.
 fs_format:
     push rbp
     mov rbp, rsp
-    sub rsp, 48
+    push rbx
+    sub rsp, 40
 
     ; Zero superblock buffer
     lea rcx, [rel fs_superblock]
@@ -621,37 +893,61 @@ fs_format:
     mov r8d, 512
     call herb_memset
 
-    ; Write magic, version, entry_count=0, first_free=5
+    ; Write v2 superblock fields
     lea rax, [rel fs_superblock]
     mov dword [rax + SB_MAGIC], FS_MAGIC
     mov word [rax + SB_VERSION], FS_VERSION
     mov word [rax + SB_ENTRY_COUNT], 0
-    mov dword [rax + SB_FIRST_FREE], FS_DATA_START
+    mov dword [rax + SB_TOTAL_SECTORS], FS_TOTAL_SECTORS
+    mov dword [rax + SB_BITMAP_START], FS_BITMAP_START
+    mov dword [rax + SB_BITMAP_SECTS], FS_BITMAP_SECTORS
+    mov dword [rax + SB_DATA_START], FS_DATA_START
 
     ; Write superblock to disk sector 0
     xor ecx, ecx
     lea rdx, [rel fs_superblock]
     call disk_write_sector
 
-    ; Zero directory buffer
+    ; Zero directory buffer (12288 bytes)
     lea rcx, [rel fs_dir_buf]
+    xor edx, edx
+    mov r8d, 12288
+    call herb_memset
+
+    ; Write 24 directory sectors
+    call fs_write_dir
+
+    ; Zero bitmap buffer
+    lea rcx, [rel fs_bitmap_buf]
     xor edx, edx
     mov r8d, 2048
     call herb_memset
 
-    ; Write directory sectors 1-4
-    call fs_write_dir
+    ; Mark sectors 0 through FS_DATA_START-1 as allocated
+    xor ebx, ebx
+.ff_mark_reserved:
+    cmp ebx, FS_DATA_START
+    jge .ff_mark_done
+    mov ecx, ebx
+    call fs_bitmap_set
+    inc ebx
+    jmp .ff_mark_reserved
+
+.ff_mark_done:
+    ; Write bitmap to disk
+    call fs_write_bitmap
 
     lea rcx, [rel str_fs_formatted]
     call serial_print
 
-    add rsp, 48
+    add rsp, 40
+    pop rbx
     pop rbp
     ret
 
 
 ; ---- fs_read_dir() → 0 success, -1 error ----
-; Read directory sectors 1-4 into fs_dir_buf.
+; Read directory sectors into fs_dir_buf.
 ; Stack: push rbp,rbx + sub rsp 40. 8+16+40=64. 64%16=0. Good.
 fs_read_dir:
     push rbp
@@ -691,7 +987,7 @@ fs_read_dir:
 
 
 ; ---- fs_write_dir() → 0 success, -1 error ----
-; Write fs_dir_buf to directory sectors 1-4, then superblock to sector 0.
+; Write fs_dir_buf to directory sectors, then superblock to sector 0.
 ; Stack: push rbp,rbx + sub rsp 40. 8+16+40=64. 64%16=0. Good.
 fs_write_dir:
     push rbp
@@ -767,8 +1063,7 @@ fs_count_active:
 ; Internal. Find active directory entry by name.
 ; RCX = name string
 ; Returns: RAX = pointer to entry in fs_dir_buf, or 0 if not found.
-; Stack: push rbp,rbx,rsi,rdi + sub rsp 32. 8+32+32=72. 72%16=8.
-;   Need sub rsp 40: 8+32+40=80. 80%16=0. Good.
+; Stack: push rbp,rbx,rsi,rdi + sub rsp 40. 8+32+40=80. 80%16=0. Good.
 fs_find:
     push rbp
     mov rbp, rsp
@@ -818,13 +1113,14 @@ fs_find:
 
 
 ; ---- fs_create(name, data, size) → entry index or -1 ----
-; Create a new file. Rejects duplicates.
+; Create or overwrite a file. Uses bitmap for allocation.
 ; Args: RCX = name (string), RDX = data ptr, R8D = size in bytes
 ; Returns: EAX = entry index, or -1 on error
-; Stack: push rbp,rbx,rsi,rdi,r12,r13,r14 + sub rsp 48.
-;   8+56+48=112. 112%16=0. Good.
+; Stack: push rbp,rbx,rsi,rdi,r12,r13,r14,r15 + sub rsp 48.
+;   9 pushes (incl rbp) = 72 bytes. 8+72+48=128. 128%16=0. Good.
 ;   rbx=name, rsi=data, edi=size, r12=entry_ptr, r13d=entry_idx,
-;   r14d=sectors_needed
+;   r14d=sectors_needed, r15d=start_sector
+;   Stack slots: [rsp+0]=current_lba, [rsp+4]=remaining, [rsp+8..15]=data_ptr
 fs_create:
     push rbp
     mov rbp, rsp
@@ -834,6 +1130,7 @@ fs_create:
     push r12
     push r13
     push r14
+    push r15
     sub rsp, 48
 
     mov rbx, rcx            ; save name
@@ -844,11 +1141,11 @@ fs_create:
     cmp dword [rel fs_initialized], 0
     je .fc_no_disk
 
-    ; Check for duplicate name
+    ; Check for existing file (overwrite support)
     mov rcx, rbx
     call fs_find
     test rax, rax
-    jnz .fc_duplicate
+    jnz .fc_overwrite
 
     ; Find first inactive entry
     lea r12, [rel fs_dir_buf]
@@ -863,19 +1160,58 @@ fs_create:
     inc r13d
     jmp .fc_find_slot
 
+.fc_overwrite:
+    ; rax = pointer to existing entry
+    mov r12, rax             ; entry_ptr
+
+    ; Calculate entry index from pointer offset
+    lea rcx, [rel fs_dir_buf]
+    mov rax, r12
+    sub rax, rcx
+    xor edx, edx
+    mov ecx, FS_ENTRY_SIZE
+    div ecx                  ; eax = index
+    mov r13d, eax
+
+    ; Free old sectors: sector_count = (old_size + 511) / 512
+    mov eax, [r12 + DE_SIZE]
+    add eax, 511
+    shr eax, 9
+    test eax, eax
+    jz .fc_got_slot          ; size was 0, nothing to free
+    mov ecx, eax             ; sector_count
+    mov edx, [r12 + DE_START] ; old start_sector
+
+.fc_free_loop:
+    test ecx, ecx
+    jle .fc_got_slot
+    mov [rsp+0], ecx         ; save remaining count
+    mov [rsp+4], edx         ; save current sector
+    mov ecx, edx
+    call fs_bitmap_clear
+    mov ecx, [rsp+0]
+    mov edx, [rsp+4]
+    inc edx
+    dec ecx
+    jmp .fc_free_loop
+
 .fc_got_slot:
-    ; Calculate sectors needed: (size + 511) / 512
+    ; Calculate sectors needed: (size + 511) / 512, min 1
     mov eax, edi
     add eax, 511
     shr eax, 9              ; / 512
+    test eax, eax
+    jnz .fc_sectors_ok
+    mov eax, 1              ; at least 1 sector for empty files
+.fc_sectors_ok:
     mov r14d, eax            ; sectors_needed
 
-    ; Check space: first_free + sectors <= 2048
-    lea rax, [rel fs_superblock]
-    mov eax, [rax + SB_FIRST_FREE]
-    add eax, r14d
-    cmp eax, 2048
-    ja .fc_full
+    ; Allocate contiguous sectors from bitmap
+    mov ecx, r14d
+    call fs_bitmap_alloc_contiguous
+    cmp eax, -1
+    je .fc_full
+    mov r15d, eax            ; start_sector
 
     ; Copy name to entry (max 31 chars + null)
     ; First zero the name field
@@ -884,11 +1220,7 @@ fs_create:
     mov r8d, FS_NAME_LEN
     call herb_memset
 
-    ; Copy name
-    lea rcx, [r12 + DE_NAME]
-    mov rdx, rbx
-    ; Find name length (max 31)
-    push rcx                ; save dest
+    ; Get name length
     mov rcx, rbx
     call herb_strlen
     cmp eax, 31
@@ -896,98 +1228,88 @@ fs_create:
     mov eax, 31
 .fc_name_len_ok:
     mov r8d, eax            ; length to copy
-    pop rcx                 ; restore dest
+    lea rcx, [r12 + DE_NAME]
     mov rdx, rbx            ; source
     call herb_memcpy
 
     ; Set entry fields
-    lea rax, [rel fs_superblock]
-    mov ecx, [rax + SB_FIRST_FREE]
-    mov [r12 + DE_START], ecx        ; start_sector
+    mov [r12 + DE_START], r15d       ; start_sector
     mov [r12 + DE_SIZE], edi         ; size
     mov dword [r12 + DE_FLAGS], 1    ; active
 
-    ; Write data sectors
-    ; Loop: for each sector, write 512 bytes
-    mov eax, [r12 + DE_START]        ; current sector LBA
-    mov ecx, edi                     ; remaining bytes
-    mov rdx, rsi                     ; data ptr
+    ; Mark allocated sectors in bitmap
+    xor ecx, ecx            ; i = 0
+.fc_mark_loop:
+    cmp ecx, r14d
+    jge .fc_mark_done
+    mov [rsp+0], ecx         ; save i
+    lea ecx, [r15d + ecx]   ; sector = start + i
+    call fs_bitmap_set
+    mov ecx, [rsp+0]
+    inc ecx
+    jmp .fc_mark_loop
+.fc_mark_done:
+
+    ; Write data sectors using stack slots (NO push/pop)
+    mov eax, r15d            ; current sector LBA
+    mov ecx, edi             ; remaining bytes
+    mov rdx, rsi             ; data ptr
 
 .fc_write_loop:
     test ecx, ecx
     jle .fc_write_done
 
-    ; Save state before disk_write_sector call
+    ; Save state in stack slots
     mov [rsp+0], eax         ; current LBA
     mov [rsp+4], ecx         ; remaining bytes
-    mov [rsp+8], rdx         ; data ptr (low 32 bits... no, save full)
-    mov [rsp+16], rdx        ; save data ptr (64-bit)
+    mov [rsp+8], rdx         ; data ptr (64-bit)
 
     ; If remaining < 512, copy partial to fs_data_buf with zero pad
     cmp ecx, 512
     jge .fc_write_full
 
     ; Partial last sector: zero fs_data_buf, then copy remaining
-    push rax
-    push rcx
-    push rdx
+    mov [rsp+16], ecx        ; save remaining for memcpy
     lea rcx, [rel fs_data_buf]
     xor edx, edx
     mov r8d, 512
     call herb_memset
-    pop rdx                  ; data ptr
-    pop rcx                  ; remaining
-    pop rax                  ; LBA
 
-    push rax
-    push rcx
-    lea r8, [rcx]            ; r8d = remaining bytes (copy count)
-    mov r8d, ecx
+    mov r8d, [rsp+16]       ; remaining bytes as copy count
     lea rcx, [rel fs_data_buf]
-    ; rdx already = data ptr
+    mov rdx, [rsp+8]        ; data ptr
     call herb_memcpy
-    pop rcx
-    pop rax
 
     ; Write padded sector
-    mov ecx, eax             ; LBA
+    mov ecx, [rsp+0]        ; LBA
     lea rdx, [rel fs_data_buf]
-    push rax
     call disk_write_sector
-    pop rax
     jmp .fc_write_done       ; last sector done
 
 .fc_write_full:
     ; Write full 512-byte sector directly from data ptr
-    mov [rsp+0], eax         ; save LBA again
-    mov [rsp+16], rdx        ; save data ptr
-    mov ecx, eax             ; LBA
-    ; rdx already = data ptr
+    mov ecx, [rsp+0]        ; LBA
+    mov rdx, [rsp+8]        ; data ptr
     call disk_write_sector
 
     ; Restore and advance
     mov eax, [rsp+0]         ; LBA
     mov ecx, [rsp+4]         ; remaining
-    mov rdx, [rsp+16]        ; data ptr
+    mov rdx, [rsp+8]         ; data ptr
     inc eax                  ; next sector
     sub ecx, 512
     add rdx, 512
     jmp .fc_write_loop
 
 .fc_write_done:
-    ; Update superblock: advance first_free
-    lea rax, [rel fs_superblock]
-    mov ecx, [rax + SB_FIRST_FREE]
-    add ecx, r14d
-    mov [rax + SB_FIRST_FREE], ecx
-
     ; Update entry count
     call fs_count_active
     lea rcx, [rel fs_superblock]
     mov [rcx + SB_ENTRY_COUNT], ax
 
-    ; Flush directory + superblock
+    ; Flush directory + bitmap
     call fs_write_dir
+    call fs_write_bitmap
 
     ; Serial: [FS] saved "name" (N bytes)
     lea rcx, [rel str_fs_saved]
@@ -1010,12 +1332,6 @@ fs_create:
     mov eax, -1
     jmp .fc_done
 
-.fc_duplicate:
-    lea rcx, [rel str_fs_err_dup]
-    call serial_print
-    mov eax, -1
-    jmp .fc_done
-
 .fc_dir_full:
     lea rcx, [rel str_fs_err_nodir]
     call serial_print
@@ -1029,6 +1345,7 @@ fs_create:
 
 .fc_done:
     add rsp, 48
+    pop r15
     pop r14
     pop r13
     pop r12
@@ -1046,6 +1363,7 @@ fs_create:
 ; Stack: push rbp,rbx,rsi,rdi,r12 + sub rsp 48.
 ;   8+40+48=96. 96%16=0. Good.
 ;   rbx=entry_ptr, rsi=buffer, edi=max_size, r12d=bytes_to_read
+;   Stack slots: [rsp+0]=total_sectors, [rsp+4]=sector_index
 fs_read:
     push rbp
     mov rbp, rsp
@@ -1080,40 +1398,35 @@ fs_read:
     mov eax, r12d
     add eax, 511
     shr eax, 9
-    ; Read sectors into buffer
-    mov ecx, [rbx + DE_START]    ; start LBA
-    xor edx, edx                ; sector index
+    ; Read sectors into buffer using stack slots (NO push/pop)
+    xor edx, edx                ; sector index = 0
 
 .fr_read_loop:
     cmp edx, eax
     jge .fr_read_done
 
-    ; Save loop state
-    push rax                     ; total sectors
-    push rdx                     ; sector index
+    ; Save loop state in stack slots
+    mov [rsp+0], eax             ; total sectors
+    mov [rsp+4], edx             ; sector index
 
     ; disk_read_sector(start + index, buffer + index*512)
     mov eax, [rbx + DE_START]
-    add eax, edx                ; LBA = start + index
+    add eax, [rsp+4]            ; LBA = start + index
     mov ecx, eax
-    mov rdx, rsi
-    pop rax                     ; get sector index back
-    push rax                    ; re-save it
+    movsxd rax, dword [rsp+4]
     imul rax, 512
-    add rdx, rax                ; buffer offset
-
+    mov rdx, rsi
+    add rdx, rax                ; buffer + index*512
     call disk_read_sector
     test eax, eax
-    jnz .fr_read_error
+    jnz .fr_read_error_clean
 
-    pop rdx                     ; restore sector index
-    pop rax                     ; restore total sectors
+    mov eax, [rsp+0]            ; total sectors
+    mov edx, [rsp+4]            ; sector index
     inc edx
     jmp .fr_read_loop
 
-.fr_read_error:
-    pop rdx
-    pop rax
+.fr_read_error_clean:
     mov eax, -1
     jmp .fr_done
 
@@ -1121,7 +1434,6 @@ fs_read:
     ; Serial: [FS] read "name" (N bytes)
     lea rcx, [rel str_fs_read_hdr]
     call serial_print
-    mov rcx, [rbx + DE_NAME]     ; entry name is at start of entry
     lea rcx, [rbx + DE_NAME]
     call serial_print
     lea rcx, [rel str_fs_read_mid]
@@ -1156,15 +1468,18 @@ fs_read:
 
 
 ; ---- fs_delete(name) → 0 or -1 ----
-; Mark file as inactive. Does NOT reclaim disk space.
+; Mark file as inactive and free its sectors via bitmap.
 ; Args: RCX = name
 ; Returns: EAX = 0 success, -1 error
-; Stack: push rbp,rbx + sub rsp 40. 8+16+40=64. 64%16=0. Good.
+; Stack: push rbp,rbx,rsi,rdi + sub rsp 56. 8+32+56=96. 96%16=0. Good.
+;   rbx=entry_ptr, esi=sector_count, edi=current_sector
 fs_delete:
     push rbp
     mov rbp, rsp
     push rbx
-    sub rsp, 40
+    push rsi
+    push rdi
+    sub rsp, 56
 
     ; Check initialized
     cmp dword [rel fs_initialized], 0
@@ -1176,6 +1491,23 @@ fs_delete:
     jz .fd_not_found
     mov rbx, rax
 
+    ; Free sectors: sector_count = (size + 511) / 512
+    mov eax, [rbx + DE_SIZE]
+    add eax, 511
+    shr eax, 9
+    mov esi, eax             ; sector_count
+    mov edi, [rbx + DE_START] ; start_sector
+
+.fd_free_loop:
+    test esi, esi
+    jle .fd_free_done
+    mov ecx, edi
+    call fs_bitmap_clear
+    inc edi
+    dec esi
+    jmp .fd_free_loop
+
+.fd_free_done:
     ; Clear active flag
     mov dword [rbx + DE_FLAGS], 0
 
@@ -1184,8 +1516,9 @@ fs_delete:
     lea rcx, [rel fs_superblock]
     mov [rcx + SB_ENTRY_COUNT], ax
 
-    ; Flush
+    ; Flush directory + bitmap
     call fs_write_dir
+    call fs_write_bitmap
 
     ; Serial: [FS] deleted "name"
     lea rcx, [rel str_fs_deleted]
@@ -1210,7 +1543,9 @@ fs_delete:
     mov eax, -1
 
 .fd_done:
-    add rsp, 40
+    add rsp, 56
+    pop rdi
+    pop rsi
     pop rbx
     pop rbp
     ret
@@ -1218,8 +1553,7 @@ fs_delete:
 
 ; ---- fs_list() → EAX = active count ----
 ; Print all active files to serial. Returns active count.
-; Stack: push rbp,rbx,rsi + sub rsp 40. 8+24+40=72. 72%16=8.
-;   Need sub rsp 48: 8+24+48=80. 80%16=0. Good.
+; Stack: push rbp,rbx,rsi + sub rsp 48. 8+24+48=80. 80%16=0. Good.
 fs_list:
     push rbp
     mov rbp, rsp
