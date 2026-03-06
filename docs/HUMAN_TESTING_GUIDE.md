@@ -1,6 +1,6 @@
 # HERB OS — Human Testing Guide
 
-**Updated Session 77 — Testing every interaction path**
+**Updated Session 82 — Testing every interaction path**
 
 ## Setup
 
@@ -361,3 +361,31 @@ For each test, tell Claude:
 4. **Any unexpected behavior** (crashes, freezes, wrong process selected)
 
 If something fails, note the exact serial output from the QEMU terminal window — this is the most useful diagnostic information.
+
+---
+
+### Test 14: NIC Boot (Session 82)
+
+**Setup:** Run `mingw32-make run-net` (graphics mode with E1000 NIC).
+
+**Expected serial output:**
+```
+[NET] E1000 found slot=N BAR0=NNNNNNNN IRQ=11
+[NET] MAC=N,N,N,N,N,N IRQ=11 initialized
+```
+
+**Pass if:** NIC detected and initialized without crash. OS boots normally.
+
+---
+
+### Test 15: ARP Request (Session 82)
+
+**Action:** Press `R` key (or whatever hotkey is mapped to ARP).
+
+**Expected serial output:**
+```
+[NET] ARP request sent for 10.0.2.2
+[NET] RX len=N ethertype=NNNN
+```
+
+**Pass if:** ARP sent, and a reply packet received from QEMU's virtual network.
