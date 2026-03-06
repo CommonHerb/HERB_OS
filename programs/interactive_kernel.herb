@@ -23,6 +23,8 @@ type world.GameSignal
 
 type world.GameCtl
 
+type world.NPC
+
 type fs.FileDescriptor
 
 type input.Char
@@ -89,6 +91,7 @@ container world.MOVE_SIG simple world.GameSignal
 container world.GATHER_SIG simple world.GameSignal
 container world.GAME_SIG_DONE simple world.GameSignal
 container world.GAME_STATE slot world.GameCtl
+container world.NPCS simple world.NPC
 container input.CHAR_POOL simple input.Char
 container input.CMDLINE simple input.Char
 container input.INPUT_STATE slot input.InputCtl
@@ -187,8 +190,12 @@ tension world.move_north priority 12
   match player in world.PLAYER
   match tile in world.TILES select first
     where tile.tile_x == player.tile_x && tile.tile_y == player.tile_y - 1
-  guard tile.terrain != 2 && tile.terrain != 3
+  guard tile.terrain != 2 && tile.terrain != 3 && tile.occupied != 1
+  match old_tile in world.TILES select first
+    where old_tile.tile_x == player.tile_x && old_tile.tile_y == player.tile_y
   emit set player tile_y player.tile_y - 1
+  emit set old_tile occupied 0
+  emit set tile occupied 1
   emit move world.consume_game_sig sig to world.GAME_SIG_DONE
 
 tension world.move_south priority 12
@@ -197,8 +204,12 @@ tension world.move_south priority 12
   match player in world.PLAYER
   match tile in world.TILES select first
     where tile.tile_x == player.tile_x && tile.tile_y == player.tile_y + 1
-  guard tile.terrain != 2 && tile.terrain != 3
+  guard tile.terrain != 2 && tile.terrain != 3 && tile.occupied != 1
+  match old_tile in world.TILES select first
+    where old_tile.tile_x == player.tile_x && old_tile.tile_y == player.tile_y
   emit set player tile_y player.tile_y + 1
+  emit set old_tile occupied 0
+  emit set tile occupied 1
   emit move world.consume_game_sig sig to world.GAME_SIG_DONE
 
 tension world.move_east priority 12
@@ -207,8 +218,12 @@ tension world.move_east priority 12
   match player in world.PLAYER
   match tile in world.TILES select first
     where tile.tile_x == player.tile_x + 1 && tile.tile_y == player.tile_y
-  guard tile.terrain != 2 && tile.terrain != 3
+  guard tile.terrain != 2 && tile.terrain != 3 && tile.occupied != 1
+  match old_tile in world.TILES select first
+    where old_tile.tile_x == player.tile_x && old_tile.tile_y == player.tile_y
   emit set player tile_x player.tile_x + 1
+  emit set old_tile occupied 0
+  emit set tile occupied 1
   emit move world.consume_game_sig sig to world.GAME_SIG_DONE
 
 tension world.move_west priority 12
@@ -217,8 +232,12 @@ tension world.move_west priority 12
   match player in world.PLAYER
   match tile in world.TILES select first
     where tile.tile_x == player.tile_x - 1 && tile.tile_y == player.tile_y
-  guard tile.terrain != 2 && tile.terrain != 3
+  guard tile.terrain != 2 && tile.terrain != 3 && tile.occupied != 1
+  match old_tile in world.TILES select first
+    where old_tile.tile_x == player.tile_x && old_tile.tile_y == player.tile_y
   emit set player tile_x player.tile_x - 1
+  emit set old_tile occupied 0
+  emit set tile occupied 1
   emit move world.consume_game_sig sig to world.GAME_SIG_DONE
 
 tension world.do_gather priority 12
@@ -227,6 +246,7 @@ tension world.do_gather priority 12
   match tree in world.TREES select first
     where tree.tile_x == player.tile_x && tree.tile_y == player.tile_y
   emit move world.gather_resource tree to world.TREE_GATHERED
+  emit set player wood player.wood + 1
   emit move world.consume_game_sig sig to world.GAME_SIG_DONE
 
 tension world.cleanup_move priority 5
@@ -236,6 +256,108 @@ tension world.cleanup_move priority 5
 tension world.cleanup_gather priority 5
   match sig in world.GATHER_SIG select first
   emit move world.consume_game_sig sig to world.GAME_SIG_DONE
+
+; NPC wander — attempt move north (dir==0)
+tension world.npc_wander_n priority 22
+  match tick in proc.TIMER_SIG select first
+  match npc in world.NPCS select first
+    where npc.wander_dir == 0 && npc.moved != 1
+  match tile in world.TILES select first
+    where tile.tile_x == npc.tile_x && tile.tile_y == npc.tile_y - 1
+  guard tile.terrain != 2 && tile.terrain != 3 && tile.occupied != 1
+  match old_tile in world.TILES select first
+    where old_tile.tile_x == npc.tile_x && old_tile.tile_y == npc.tile_y
+  emit set npc tile_y npc.tile_y - 1
+  emit set npc wander_dir 1
+  emit set npc moved 1
+  emit set old_tile occupied 0
+  emit set tile occupied 1
+
+; NPC wander — attempt move south (dir==1)
+tension world.npc_wander_s priority 22
+  match tick in proc.TIMER_SIG select first
+  match npc in world.NPCS select first
+    where npc.wander_dir == 1 && npc.moved != 1
+  match tile in world.TILES select first
+    where tile.tile_x == npc.tile_x && tile.tile_y == npc.tile_y + 1
+  guard tile.terrain != 2 && tile.terrain != 3 && tile.occupied != 1
+  match old_tile in world.TILES select first
+    where old_tile.tile_x == npc.tile_x && old_tile.tile_y == npc.tile_y
+  emit set npc tile_y npc.tile_y + 1
+  emit set npc wander_dir 2
+  emit set npc moved 1
+  emit set old_tile occupied 0
+  emit set tile occupied 1
+
+; NPC wander — attempt move east (dir==2)
+tension world.npc_wander_e priority 22
+  match tick in proc.TIMER_SIG select first
+  match npc in world.NPCS select first
+    where npc.wander_dir == 2 && npc.moved != 1
+  match tile in world.TILES select first
+    where tile.tile_x == npc.tile_x + 1 && tile.tile_y == npc.tile_y
+  guard tile.terrain != 2 && tile.terrain != 3 && tile.occupied != 1
+  match old_tile in world.TILES select first
+    where old_tile.tile_x == npc.tile_x && old_tile.tile_y == npc.tile_y
+  emit set npc tile_x npc.tile_x + 1
+  emit set npc wander_dir 3
+  emit set npc moved 1
+  emit set old_tile occupied 0
+  emit set tile occupied 1
+
+; NPC wander — attempt move west (dir==3)
+tension world.npc_wander_w priority 22
+  match tick in proc.TIMER_SIG select first
+  match npc in world.NPCS select first
+    where npc.wander_dir == 3 && npc.moved != 1
+  match tile in world.TILES select first
+    where tile.tile_x == npc.tile_x - 1 && tile.tile_y == npc.tile_y
+  guard tile.terrain != 2 && tile.terrain != 3 && tile.occupied != 1
+  match old_tile in world.TILES select first
+    where old_tile.tile_x == npc.tile_x && old_tile.tile_y == npc.tile_y
+  emit set npc tile_x npc.tile_x - 1
+  emit set npc wander_dir 0
+  emit set npc moved 1
+  emit set old_tile occupied 0
+  emit set tile occupied 1
+
+; NPC wander blocked at dir 0 — try dir 1 next
+tension world.npc_blocked_0 priority 21
+  match tick in proc.TIMER_SIG select first
+  match npc in world.NPCS select first
+    where npc.moved != 1 && npc.wander_dir == 0
+  emit set npc wander_dir 1
+  emit set npc moved 1
+
+; NPC wander blocked at dir 1 — try dir 2 next
+tension world.npc_blocked_1 priority 21
+  match tick in proc.TIMER_SIG select first
+  match npc in world.NPCS select first
+    where npc.moved != 1 && npc.wander_dir == 1
+  emit set npc wander_dir 2
+  emit set npc moved 1
+
+; NPC wander blocked at dir 2 — try dir 3 next
+tension world.npc_blocked_2 priority 21
+  match tick in proc.TIMER_SIG select first
+  match npc in world.NPCS select first
+    where npc.moved != 1 && npc.wander_dir == 2
+  emit set npc wander_dir 3
+  emit set npc moved 1
+
+; NPC wander blocked at dir 3 — try dir 0 next
+tension world.npc_blocked_3 priority 21
+  match tick in proc.TIMER_SIG select first
+  match npc in world.NPCS select first
+    where npc.moved != 1 && npc.wander_dir == 3
+  emit set npc wander_dir 0
+  emit set npc moved 1
+
+; NPC reset moved flag
+tension world.npc_reset_moved priority 1
+  match npc in world.NPCS select first
+    where npc.moved == 1
+  emit set npc moved 0
 
 tension fs.do_open priority 12
   match sig in proc.OPEN_SIG
@@ -893,262 +1015,327 @@ entity hero world.Player in world.PLAYER
   prop tile_x 3
   prop tile_y 3
   prop hp 10
+  prop wood 0
 entity T00 world.TileInfo in world.TILES
   prop tile_x 0
   prop tile_y 0
   prop terrain 0
+  prop occupied 0
 entity T10 world.TileInfo in world.TILES
   prop tile_x 1
   prop tile_y 0
   prop terrain 0
+  prop occupied 1
 entity T20 world.TileInfo in world.TILES
   prop tile_x 2
   prop tile_y 0
   prop terrain 0
+  prop occupied 0
 entity T30 world.TileInfo in world.TILES
   prop tile_x 3
   prop tile_y 0
   prop terrain 0
+  prop occupied 0
 entity T40 world.TileInfo in world.TILES
   prop tile_x 4
   prop tile_y 0
   prop terrain 0
+  prop occupied 0
 entity T50 world.TileInfo in world.TILES
   prop tile_x 5
   prop tile_y 0
   prop terrain 1
+  prop occupied 0
 entity T60 world.TileInfo in world.TILES
   prop tile_x 6
   prop tile_y 0
   prop terrain 1
+  prop occupied 0
 entity T70 world.TileInfo in world.TILES
   prop tile_x 7
   prop tile_y 0
   prop terrain 0
+  prop occupied 0
 entity T01 world.TileInfo in world.TILES
   prop tile_x 0
   prop tile_y 1
   prop terrain 0
+  prop occupied 0
 entity T11 world.TileInfo in world.TILES
   prop tile_x 1
   prop tile_y 1
   prop terrain 0
+  prop occupied 0
 entity T21 world.TileInfo in world.TILES
   prop tile_x 2
   prop tile_y 1
   prop terrain 1
+  prop occupied 0
 entity T31 world.TileInfo in world.TILES
   prop tile_x 3
   prop tile_y 1
   prop terrain 1
+  prop occupied 0
 entity T41 world.TileInfo in world.TILES
   prop tile_x 4
   prop tile_y 1
   prop terrain 0
+  prop occupied 0
 entity T51 world.TileInfo in world.TILES
   prop tile_x 5
   prop tile_y 1
   prop terrain 0
+  prop occupied 0
 entity T61 world.TileInfo in world.TILES
   prop tile_x 6
   prop tile_y 1
   prop terrain 1
+  prop occupied 0
 entity T71 world.TileInfo in world.TILES
   prop tile_x 7
   prop tile_y 1
   prop terrain 0
+  prop occupied 0
 entity T02 world.TileInfo in world.TILES
   prop tile_x 0
   prop tile_y 2
   prop terrain 0
+  prop occupied 0
 entity T12 world.TileInfo in world.TILES
   prop tile_x 1
   prop tile_y 2
   prop terrain 0
+  prop occupied 0
 entity T22 world.TileInfo in world.TILES
   prop tile_x 2
   prop tile_y 2
   prop terrain 1
+  prop occupied 0
 entity T32 world.TileInfo in world.TILES
   prop tile_x 3
   prop tile_y 2
   prop terrain 1
+  prop occupied 0
 entity T42 world.TileInfo in world.TILES
   prop tile_x 4
   prop tile_y 2
   prop terrain 0
+  prop occupied 0
 entity T52 world.TileInfo in world.TILES
   prop tile_x 5
   prop tile_y 2
   prop terrain 0
+  prop occupied 0
 entity T62 world.TileInfo in world.TILES
   prop tile_x 6
   prop tile_y 2
   prop terrain 2
+  prop occupied 0
 entity T72 world.TileInfo in world.TILES
   prop tile_x 7
   prop tile_y 2
   prop terrain 2
+  prop occupied 0
 entity T03 world.TileInfo in world.TILES
   prop tile_x 0
   prop tile_y 3
   prop terrain 0
+  prop occupied 0
 entity T13 world.TileInfo in world.TILES
   prop tile_x 1
   prop tile_y 3
   prop terrain 0
+  prop occupied 0
 entity T23 world.TileInfo in world.TILES
   prop tile_x 2
   prop tile_y 3
   prop terrain 0
+  prop occupied 0
 entity T33 world.TileInfo in world.TILES
   prop tile_x 3
   prop tile_y 3
   prop terrain 0
+  prop occupied 1
 entity T43 world.TileInfo in world.TILES
   prop tile_x 4
   prop tile_y 3
   prop terrain 0
+  prop occupied 0
 entity T53 world.TileInfo in world.TILES
   prop tile_x 5
   prop tile_y 3
   prop terrain 0
+  prop occupied 0
 entity T63 world.TileInfo in world.TILES
   prop tile_x 6
   prop tile_y 3
   prop terrain 2
+  prop occupied 0
 entity T73 world.TileInfo in world.TILES
   prop tile_x 7
   prop tile_y 3
   prop terrain 2
+  prop occupied 0
 entity T04 world.TileInfo in world.TILES
   prop tile_x 0
   prop tile_y 4
   prop terrain 0
+  prop occupied 0
 entity T14 world.TileInfo in world.TILES
   prop tile_x 1
   prop tile_y 4
   prop terrain 3
+  prop occupied 0
 entity T24 world.TileInfo in world.TILES
   prop tile_x 2
   prop tile_y 4
   prop terrain 3
+  prop occupied 0
 entity T34 world.TileInfo in world.TILES
   prop tile_x 3
   prop tile_y 4
   prop terrain 0
+  prop occupied 0
 entity T44 world.TileInfo in world.TILES
   prop tile_x 4
   prop tile_y 4
   prop terrain 0
+  prop occupied 0
 entity T54 world.TileInfo in world.TILES
   prop tile_x 5
   prop tile_y 4
   prop terrain 0
+  prop occupied 0
 entity T64 world.TileInfo in world.TILES
   prop tile_x 6
   prop tile_y 4
   prop terrain 0
+  prop occupied 0
 entity T74 world.TileInfo in world.TILES
   prop tile_x 7
   prop tile_y 4
   prop terrain 0
+  prop occupied 0
 entity T05 world.TileInfo in world.TILES
   prop tile_x 0
   prop tile_y 5
   prop terrain 0
+  prop occupied 0
 entity T15 world.TileInfo in world.TILES
   prop tile_x 1
   prop tile_y 5
   prop terrain 3
+  prop occupied 0
 entity T25 world.TileInfo in world.TILES
   prop tile_x 2
   prop tile_y 5
   prop terrain 0
+  prop occupied 0
 entity T35 world.TileInfo in world.TILES
   prop tile_x 3
   prop tile_y 5
   prop terrain 0
+  prop occupied 0
 entity T45 world.TileInfo in world.TILES
   prop tile_x 4
   prop tile_y 5
   prop terrain 1
+  prop occupied 0
 entity T55 world.TileInfo in world.TILES
   prop tile_x 5
   prop tile_y 5
   prop terrain 1
+  prop occupied 0
 entity T65 world.TileInfo in world.TILES
   prop tile_x 6
   prop tile_y 5
   prop terrain 0
+  prop occupied 0
 entity T75 world.TileInfo in world.TILES
   prop tile_x 7
   prop tile_y 5
   prop terrain 0
+  prop occupied 0
 entity T06 world.TileInfo in world.TILES
   prop tile_x 0
   prop tile_y 6
   prop terrain 0
+  prop occupied 0
 entity T16 world.TileInfo in world.TILES
   prop tile_x 1
   prop tile_y 6
   prop terrain 0
+  prop occupied 0
 entity T26 world.TileInfo in world.TILES
   prop tile_x 2
   prop tile_y 6
   prop terrain 0
+  prop occupied 0
 entity T36 world.TileInfo in world.TILES
   prop tile_x 3
   prop tile_y 6
   prop terrain 0
+  prop occupied 0
 entity T46 world.TileInfo in world.TILES
   prop tile_x 4
   prop tile_y 6
   prop terrain 1
+  prop occupied 0
 entity T56 world.TileInfo in world.TILES
   prop tile_x 5
   prop tile_y 6
   prop terrain 1
+  prop occupied 0
 entity T66 world.TileInfo in world.TILES
   prop tile_x 6
   prop tile_y 6
   prop terrain 0
+  prop occupied 0
 entity T76 world.TileInfo in world.TILES
   prop tile_x 7
   prop tile_y 6
   prop terrain 0
+  prop occupied 0
 entity T07 world.TileInfo in world.TILES
   prop tile_x 0
   prop tile_y 7
   prop terrain 0
+  prop occupied 0
 entity T17 world.TileInfo in world.TILES
   prop tile_x 1
   prop tile_y 7
   prop terrain 0
+  prop occupied 0
 entity T27 world.TileInfo in world.TILES
   prop tile_x 2
   prop tile_y 7
   prop terrain 0
+  prop occupied 0
 entity T37 world.TileInfo in world.TILES
   prop tile_x 3
   prop tile_y 7
   prop terrain 0
+  prop occupied 0
 entity T47 world.TileInfo in world.TILES
   prop tile_x 4
   prop tile_y 7
   prop terrain 0
+  prop occupied 0
 entity T57 world.TileInfo in world.TILES
   prop tile_x 5
   prop tile_y 7
   prop terrain 0
+  prop occupied 0
 entity T67 world.TileInfo in world.TILES
   prop tile_x 6
   prop tile_y 7
   prop terrain 0
+  prop occupied 1
 entity T77 world.TileInfo in world.TILES
   prop tile_x 7
   prop tile_y 7
   prop terrain 0
+  prop occupied 0
 entity tree_5_0 world.Tree in world.TREES
   prop tile_x 5
   prop tile_y 0
@@ -1185,6 +1372,18 @@ entity tree_7_4 world.Tree in world.TREES
 entity tree_3_5 world.Tree in world.TREES
   prop tile_x 3
   prop tile_y 5
+entity npc_guard world.NPC in world.NPCS
+  prop tile_x 1
+  prop tile_y 0
+  prop behavior 1
+  prop wander_dir 0
+  prop moved 0
+entity npc_scout world.NPC in world.NPCS
+  prop tile_x 6
+  prop tile_y 7
+  prop behavior 1
+  prop wander_dir 2
+  prop moved 0
 entity c00 input.Char in input.CHAR_POOL
   prop ascii 0
   prop pos 0
