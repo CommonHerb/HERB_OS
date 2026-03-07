@@ -1,6 +1,6 @@
 # HERB OS — Human Testing Guide
 
-**Updated Session 82 — Testing every interaction path**
+**Updated Session 84 — Testing every interaction path**
 
 ## Setup
 
@@ -76,6 +76,7 @@
 | `save <name>` | Save text to disk |
 | `read <name>` | Read file from disk |
 | `files` | List saved files |
+| `ping` | Send ICMP echo to gateway (10.0.2.2) — requires NIC (`make run-net`) |
 
 ---
 
@@ -389,3 +390,26 @@ If something fails, note the exact serial output from the QEMU terminal window �
 ```
 
 **Pass if:** ARP sent, and a reply packet received from QEMU's virtual network.
+
+---
+
+### Test 16: Ping (Session 84)
+
+**Setup:** Run `mingw32-make run-net` (graphics mode with E1000 NIC).
+
+**Action:**
+1. Wait for boot (ARP resolves automatically)
+2. Press `/` to enter shell mode
+3. Type `ping` and press Enter
+
+**Expected serial output:**
+```
+[PING] sent to 10.0.2.2 seq=1
+[IP] from 10.0.2.2 proto=1 len=74
+[PING] reply from 10.0.2.2 seq=1
+[PING] time=0ms
+```
+
+**Note:** An auto-ping is also sent at boot (~1.5s after start). You should see the auto-ping lines in serial even without typing anything.
+
+**Pass if:** Ping sent, IPv4 reply received, round-trip logged.

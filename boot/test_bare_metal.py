@@ -1742,16 +1742,51 @@ def run_tests(image_path, net=False):
             m = re.search(r"\[NET\] MMIO mapped", serial)
             t.check("MMIO region mapped", m is not None)
 
-            # ---- TEST: ARP Request ----
-            print("\n--- Test: ARP Request ---")
-            # Send 'q' key as ARP trigger (we'll wire this up)
-            # Actually, let's use a shell command instead
-            # For now, just check that NIC init completed without crashing
-            # and the system is responsive
+            # ---- TEST: ARP Request Sent ----
+            print("\n--- Test: ARP Request Sent ---")
+            m = re.search(r"\[ARP\] request: who has", serial)
+            t.check("ARP request sent for gateway", m is not None)
+
+            # ---- TEST: ARP Reply Received ----
+            print("\n--- Test: ARP Reply Received ---")
+            # Wait a moment for ARP reply to arrive from QEMU's user-mode network
+            time.sleep(2)
+            serial = t.get_serial()
+            m = re.search(r"\[ARP\] reply:.*is at", serial)
+            t.check("ARP reply received and cached", m is not None)
+
+            # ---- TEST: System Responsive ----
+            print("\n--- Test: System Responsive ---")
             pos = t.serial_pos()
             t.send_key('t')
             m = t.wait_for(r"\[TIMER\]", after=pos, timeout=5)
             t.check("System responsive after NIC init", m is not None)
+
+            # ---- PING Tests (Session 84) ----
+            # Auto-ping is sent at tick 10 (after ARP resolves).
+            # No keyboard input needed — just check serial output.
+            print("\n" + "=" * 60)
+            print("Ping Tests (Session 84)")
+            print("=" * 60)
+
+            # Wait for auto-ping to complete (sent at tick 10)
+            time.sleep(3)
+            serial = t.get_serial()
+
+            # ---- TEST: Ping Sent ----
+            print("\n--- Test: Ping Sent ---")
+            m = re.search(r"\[PING\] sent to 10\.0\.2\.2 seq=1", serial)
+            t.check("PING echo request sent (auto-ping)", m is not None)
+
+            # ---- TEST: IP Packet Received ----
+            print("\n--- Test: IP Packet Received ---")
+            m = re.search(r"\[IP\] from 10\.0\.2\.2 proto=1", serial)
+            t.check("IPv4 ICMP packet received from gateway", m is not None)
+
+            # ---- TEST: Ping Reply Received ----
+            print("\n--- Test: Ping Reply Received ---")
+            m = re.search(r"\[PING\] reply from 10\.0\.2\.2 seq=1", serial)
+            t.check("PING echo reply received", m is not None)
 
         else:
             print("\n(NIC tests skipped — use --net flag)")

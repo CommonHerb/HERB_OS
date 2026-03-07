@@ -91,6 +91,10 @@ extern net_init
 extern net_send_arp_request
 extern net_poll_rx
 extern net_present
+extern net_resolve_gateway
+extern icmp_send_echo
+extern net_gateway_ip
+extern arp_cache_lookup
 
 ; Disk + filesystem (from herb_disk.asm)
 extern disk_identify
@@ -214,6 +218,7 @@ extern ed_win_id
 ; ============================================================
 
 global timer_count, total_ops, signal_counter, process_counter
+global ping_pending, ping_tick
 global buffer_eid, last_action, last_key_name
 global mouse_x, mouse_y, mouse_cycle, mouse_packet
 global mouse_buttons, mouse_left_clicked, mouse_left_released, mouse_moved
@@ -379,6 +384,11 @@ mouse_moved:        dd 0
 cursor_eid:         dd -1
 selected_tension_idx: dd -1
 timer_count:        dd 0
+net_arp_retried:    dd 0
+ping_pending:       dd 0
+ping_seq:           dd 0
+ping_tick:          dd 0
+ping_auto_sent:     dd 0
 total_ops:          dd 0
 signal_counter:     dd 0
 process_counter:    dd 0
@@ -935,6 +945,7 @@ str_la_text_mode:   db "Text mode (/ to type, Enter to submit, ESC to cancel)", 
 str_la_unknown_key: db "Unknown key (scan=0x%d)", 0
 str_la_move:        db "Move %s -> (%d,%d)", 0
 str_la_move_block:  db "Blocked %s at (%d,%d)", 0
+str_la_ping:        db "Ping seq=%d", 0
 str_la_gather_yes:  db "Gathered! wood=%d", 0
 str_la_gather_no:   db "Nothing here (wood=%d)", 0
 str_la_timer:       db "Timer signal %s -> %d ops", 0
@@ -2357,6 +2368,14 @@ kernel_main:
 
     call pic_remap
 
+    ; Unmask IRQ11 (E1000 NIC) on slave PIC if NIC present
+    cmp dword [rel net_present], 0
+    je .skip_nic_unmask
+    in al, 0xA1                     ; read slave PIC mask
+    and al, ~(1 << 3)              ; clear bit 3 = unmask IRQ11
+    out 0xA1, al
+.skip_nic_unmask:
+
     ; pit_init(100)
     mov ecx, 100
     call pit_init
@@ -2368,6 +2387,12 @@ kernel_main:
 
     ; hw_sti()
     call hw_sti
+
+    ; Gateway ARP request sent by net_resolve_gateway (non-blocking)
+    cmp dword [rel net_present], 0
+    je .skip_gateway
+    call net_resolve_gateway
+.skip_gateway:
 
     ; ================================================================
     ; INITIAL DISPLAY
@@ -2544,7 +2569,7 @@ kernel_main:
 
     ; if (mouse_packets_processed > 0)
     test r12d, r12d
-    jz .mainloop
+    jz .after_mouse
 
 %ifdef GRAPHICS_MODE
     ; Update cursor position for rendering
@@ -2866,8 +2891,44 @@ kernel_main:
 .no_mouse_move:
 %endif  ; GRAPHICS_MODE
 
+.after_mouse:
     ; ---- Network: poll for received packets ----
     call net_poll_rx
+
+    ; ---- ARP retry: resend once after ~1s (100 ticks) ----
+    cmp dword [rel net_present], 0
+    je .no_arp_retry
+    cmp dword [rel net_arp_retried], 0
+    jne .no_arp_retry
+    mov eax, [rel timer_count]
+    cmp eax, 5                      ; retry after 5 ticks
+    jb .no_arp_retry
+    mov dword [rel net_arp_retried], 1
+    call net_send_arp_request
+.no_arp_retry:
+
+    ; Auto-ping after ARP resolved (tick >= 15, giving ARP time to resolve)
+    cmp dword [rel net_present], 0
+    je .no_auto_ping
+    cmp dword [rel ping_auto_sent], 0
+    jne .no_auto_ping
+    mov eax, [rel timer_count]
+    cmp eax, 15
+    jb .no_auto_ping
+    ; Verify gateway MAC is cached before sending
+    mov ecx, [rel net_gateway_ip]
+    call arp_cache_lookup
+    test rax, rax
+    jz .no_auto_ping               ; ARP not resolved yet, try next tick
+    mov dword [rel ping_auto_sent], 1
+    mov dword [rel ping_pending], 1
+    mov eax, [rel timer_count]
+    mov [rel ping_tick], eax
+    mov dword [rel ping_seq], 1
+    mov ecx, [rel net_gateway_ip]
+    mov edx, 1                      ; seq=1
+    call icmp_send_echo
+.no_auto_ping:
 
     jmp .mainloop
 
@@ -5355,7 +5416,7 @@ post_dispatch:
 .pd_shell_action:
     call handle_shell_action
 
-    ; Switch on cmd_id: 1=kill, 6=block, 7=unblock, 11=save, 12=read, 13=files
+    ; Switch on cmd_id: 1=kill, 6=block, 7=unblock, 11=save, 12=read, 13=files, 17=ping
     cmp r12d, 1
     je .pd_kill
     cmp r12d, 6
@@ -5374,6 +5435,8 @@ post_dispatch:
     je .pd_esave
     cmp r12d, 16
     je .pd_eload
+    cmp r12d, 17
+    je .pd_ping
     jmp .pd_report
 
 .pd_kill:
@@ -6134,6 +6197,27 @@ post_dispatch:
 .pd_eload_no_disk:
     lea rcx, [rel str_fs_nodisk]
     call serial_print
+    jmp .pd_report
+
+.pd_ping:
+    ; Increment sequence counter
+    mov eax, [rel ping_seq]
+    inc eax
+    mov [rel ping_seq], eax
+    ; Set pending and record tick
+    mov dword [rel ping_pending], 1
+    mov ecx, [rel timer_count]
+    mov [rel ping_tick], ecx
+    ; icmp_send_echo(dst_ip=gateway, seq=ping_seq)
+    mov ecx, [rel net_gateway_ip]
+    mov edx, eax                    ; sequence
+    call icmp_send_echo
+    ; Update last_action
+    lea rcx, [rel last_action]
+    mov edx, 80
+    lea r8, [rel str_la_ping]
+    mov r9d, [rel ping_seq]
+    call herb_snprintf
     jmp .pd_report
 
 .pd_report:

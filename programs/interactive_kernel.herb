@@ -1489,6 +1489,9 @@ entity tcmd_esave input.TextCmd in input.TEXTCMD
 entity tcmd_eload input.TextCmd in input.TEXTCMD
   prop text_key 25964
   prop cmd_id 16
+entity tcmd_ping input.TextCmd in input.TEXTCMD
+  prop text_key 28777
+  prop cmd_id 17
 entity help_edit display.HelpCmd in display.HELP_TEXT
   prop order 11
   prop cmd_text "edit"
