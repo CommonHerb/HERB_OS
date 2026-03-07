@@ -34,6 +34,7 @@ global mouse_ring_tail
 
 ; NIC flag (from herb_net.asm)
 extern net_rx_flag
+extern net_bar0
 
 ; ============================================================
 ; ENTRY POINT
@@ -157,6 +158,13 @@ e1000_isr_stub:
     push rax
     push rdi
 
+    ; Read E1000 ICR to acknowledge interrupt (clears cause bits)
+    mov rdi, [rel net_bar0]
+    test rdi, rdi
+    jz .e1000_isr_skip
+    mov eax, [rdi + 0xC0]          ; ICR read clears interrupt cause
+
+.e1000_isr_skip:
     ; Set net_rx_flag = 1
     lea rdi, [rel net_rx_flag]
     mov dword [rdi], 1

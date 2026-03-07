@@ -14,10 +14,18 @@ default rel
 global net_init
 global net_send
 global net_send_arp_request
+global arp_send_request
+global arp_cache_lookup
+global net_resolve_gateway
 global net_poll_rx
 global net_present
 global net_rx_flag
 global net_mac
+global net_our_ip
+global net_gateway_ip
+global net_bar0
+global ip_send
+global icmp_send_echo
 
 ; ============================================================
 ; EXTERNS
@@ -26,6 +34,9 @@ extern hw_pci_read          ; herb_hw.asm: (bus=CL, slot=DL, func=R8B, offset=R9
 extern serial_print         ; herb_hw.asm: (RCX=str)
 extern herb_snprintf        ; herb_freestanding.asm
 extern herb_memset          ; herb_freestanding.asm
+extern ping_pending         ; herb_kernel.asm: cleared when reply received
+extern ping_tick            ; herb_kernel.asm: tick when ping was sent
+extern timer_count          ; herb_kernel.asm: current tick count
 
 ; ============================================================
 ; E1000 REGISTER OFFSETS
@@ -56,7 +67,10 @@ CTRL_SLU        equ (1 << 6)   ; Set Link Up
 
 ; RCTL bits
 RCTL_EN         equ (1 << 1)
+RCTL_UPE        equ (1 << 3)   ; Unicast Promiscuous Enable
+RCTL_MPE        equ (1 << 4)   ; Multicast Promiscuous Enable
 RCTL_BAM        equ (1 << 15)  ; Broadcast Accept Mode
+RCTL_SECRC      equ (1 << 26)  ; Strip Ethernet CRC
 ; BSIZE bits clear = 2048 byte buffers
 
 ; TCTL bits
@@ -190,6 +204,7 @@ net_pci_scan:
     lea rcx, [rel net_msg_buf]
     call serial_print
 
+    mov [rel net_pci_slot], esi
     mov dword [rel net_present], 1
     xor eax, eax                    ; return 0 = found
     jmp .scan_done
@@ -397,8 +412,9 @@ net_e1000_init:
     xor edx, edx                   ; head = 0
     call e1000_write
 
+    ; NOTE: RDT set AFTER RCTL enable (per E1000 spec)
     mov ecx, E1000_RDT
-    mov edx, RX_DESC_COUNT - 1      ; tail = 31
+    xor edx, edx                   ; tail = 0 initially
     call e1000_write
 
     ; --- Setup TX descriptors ---
@@ -431,9 +447,14 @@ net_e1000_init:
     xor edx, edx
     call e1000_write
 
-    ; --- Enable RX: RCTL = EN | BAM | BSIZE_2048 ---
+    ; --- Enable RX: RCTL = EN | BAM | SECRC ---
     mov ecx, E1000_RCTL
-    mov edx, RCTL_EN | RCTL_BAM     ; BSIZE bits clear = 2048
+    mov edx, RCTL_EN | RCTL_BAM | RCTL_SECRC
+    call e1000_write
+
+    ; Now set RDT to make descriptors available (must be after RCTL enable)
+    mov ecx, E1000_RDT
+    mov edx, RX_DESC_COUNT - 1      ; tail = 31
     call e1000_write
 
     ; --- Enable TX: TCTL = EN | PSP | CT=0x10 | COLD=0x40 ---
@@ -453,6 +474,26 @@ net_e1000_init:
     mov edx, eax
     mov ecx, E1000_CTRL
     call e1000_write
+
+    ; --- Re-enable PCI bus mastering (may be cleared by device reset) ---
+    ; Read PCI command register, set bit 2, also set MMIO enable (bit 1) and IO (bit 0)
+    xor ecx, ecx                   ; bus 0
+    mov edx, [rel net_pci_slot]
+    xor r8d, r8d                    ; func 0
+    mov r9d, 0x04                   ; command register
+    call hw_pci_read
+    or eax, 0x07                    ; bits 0,1,2: IO + Memory + Bus Master
+    mov r12d, eax                   ; save target value
+
+    ; Write PCI config space — 32-bit write to trigger QEMU PCI config handler
+    mov eax, [rel net_pci_slot]
+    shl eax, 11
+    or eax, 0x80000004
+    mov dx, 0x0CF8
+    out dx, eax
+    mov eax, r12d
+    mov dx, 0x0CFC
+    out dx, eax                     ; write 32-bit (triggers QEMU PCI config handler)
 
     ; --- Print MAC address (byte by byte) ---
     lea rcx, [rel str_net_mac_prefix]
@@ -513,6 +554,11 @@ net_init:
 
     call net_map_mmio
     call net_e1000_init
+
+    ; Set IP config
+    mov dword [rel net_our_ip], 0x0F02000A      ; 10.0.2.15
+    mov dword [rel net_gateway_ip], 0x0202000A   ; 10.0.2.2
+    mov dword [rel net_subnet_mask], 0x00FFFFFF  ; 255.255.255.0
 
     ; Return IRQ number in EAX for IDT setup
     mov eax, [rel net_irq]
@@ -623,16 +669,39 @@ net_send:
 
 ; ============================================================
 ; net_send_arp_request()
-; Build and send a broadcast ARP "who-has 10.0.2.2"
+; Backward-compat wrapper: sends ARP request for gateway IP
 ; ============================================================
 net_send_arp_request:
     push rbp
     mov rbp, rsp
-    push rbx
-    sub rsp, 40                     ; shadow(32) + 8(align)
+    sub rsp, 32                     ; shadow
 
     cmp dword [rel net_present], 0
-    je .arp_skip
+    je .legacy_arp_skip
+
+    mov ecx, [rel net_gateway_ip]
+    call arp_send_request
+
+.legacy_arp_skip:
+    add rsp, 32
+    pop rbp
+    ret
+
+; ============================================================
+; arp_send_request(ECX=target_ip)
+; Build and send a broadcast ARP "who-has" for target_ip
+; ============================================================
+arp_send_request:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    sub rsp, 48                     ; shadow(32) + 16(align)
+    ; 8(ret)+8(rbp)+32(push)+48(sub)=96, 96%16=0 ✓
+
+    mov r12d, ecx                   ; save target_ip
 
     ; Build ARP packet in net_arp_buf (42 bytes)
     lea rdi, [rel net_arp_buf]
@@ -694,11 +763,9 @@ net_send_arp_request:
     mov al, [rsi+5]
     mov [rdi+27], al
 
-    ; Sender IP: 10.0.2.15
-    mov byte [rdi+28], 10
-    mov byte [rdi+29], 0
-    mov byte [rdi+30], 2
-    mov byte [rdi+31], 15
+    ; Sender IP: from config
+    mov eax, [rel net_our_ip]
+    mov [rdi+28], eax               ; 4 bytes, network order in memory
 
     ; Target MAC: 00:00:00:00:00:00
     xor eax, eax
@@ -709,11 +776,8 @@ net_send_arp_request:
     mov [rdi+36], al
     mov [rdi+37], al
 
-    ; Target IP: 10.0.2.2
-    mov byte [rdi+38], 10
-    mov byte [rdi+39], 0
-    mov byte [rdi+40], 2
-    mov byte [rdi+41], 2
+    ; Target IP: from param
+    mov [rdi+38], r12d              ; 4 bytes
 
     ; Send it
     lea rcx, [rel net_arp_buf]
@@ -721,22 +785,517 @@ net_send_arp_request:
     call net_send
 
     test eax, eax
-    jnz .arp_fail
+    jnz .arp_req_fail
 
-    lea rcx, [rel str_net_arp_sent]
+    ; Serial: "[ARP] request: who has X.X.X.X?"
+    lea rdi, [rel net_fmt_scratch]
+    mov ecx, r12d
+    call net_format_ip              ; writes IP string to net_fmt_scratch
+
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_arp_req_fmt]
+    lea r9, [rel net_fmt_scratch]
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
     call serial_print
-    jmp .arp_done
+    jmp .arp_req_done
 
-.arp_fail:
+.arp_req_fail:
     lea rcx, [rel str_net_arp_fail]
     call serial_print
-    jmp .arp_done
 
-.arp_skip:
-    ; NIC not present, silently return
-.arp_done:
-    add rsp, 40
+.arp_req_done:
+    add rsp, 48
+    pop r12
+    pop rdi
+    pop rsi
     pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; arp_send_reply(RCX=dst_mac_ptr, EDX=dst_ip)
+; Build and send ARP reply to a specific host
+; ============================================================
+arp_send_reply:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    sub rsp, 40                     ; shadow(32) + 8(align)
+    ; 8(ret)+8(rbp)+40(push)+40(sub)=96, 96%16=0 ✓
+
+    mov r12, rcx                    ; dst_mac_ptr
+    mov r13d, edx                   ; dst_ip
+
+    lea rdi, [rel net_arp_buf]
+
+    ; Ethernet header: dst MAC from param
+    mov al, [r12+0]
+    mov [rdi+0], al
+    mov al, [r12+1]
+    mov [rdi+1], al
+    mov al, [r12+2]
+    mov [rdi+2], al
+    mov al, [r12+3]
+    mov [rdi+3], al
+    mov al, [r12+4]
+    mov [rdi+4], al
+    mov al, [r12+5]
+    mov [rdi+5], al
+
+    ; Source: our MAC
+    lea rsi, [rel net_mac]
+    mov al, [rsi+0]
+    mov [rdi+6], al
+    mov al, [rsi+1]
+    mov [rdi+7], al
+    mov al, [rsi+2]
+    mov [rdi+8], al
+    mov al, [rsi+3]
+    mov [rdi+9], al
+    mov al, [rsi+4]
+    mov [rdi+10], al
+    mov al, [rsi+5]
+    mov [rdi+11], al
+
+    ; EtherType: 0x0806 (ARP)
+    mov byte [rdi+12], 0x08
+    mov byte [rdi+13], 0x06
+
+    ; ARP header
+    mov byte [rdi+14], 0x00
+    mov byte [rdi+15], 0x01        ; HTYPE=1
+    mov byte [rdi+16], 0x08
+    mov byte [rdi+17], 0x00        ; PTYPE=0x0800
+    mov byte [rdi+18], 6           ; HLEN
+    mov byte [rdi+19], 4           ; PLEN
+    mov byte [rdi+20], 0x00
+    mov byte [rdi+21], 0x02        ; OPER=2 (reply)
+
+    ; Sender MAC (ours)
+    mov al, [rsi+0]
+    mov [rdi+22], al
+    mov al, [rsi+1]
+    mov [rdi+23], al
+    mov al, [rsi+2]
+    mov [rdi+24], al
+    mov al, [rsi+3]
+    mov [rdi+25], al
+    mov al, [rsi+4]
+    mov [rdi+26], al
+    mov al, [rsi+5]
+    mov [rdi+27], al
+
+    ; Sender IP (ours)
+    mov eax, [rel net_our_ip]
+    mov [rdi+28], eax
+
+    ; Target MAC (requester)
+    mov al, [r12+0]
+    mov [rdi+32], al
+    mov al, [r12+1]
+    mov [rdi+33], al
+    mov al, [r12+2]
+    mov [rdi+34], al
+    mov al, [r12+3]
+    mov [rdi+35], al
+    mov al, [r12+4]
+    mov [rdi+36], al
+    mov al, [r12+5]
+    mov [rdi+37], al
+
+    ; Target IP (requester)
+    mov [rdi+38], r13d
+
+    ; Send it
+    lea rcx, [rel net_arp_buf]
+    mov edx, 42
+    call net_send
+
+    ; Serial log
+    lea rcx, [rel str_arp_reply_sent]
+    call serial_print
+
+    add rsp, 40
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; net_format_hex_byte(AL=byte, RDI=output_ptr)
+; Writes 2 hex chars to [rdi], advances rdi by 2
+; ============================================================
+net_format_hex_byte:
+    push rbx
+    mov bl, al                      ; save byte
+
+    ; High nibble
+    mov al, bl
+    shr al, 4
+    cmp al, 10
+    jb .hex_hi_digit
+    add al, ('A' - 10)
+    jmp .hex_hi_done
+.hex_hi_digit:
+    add al, '0'
+.hex_hi_done:
+    mov [rdi], al
+
+    ; Low nibble
+    mov al, bl
+    and al, 0x0F
+    cmp al, 10
+    jb .hex_lo_digit
+    add al, ('A' - 10)
+    jmp .hex_lo_done
+.hex_lo_digit:
+    add al, '0'
+.hex_lo_done:
+    mov [rdi+1], al
+
+    add rdi, 2
+    pop rbx
+    ret
+
+; ============================================================
+; net_format_mac(RSI=mac_ptr, RDI=out_buf)
+; Writes "XX:XX:XX:XX:XX:XX\0" (18 bytes) to out_buf
+; ============================================================
+net_format_mac:
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    sub rsp, 8                     ; align: 8(ret)+32(push)+8(sub)=48, 48%16=0 ✓
+    mov r12, rdi                    ; save start
+
+    xor ebx, ebx
+.fmt_mac_loop:
+    cmp ebx, 6
+    jge .fmt_mac_done
+    movzx eax, byte [rsi + rbx]
+    call net_format_hex_byte        ; writes 2 chars, advances rdi
+    inc ebx
+    cmp ebx, 6
+    jge .fmt_mac_done
+    mov byte [rdi], ':'
+    inc rdi
+    jmp .fmt_mac_loop
+.fmt_mac_done:
+    mov byte [rdi], 0              ; null-terminate
+
+    add rsp, 8
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    ret
+
+; ============================================================
+; net_format_ip(ECX=ip_dword, RDI=out_buf)
+; Writes "X.X.X.X\0" to out_buf
+; IP is stored as raw bytes in memory (10.0.2.15 = 0x0F02000A as dword)
+; We extract byte 0 (lowest) first = first octet
+; ============================================================
+net_format_ip:
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    mov r12, rdi                    ; save out_buf
+    mov esi, ecx                    ; save ip dword
+
+    xor ebx, ebx                   ; byte index
+.fmt_ip_loop:
+    cmp ebx, 4
+    jge .fmt_ip_done
+
+    ; Extract byte ebx from esi
+    mov eax, esi
+    mov ecx, ebx
+    shl ecx, 3                     ; byte_index * 8
+    shr eax, cl
+    and eax, 0xFF                  ; single byte value 0-255
+
+    ; Convert to decimal digits
+    ; Divide by 100
+    cmp eax, 100
+    jb .ip_no_hundreds
+    push rax
+    xor edx, edx
+    mov ecx, 100
+    div ecx                        ; eax=hundreds digit, edx=remainder
+    add al, '0'
+    mov [rdi], al
+    inc rdi
+    mov eax, edx                   ; remainder
+    pop rcx                        ; discard saved (we used div result)
+    jmp .ip_tens
+.ip_no_hundreds:
+    ; Check if >= 10 for leading tens digit
+.ip_tens:
+    cmp eax, 10
+    jb .ip_ones
+    xor edx, edx
+    mov ecx, 10
+    div ecx
+    add al, '0'
+    mov [rdi], al
+    inc rdi
+    mov eax, edx
+.ip_ones:
+    add al, '0'
+    mov [rdi], al
+    inc rdi
+
+    ; Add dot separator (except after last byte)
+    inc ebx
+    cmp ebx, 4
+    jge .fmt_ip_done
+    mov byte [rdi], '.'
+    inc rdi
+    jmp .fmt_ip_loop
+
+.fmt_ip_done:
+    mov byte [rdi], 0              ; null-terminate
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    ret
+
+; ============================================================
+; arp_cache_lookup(ECX=ip) -> RAX = pointer to 6-byte MAC, or 0
+; ============================================================
+arp_cache_lookup:
+    push rbx
+    push rsi
+
+    xor ebx, ebx                   ; i = 0
+.cache_scan:
+    cmp ebx, ARP_CACHE_SIZE
+    jge .cache_miss
+
+    ; Check valid
+    lea rsi, [rel arp_cache_valid]
+    cmp byte [rsi + rbx], 1
+    jne .cache_next
+
+    ; Check IP match
+    lea rsi, [rel arp_cache_ip]
+    cmp [rsi + rbx*4], ecx
+    jne .cache_next
+
+    ; Found — return pointer to MAC
+    lea rax, [rel arp_cache_mac]
+    mov esi, ebx
+    imul esi, 6
+    add rax, rsi
+    pop rsi
+    pop rbx
+    ret
+
+.cache_next:
+    inc ebx
+    jmp .cache_scan
+
+.cache_miss:
+    xor eax, eax
+    pop rsi
+    pop rbx
+    ret
+
+; ============================================================
+; arp_cache_insert(ECX=ip, RDX=mac_ptr)
+; ============================================================
+arp_cache_insert:
+    push rbx
+    push rsi
+    push rdi
+
+    ; Find first empty slot
+    xor ebx, ebx
+.insert_scan:
+    cmp ebx, ARP_CACHE_SIZE
+    jge .insert_overwrite           ; full — overwrite slot 0
+    lea rsi, [rel arp_cache_valid]
+    cmp byte [rsi + rbx], 0
+    je .insert_slot
+    inc ebx
+    jmp .insert_scan
+
+.insert_overwrite:
+    xor ebx, ebx                   ; overwrite slot 0
+
+.insert_slot:
+    ; Store IP
+    lea rsi, [rel arp_cache_ip]
+    mov [rsi + rbx*4], ecx
+
+    ; Store MAC (6 bytes)
+    lea rdi, [rel arp_cache_mac]
+    mov eax, ebx
+    imul eax, 6
+    add rdi, rax
+    mov rsi, rdx                    ; mac_ptr
+    mov al, [rsi+0]
+    mov [rdi+0], al
+    mov al, [rsi+1]
+    mov [rdi+1], al
+    mov al, [rsi+2]
+    mov [rdi+2], al
+    mov al, [rsi+3]
+    mov [rdi+3], al
+    mov al, [rsi+4]
+    mov [rdi+4], al
+    mov al, [rsi+5]
+    mov [rdi+5], al
+
+    ; Mark valid
+    lea rsi, [rel arp_cache_valid]
+    mov byte [rsi + rbx], 1
+
+    pop rdi
+    pop rsi
+    pop rbx
+    ret
+
+; ============================================================
+; arp_handle_packet(RSI=rx_buf_start, ECX=length)
+; Called from net_poll_rx when ethertype == 0x0806
+; ============================================================
+arp_handle_packet:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    sub rsp, 40                     ; shadow(32) + 8(align)
+    ; 8(ret)+8(rbp)+40(push)+40(sub)=96, 96%16=0 ✓
+
+    mov r12, rsi                    ; save rx_buf_start
+
+    ; Verify ARP header basics
+    ; htype at offset 14-15 must be 0x0001
+    movzx eax, byte [r12 + 14]
+    shl eax, 8
+    movzx edx, byte [r12 + 15]
+    or eax, edx
+    cmp eax, 1
+    jne .arp_handle_done
+
+    ; ptype at offset 16-17 must be 0x0800
+    movzx eax, byte [r12 + 16]
+    shl eax, 8
+    movzx edx, byte [r12 + 17]
+    or eax, edx
+    cmp eax, 0x0800
+    jne .arp_handle_done
+
+    ; hlen=6, plen=4
+    cmp byte [r12 + 18], 6
+    jne .arp_handle_done
+    cmp byte [r12 + 19], 4
+    jne .arp_handle_done
+
+    ; Read oper (offset 20-21, big-endian)
+    movzx eax, byte [r12 + 20]
+    shl eax, 8
+    movzx edx, byte [r12 + 21]
+    or eax, edx
+    mov ebx, eax                    ; ebx = oper
+
+    cmp ebx, 2
+    je .arp_is_reply
+    cmp ebx, 1
+    je .arp_is_request
+    jmp .arp_handle_done
+
+.arp_is_reply:
+    ; Extract sender IP (spa) at offset 28 (4 bytes)
+    mov ecx, [r12 + 28]            ; sender IP (raw bytes, already correct)
+    ; Extract sender MAC (sha) pointer at offset 22
+    lea rdx, [r12 + 22]
+
+    ; Insert into cache
+    call arp_cache_insert
+
+    ; Serial: "[ARP] reply: X.X.X.X is at XX:XX:XX:XX:XX:XX"
+    ; Format IP
+    mov ecx, [r12 + 28]
+    lea rdi, [rel net_fmt_scratch]
+    call net_format_ip
+
+    ; Format MAC
+    lea rsi, [r12 + 22]
+    lea rdi, [rel net_fmt_scratch + 20]   ; offset to avoid overlap
+    call net_format_mac
+
+    ; Build message
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_arp_reply_fmt]
+    lea r9, [rel net_fmt_scratch]         ; IP string
+    lea rax, [rel net_fmt_scratch + 20]   ; MAC string
+    mov [rsp+32], rax
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
+    call serial_print
+    jmp .arp_handle_done
+
+.arp_is_request:
+    ; Read target IP (tpa) at offset 38
+    mov eax, [r12 + 38]
+    cmp eax, [rel net_our_ip]
+    jne .arp_handle_done
+
+    ; Someone is asking for our MAC — reply
+    lea rcx, [r12 + 22]            ; requester's MAC (sha)
+    mov edx, [r12 + 28]            ; requester's IP (spa)
+    call arp_send_reply
+
+    lea rcx, [rel str_arp_reply_to_req]
+    call serial_print
+
+.arp_handle_done:
+    add rsp, 40
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; net_resolve_gateway()
+; Send ARP request for gateway, non-blocking.
+; Reply will be processed by net_poll_rx in the main loop.
+; ============================================================
+net_resolve_gateway:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 32                     ; shadow
+
+    ; Just send the ARP request — reply handled asynchronously
+    mov ecx, [rel net_gateway_ip]
+    call arp_send_request
+
+    lea rcx, [rel str_net_gw_arp_sent]
+    call serial_print
+
+    add rsp, 32
     pop rbp
     ret
 
@@ -787,30 +1346,23 @@ net_poll_rx:
 
 .poll_process:
     ; Read length from descriptor
-    movzx esi, word [rdi + 8]       ; length at offset 8
+    movzx esi, word [rdi + 8]       ; length at offset 8 (callee-saved)
 
-    ; Read ethertype from packet (offset 12-13 in ethernet frame)
+    ; Compute rx buffer pointer
     lea rax, [rel net_rx_bufs]
     mov ecx, ebx
     imul ecx, BUF_SIZE
-    add rax, rcx
+    add rax, rcx                    ; rax = rx buffer for this descriptor
+    mov [rsp+40], rax               ; save rx buf ptr in stack slot
+
+    ; Read ethertype from packet (offset 12-13 in ethernet frame)
     movzx edx, byte [rax + 12]     ; high byte of ethertype
     shl edx, 8
     movzx ecx, byte [rax + 13]     ; low byte
     or edx, ecx                     ; edx = ethertype
 
-    ; Serial: [NET] RX len=N ethertype=0xNNNN
-    ; Compute ethertype first
-    lea rax, [rel net_rx_bufs]
-    mov ecx, ebx
-    imul ecx, BUF_SIZE
-    add rax, rcx
-    movzx ecx, byte [rax + 12]
-    shl ecx, 8
-    movzx eax, byte [rax + 13]
-    or ecx, eax
-    mov [rsp+32], rcx               ; ethertype (stack arg)
-    ; herb_snprintf(buf, size, fmt, length, ethertype)
+    ; Log the packet
+    mov [rsp+32], rdx               ; ethertype (stack arg)
     lea rcx, [rel net_msg_buf]
     mov edx, 128
     lea r8, [rel net_fmt_rx]
@@ -819,6 +1371,35 @@ net_poll_rx:
     lea rcx, [rel net_msg_buf]
     call serial_print
 
+    ; Reload rx buf ptr and recompute ethertype (snprintf clobbered regs)
+    mov rax, [rsp+40]              ; rx buf ptr
+    movzx edx, byte [rax + 12]
+    shl edx, 8
+    movzx ecx, byte [rax + 13]
+    or edx, ecx
+
+    ; Dispatch by ethertype
+    cmp edx, 0x0806                ; ARP?
+    jne .poll_check_ip
+
+    ; ARP packet — dispatch to handler
+    ; arp_handle_packet(RSI=rx_buf_start, ECX=length)
+    mov ecx, esi                   ; length (esi callee-saved, still valid)
+    mov rsi, [rsp+40]              ; rx buf ptr
+    call arp_handle_packet
+    jmp .poll_advance
+
+.poll_check_ip:
+    cmp edx, 0x0800                ; IPv4?
+    jne .poll_advance
+
+    ; IPv4 packet — dispatch to handler
+    ; ip_handle_packet(RSI=frame_ptr, ECX=frame_len)
+    mov ecx, esi                   ; length
+    mov rsi, [rsp+40]              ; rx buf ptr
+    call ip_handle_packet
+
+.poll_advance:
     ; Clear DD bit
     mov byte [rdi + 12], 0
 
@@ -848,6 +1429,549 @@ net_poll_rx:
     ret
 
 ; ============================================================
+; ip_checksum(RCX=data_ptr, EDX=length) -> AX (16-bit checksum)
+; One's complement sum of 16-bit words, folded, complemented.
+; ============================================================
+ip_checksum:
+    push rbx
+    push rsi
+
+    mov rsi, rcx                    ; data pointer
+    mov ecx, edx                    ; length
+    xor eax, eax                    ; accumulator (32-bit)
+
+    ; Process 16-bit words
+    mov ebx, ecx
+    shr ebx, 1                      ; word count
+    test ebx, ebx
+    jz .cksum_odd_check
+    xor edx, edx                    ; word index
+.cksum_loop:
+    movzx r8d, word [rsi + rdx*2]
+    add eax, r8d
+    inc edx
+    cmp edx, ebx
+    jb .cksum_loop
+
+.cksum_odd_check:
+    ; Handle odd trailing byte
+    test ecx, 1
+    jz .cksum_fold
+    movzx r8d, byte [rsi + rcx - 1]
+    shl r8d, 8                      ; high byte in network order
+    add eax, r8d
+
+.cksum_fold:
+    ; Fold 32-bit carries into 16 bits
+    mov edx, eax
+    shr edx, 16
+    and eax, 0xFFFF
+    add eax, edx
+    ; May produce another carry
+    mov edx, eax
+    shr edx, 16
+    add eax, edx
+    and eax, 0xFFFF
+
+    ; One's complement
+    not eax
+    and eax, 0xFFFF
+
+    pop rsi
+    pop rbx
+    ret
+
+; ============================================================
+; ip_send(RCX=dst_ip_dword, EDX=protocol, R8=payload_ptr, R9D=payload_len)
+; Build IPv4 frame and send via Ethernet
+; Returns: EAX (0=ok, -1=fail)
+; ============================================================
+ip_send:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    sub rsp, 48                     ; shadow(32) + 16(args)
+    ; 8(ret)+8(rbp)+48(push)+48(sub)=112, 112%16=0 ✓
+
+    mov r12d, ecx                   ; dst_ip
+    mov r13d, edx                   ; protocol
+    mov r14, r8                     ; payload_ptr
+    mov ebx, r9d                    ; payload_len
+
+    ; Look up gateway MAC via ARP cache
+    mov ecx, [rel net_gateway_ip]
+    call arp_cache_lookup
+    test rax, rax
+    jz .ip_send_no_mac
+
+    mov rsi, rax                    ; rsi = gateway MAC pointer
+
+    ; Build frame in ip_send_buf
+    lea rdi, [rel ip_send_buf]
+
+    ; === Ethernet header (14 bytes) ===
+    ; Destination MAC (from ARP cache)
+    mov al, [rsi+0]
+    mov [rdi+0], al
+    mov al, [rsi+1]
+    mov [rdi+1], al
+    mov al, [rsi+2]
+    mov [rdi+2], al
+    mov al, [rsi+3]
+    mov [rdi+3], al
+    mov al, [rsi+4]
+    mov [rdi+4], al
+    mov al, [rsi+5]
+    mov [rdi+5], al
+    ; Source MAC
+    lea rsi, [rel net_mac]
+    mov al, [rsi+0]
+    mov [rdi+6], al
+    mov al, [rsi+1]
+    mov [rdi+7], al
+    mov al, [rsi+2]
+    mov [rdi+8], al
+    mov al, [rsi+3]
+    mov [rdi+9], al
+    mov al, [rsi+4]
+    mov [rdi+10], al
+    mov al, [rsi+5]
+    mov [rdi+11], al
+    ; EtherType: 0x0800 (IPv4)
+    mov byte [rdi+12], 0x08
+    mov byte [rdi+13], 0x00
+
+    ; === IPv4 header (20 bytes, starting at offset 14) ===
+    ; version=4, IHL=5 -> 0x45
+    mov byte [rdi+14], 0x45
+    ; DSCP/ECN = 0
+    mov byte [rdi+15], 0x00
+    ; Total length = 20 + payload_len (big-endian)
+    lea eax, [ebx + 20]
+    mov [rdi+16], ah                ; high byte
+    mov [rdi+17], al                ; low byte
+    ; Identification (big-endian, incrementing)
+    movzx eax, word [rel ip_id_counter]
+    inc word [rel ip_id_counter]
+    mov [rdi+18], ah
+    mov [rdi+19], al
+    ; Flags + Fragment Offset: 0x40 0x00 (Don't Fragment)
+    mov byte [rdi+20], 0x40
+    mov byte [rdi+21], 0x00
+    ; TTL = 64
+    mov byte [rdi+22], 64
+    ; Protocol
+    mov [rdi+23], r13b
+    ; Header checksum = 0 (placeholder)
+    mov word [rdi+24], 0
+    ; Source IP
+    mov eax, [rel net_our_ip]
+    mov [rdi+26], eax
+    ; Destination IP
+    mov [rdi+30], r12d
+
+    ; Compute IP header checksum over 20 bytes at offset 14
+    lea rcx, [rdi+14]
+    mov edx, 20
+    call ip_checksum
+    ; Store checksum (already in network byte order due to LE reads)
+    lea rdi, [rel ip_send_buf]
+    mov [rdi+24], ax
+
+    ; === Copy payload after IP header (offset 34) ===
+    xor ecx, ecx
+.ip_copy_payload:
+    cmp ecx, ebx
+    jge .ip_copy_done
+    mov al, [r14 + rcx]
+    mov [rdi + 34 + rcx], al
+    inc ecx
+    jmp .ip_copy_payload
+.ip_copy_done:
+
+    ; Send frame: 14 (eth) + 20 (ip) + payload_len
+    lea rcx, [rel ip_send_buf]
+    lea edx, [ebx + 34]
+    call net_send
+    jmp .ip_send_done
+
+.ip_send_no_mac:
+    lea rcx, [rel str_ip_no_mac]
+    call serial_print
+    mov eax, -1
+
+.ip_send_done:
+    add rsp, 48
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; ip_handle_packet(RSI=frame_ptr, ECX=frame_len)
+; Parse and dispatch incoming IPv4 packet
+; ============================================================
+ip_handle_packet:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    sub rsp, 56                     ; shadow(32) + 24(args+locals)
+    ; 8(ret)+8(rbp)+40(push)+56(sub)=112, 112%16=0 ✓
+
+    mov r12, rsi                    ; frame_ptr
+    mov r13d, ecx                   ; frame_len
+
+    ; Verify IPv4 (version nibble == 4)
+    movzx eax, byte [r12 + 14]
+    mov ebx, eax                    ; save version_ihl byte
+    shr eax, 4
+    cmp eax, 4
+    jne .ip_handle_done
+
+    ; IHL = low nibble (header length in 32-bit words)
+    and ebx, 0x0F
+    ; ebx = IHL (typically 5 = 20 bytes)
+
+    ; Protocol at offset 14+9 = 23
+    movzx esi, byte [r12 + 23]     ; protocol (callee-saved)
+
+    ; Source IP at offset 14+12 = 26
+    mov ecx, [r12 + 26]            ; src_ip (network byte order)
+
+    ; Dest IP at offset 14+16 = 30
+    mov eax, [r12 + 30]
+    cmp eax, [rel net_our_ip]
+    jne .ip_handle_done             ; not for us
+
+    ; Save src_ip in stack slot (past shadow+args area)
+    mov [rsp+48], ecx
+
+    ; Serial log: [IP] from X.X.X.X proto=N len=N
+    lea rdi, [rel net_fmt_scratch]
+    ; ecx already = src_ip
+    call net_format_ip
+
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_ip_rx_fmt]
+    lea r9, [rel net_fmt_scratch]   ; IP string
+    mov eax, esi                    ; protocol
+    mov [rsp+32], rax               ; 5th arg
+    mov eax, r13d
+    mov [rsp+40], rax               ; 6th arg = frame_len
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
+    call serial_print
+
+    ; Dispatch by protocol
+    cmp esi, 1                      ; ICMP?
+    jne .ip_handle_done
+
+    ; icmp_handle(RSI=frame_ptr, ECX=frame_len, EDX=src_ip)
+    mov rsi, r12
+    mov ecx, r13d
+    mov edx, [rsp+48]              ; src_ip from stack slot
+    call icmp_handle
+
+.ip_handle_done:
+    add rsp, 56
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; icmp_send_echo(ECX=dst_ip, EDX=sequence)
+; Build ICMP echo request and send via ip_send
+; ============================================================
+icmp_send_echo:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    sub rsp, 40                     ; shadow(32) + 8(align)
+    ; 8(ret)+8(rbp)+40(push)+40(sub)=96, 96%16=0 ✓
+
+    mov r12d, ecx                   ; dst_ip
+    mov r13d, edx                   ; sequence
+
+    lea rdi, [rel icmp_buf]
+
+    ; Type = 8 (echo request), Code = 0
+    mov byte [rdi+0], 8
+    mov byte [rdi+1], 0
+    ; Checksum = 0 (placeholder)
+    mov word [rdi+2], 0
+    ; Identifier = 0x4845 ("HE") big-endian: 0x48, 0x45
+    mov byte [rdi+4], 0x48
+    mov byte [rdi+5], 0x45
+    ; Sequence (big-endian)
+    mov eax, r13d
+    mov [rdi+6], ah
+    mov [rdi+7], al
+
+    ; 32 bytes of payload ('A' = 0x41)
+    mov ecx, 0
+.icmp_fill:
+    cmp ecx, 32
+    jge .icmp_fill_done
+    mov byte [rdi + 8 + rcx], 0x41
+    inc ecx
+    jmp .icmp_fill
+.icmp_fill_done:
+
+    ; Compute ICMP checksum over 40 bytes
+    lea rcx, [rel icmp_buf]
+    mov edx, 40
+    call ip_checksum
+    lea rdi, [rel icmp_buf]
+    mov [rdi+2], ax                 ; store checksum
+
+    ; ip_send(dst_ip, protocol=1, payload, len=40)
+    mov ecx, r12d                   ; dst_ip
+    mov edx, 1                      ; ICMP protocol
+    lea r8, [rel icmp_buf]
+    mov r9d, 40
+    call ip_send
+
+    ; Serial: [PING] sent to X.X.X.X seq=N
+    lea rdi, [rel net_fmt_scratch]
+    mov ecx, r12d
+    call net_format_ip
+
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_ping_sent_fmt]
+    lea r9, [rel net_fmt_scratch]
+    mov [rsp+32], r13               ; seq = 5th arg (zero-extended)
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
+    call serial_print
+
+    add rsp, 40
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; icmp_handle(RSI=frame_ptr, ECX=frame_len, EDX=src_ip)
+; Handle incoming ICMP packet (echo reply or echo request)
+; ============================================================
+icmp_handle:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    sub rsp, 48                     ; shadow(32) + 16(args)
+    ; 8(ret)+8(rbp)+48(push)+48(sub)=112, 112%16=0 ✓
+
+    mov r12, rsi                    ; frame_ptr
+    mov r13d, ecx                   ; frame_len
+    mov r14d, edx                   ; src_ip
+
+    ; ICMP starts after Ethernet (14) + IP header
+    ; Read IHL from byte 14
+    movzx eax, byte [r12 + 14]
+    and eax, 0x0F
+    shl eax, 2                      ; IHL * 4 = IP header size
+    add eax, 14                     ; offset to ICMP data
+    mov ebx, eax                    ; ebx = ICMP offset
+
+    ; Read ICMP type
+    movzx edi, byte [r12 + rbx]
+
+    cmp edi, 0                      ; Echo Reply
+    je .icmp_echo_reply
+    cmp edi, 8                      ; Echo Request
+    je .icmp_echo_request
+    jmp .icmp_handle_done
+
+.icmp_echo_reply:
+    ; Read sequence number at offset +6 (big-endian)
+    movzx eax, byte [r12 + rbx + 6]
+    shl eax, 8
+    movzx ecx, byte [r12 + rbx + 7]
+    or eax, ecx
+    mov esi, eax                    ; esi = sequence
+
+    ; Serial: [PING] reply from X.X.X.X seq=N
+    push rsi                        ; save seq
+    lea rdi, [rel net_fmt_scratch]
+    mov ecx, r14d
+    call net_format_ip
+
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_ping_reply_fmt]
+    lea r9, [rel net_fmt_scratch]
+    pop rax                         ; seq
+    mov [rsp+32], rax               ; 5th arg
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
+    call serial_print
+
+    ; Clear ping_pending
+    mov dword [rel ping_pending], 0
+
+    ; Compute approximate RTT: (current_tick - ping_tick) * 10 ms
+    mov eax, [rel timer_count]
+    sub eax, [rel ping_tick]
+    imul eax, 10                    ; 100Hz PIT -> 10ms per tick
+    ; Serial: [PING] time=Nms
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_ping_time_fmt]
+    mov r9d, eax
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
+    call serial_print
+
+    jmp .icmp_handle_done
+
+.icmp_echo_request:
+    ; Respond to incoming ping
+    ; icmp_send_reply(RSI=frame_ptr, ECX=frame_len, EDX=src_ip)
+    mov rsi, r12
+    mov ecx, r13d
+    mov edx, r14d
+    call icmp_send_reply
+    jmp .icmp_handle_done
+
+.icmp_handle_done:
+    add rsp, 48
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; icmp_send_reply(RSI=frame_ptr, ECX=frame_len, EDX=src_ip)
+; Reply to an incoming ICMP echo request
+; ============================================================
+icmp_send_reply:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    sub rsp, 48                     ; shadow(32) + 16(args)
+    ; 8(ret)+8(rbp)+48(push)+48(sub)=112, 112%16=0 ✓
+
+    mov r12, rsi                    ; frame_ptr
+    mov r13d, ecx                   ; frame_len
+    mov r14d, edx                   ; src_ip
+
+    ; Compute ICMP offset and length
+    movzx eax, byte [r12 + 14]
+    and eax, 0x0F
+    shl eax, 2                      ; IP header len
+    mov ebx, eax                    ; IP header size
+    lea edi, [eax + 14]            ; ICMP data offset in frame
+    ; ICMP length = frame_len - 14 - IP_header_len
+    mov esi, r13d
+    sub esi, 14
+    sub esi, ebx                    ; esi = ICMP payload length
+
+    ; Bounds check
+    cmp esi, 4
+    jb .icmp_reply_done
+    cmp esi, 128
+    ja .icmp_reply_done
+
+    ; Copy ICMP data to icmp_reply_buf
+    ; Compute ICMP start: r12 + rdi (frame_ptr + icmp_offset)
+    lea r8, [r12 + rdi]            ; r8 = ICMP data start in frame
+    lea rcx, [rel icmp_reply_buf]
+    xor edx, edx
+.icmp_reply_copy:
+    cmp edx, esi
+    jge .icmp_reply_copied
+    mov al, [r8 + rdx]
+    mov [rcx + rdx], al
+    inc edx
+    jmp .icmp_reply_copy
+.icmp_reply_copied:
+
+    ; Change type to 0 (echo reply), code stays 0
+    lea rcx, [rel icmp_reply_buf]
+    mov byte [rcx+0], 0             ; type = echo reply
+    mov byte [rcx+1], 0             ; code = 0
+    ; Zero checksum for recomputation
+    mov word [rcx+2], 0
+
+    ; Recompute ICMP checksum
+    lea rcx, [rel icmp_reply_buf]
+    mov edx, esi
+    call ip_checksum
+    lea rcx, [rel icmp_reply_buf]
+    mov [rcx+2], ax
+
+    ; ip_send(src_ip, protocol=1, icmp_reply_buf, icmp_len)
+    mov ecx, r14d                   ; src_ip (reply to sender)
+    mov edx, 1                      ; ICMP
+    lea r8, [rel icmp_reply_buf]
+    mov r9d, esi
+    call ip_send
+
+    ; Serial: [PING] responding to X.X.X.X
+    lea rdi, [rel net_fmt_scratch]
+    mov ecx, r14d
+    call net_format_ip
+
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_ping_respond_fmt]
+    lea r9, [rel net_fmt_scratch]
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
+    call serial_print
+
+.icmp_reply_done:
+    add rsp, 48
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
 ; DATA — strings
 ; ============================================================
 section .data
@@ -870,12 +1994,36 @@ net_fmt_irq:
     db " IRQ=%d initialized", 10, 0
 str_net_tx_timeout:
     db "[NET] TX timeout", 10, 0
-str_net_arp_sent:
-    db "[NET] ARP request sent for 10.0.2.2", 10, 0
 str_net_arp_fail:
     db "[NET] ARP send failed", 10, 0
+str_arp_req_fmt:
+    db "[ARP] request: who has %s?", 10, 0
+str_arp_reply_fmt:
+    db "[ARP] reply: %s is at %s", 10, 0
+str_arp_reply_sent:
+    db "[ARP] reply sent", 10, 0
+str_arp_reply_to_req:
+    db "[ARP] responding to request for our IP", 10, 0
+str_arp_timeout:
+    db "[ARP] gateway resolution timeout", 10, 0
+str_arp_gw_resolved:
+    db "[ARP] gateway resolved", 10, 0
+str_net_gw_arp_sent:
+    db "[NET] gateway ARP sent, waiting for reply", 10, 0
 net_fmt_rx:
     db "[NET] RX len=%d ethertype=%d", 10, 0
+str_ip_no_mac:
+    db "[IP] send failed: no gateway MAC in ARP cache", 10, 0
+str_ip_rx_fmt:
+    db "[IP] from %s proto=%d len=%d", 10, 0
+str_ping_sent_fmt:
+    db "[PING] sent to %s seq=%d", 10, 0
+str_ping_reply_fmt:
+    db "[PING] reply from %s seq=%d", 10, 0
+str_ping_time_fmt:
+    db "[PING] time=%dms", 10, 0
+str_ping_respond_fmt:
+    db "[PING] responding to %s", 10, 0
 
 ; ============================================================
 ; BSS
@@ -891,8 +2039,32 @@ net_arp_buf:    resb 64                     ; ARP packet build buffer
 net_mac:        resb 8                      ; MAC address (6 bytes + 2 pad)
 net_bar0:       resq 1                      ; MMIO base address
 net_irq:        resd 1                      ; IRQ number
+net_pci_slot:   resd 1                      ; PCI slot number
 net_rx_head:    resd 1                      ; software RX head index
 net_tx_tail:    resd 1                      ; software TX tail index
 net_rx_flag:    resd 1                      ; set by ISR, cleared by poll
 net_present:    resd 1                      ; 1 if E1000 found
 net_msg_buf:    resb 128                    ; snprintf buffer
+
+; Network config
+net_our_ip:     resd 1                      ; 10.0.2.15 = 0x0F02000A
+net_gateway_ip: resd 1                      ; 10.0.2.2 = 0x0202000A
+net_subnet_mask: resd 1                     ; 255.255.255.0
+
+; ARP cache (16 entries)
+ARP_CACHE_SIZE equ 16
+arp_cache_ip:   resd 16                     ; IP addresses
+arp_cache_mac:  resb 96                     ; MAC addresses (6 bytes × 16)
+arp_cache_valid: resb 16                    ; 0=empty, 1=valid
+arp_cache_count: resd 1
+
+; IP send buffer
+ip_send_buf:    resb 1518                   ; max Ethernet frame
+ip_id_counter:  resw 1                      ; IPv4 identification counter
+
+; ICMP buffers
+icmp_buf:       resb 64                     ; ICMP echo request build buffer
+icmp_reply_buf: resb 128                    ; ICMP echo reply build buffer
+
+; Scratch buffer for formatting
+net_fmt_scratch: resb 64
