@@ -1,0 +1,3 @@
+e1000x_mac_indicate Indicating MAC to guest: 52:54:00:12:34:56
+e1000x_rx_can_recv_disabled link_up: 1, rx_enabled 0, pci_master 0
+e1000x_vlan_is_vlan_pkt Is VLAN packet: 0, ETH proto: 0x806, VET: 0x8100

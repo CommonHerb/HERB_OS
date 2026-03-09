@@ -1,0 +1,371 @@
+{
+  "dimensions": [
+    "priority"
+  ],
+  "entity_types": [
+    {
+      "name": "Process"
+    },
+    {
+      "name": "Signal"
+    }
+  ],
+  "containers": [
+    {
+      "name": "READY"
+    },
+    {
+      "name": "CPU_0",
+      "kind": "slot",
+      "entity_type": "Process"
+    },
+    {
+      "name": "BLOCKED"
+    },
+    {
+      "name": "PRIO_LOW",
+      "dimension": "priority",
+      "entity_type": "Process"
+    },
+    {
+      "name": "PRIO_MED",
+      "dimension": "priority",
+      "entity_type": "Process"
+    },
+    {
+      "name": "PRIO_HIGH",
+      "dimension": "priority",
+      "entity_type": "Process"
+    },
+    {
+      "name": "TIMER_EXPIRED"
+    },
+    {
+      "name": "IO_COMPLETE"
+    },
+    {
+      "name": "PROMOTE_REQUEST"
+    },
+    {
+      "name": "SIGNAL_DONE"
+    }
+  ],
+  "moves": [
+    {
+      "name": "schedule",
+      "from": [
+        "READY"
+      ],
+      "to": [
+        "CPU_0"
+      ],
+      "entity_type": "Process"
+    },
+    {
+      "name": "preempt",
+      "from": [
+        "CPU_0"
+      ],
+      "to": [
+        "READY"
+      ],
+      "entity_type": "Process"
+    },
+    {
+      "name": "block_io",
+      "from": [
+        "CPU_0"
+      ],
+      "to": [
+        "BLOCKED"
+      ],
+      "entity_type": "Process"
+    },
+    {
+      "name": "unblock",
+      "from": [
+        "BLOCKED"
+      ],
+      "to": [
+        "READY"
+      ],
+      "entity_type": "Process"
+    },
+    {
+      "name": "promote_to_med",
+      "from": [
+        "PRIO_LOW"
+      ],
+      "to": [
+        "PRIO_MED"
+      ]
+    },
+    {
+      "name": "promote_to_high",
+      "from": [
+        "PRIO_MED"
+      ],
+      "to": [
+        "PRIO_HIGH"
+      ]
+    },
+    {
+      "name": "demote_to_med",
+      "from": [
+        "PRIO_HIGH"
+      ],
+      "to": [
+        "PRIO_MED"
+      ]
+    },
+    {
+      "name": "demote_to_low",
+      "from": [
+        "PRIO_MED"
+      ],
+      "to": [
+        "PRIO_LOW"
+      ]
+    },
+    {
+      "name": "consume_signal",
+      "from": [
+        "TIMER_EXPIRED",
+        "IO_COMPLETE",
+        "PROMOTE_REQUEST"
+      ],
+      "to": [
+        "SIGNAL_DONE"
+      ],
+      "entity_type": "Signal"
+    }
+  ],
+  "entities": [
+    {
+      "name": "kernel_task",
+      "type": "Process",
+      "in": "READY",
+      "also_in": {
+        "priority": "PRIO_HIGH"
+      },
+      "properties": {
+        "wait_ticks": 0
+      }
+    },
+    {
+      "name": "user_app",
+      "type": "Process",
+      "in": "READY",
+      "also_in": {
+        "priority": "PRIO_MED"
+      },
+      "properties": {
+        "wait_ticks": 0
+      }
+    },
+    {
+      "name": "background_job",
+      "type": "Process",
+      "in": "READY",
+      "also_in": {
+        "priority": "PRIO_LOW"
+      },
+      "properties": {
+        "wait_ticks": 0
+      }
+    }
+  ],
+  "tensions": [
+    {
+      "name": "schedule_high",
+      "priority": 30,
+      "match": [
+        {
+          "bind": "proc",
+          "in": "READY",
+          "where": {
+            "in": "PRIO_HIGH",
+            "of": "proc"
+          }
+        },
+        {
+          "bind": "slot",
+          "empty_in": [
+            "CPU_0"
+          ]
+        }
+      ],
+      "emit": [
+        {
+          "move": "schedule",
+          "entity": "proc",
+          "to": "slot"
+        }
+      ]
+    },
+    {
+      "name": "schedule_med",
+      "priority": 20,
+      "match": [
+        {
+          "bind": "proc",
+          "in": "READY",
+          "where": {
+            "in": "PRIO_MED",
+            "of": "proc"
+          }
+        },
+        {
+          "bind": "slot",
+          "empty_in": [
+            "CPU_0"
+          ]
+        }
+      ],
+      "emit": [
+        {
+          "move": "schedule",
+          "entity": "proc",
+          "to": "slot"
+        }
+      ]
+    },
+    {
+      "name": "schedule_low",
+      "priority": 10,
+      "match": [
+        {
+          "bind": "proc",
+          "in": "READY",
+          "where": {
+            "in": "PRIO_LOW",
+            "of": "proc"
+          }
+        },
+        {
+          "bind": "slot",
+          "empty_in": [
+            "CPU_0"
+          ]
+        }
+      ],
+      "emit": [
+        {
+          "move": "schedule",
+          "entity": "proc",
+          "to": "slot"
+        }
+      ]
+    },
+    {
+      "name": "preempt_for_high",
+      "priority": 35,
+      "match": [
+        {
+          "bind": "waiting",
+          "in": "READY",
+          "where": {
+            "in": "PRIO_HIGH",
+            "of": "waiting"
+          }
+        },
+        {
+          "bind": "running",
+          "in": "CPU_0",
+          "where": {
+            "op": "not",
+            "arg": {
+              "in": "PRIO_HIGH",
+              "of": "running"
+            }
+          }
+        }
+      ],
+      "emit": [
+        {
+          "move": "preempt",
+          "entity": "running",
+          "to": "READY"
+        }
+      ]
+    },
+    {
+      "name": "handle_timer",
+      "priority": 40,
+      "match": [
+        {
+          "bind": "sig",
+          "in": "TIMER_EXPIRED"
+        },
+        {
+          "bind": "running",
+          "in": "CPU_0"
+        }
+      ],
+      "emit": [
+        {
+          "move": "preempt",
+          "entity": "running",
+          "to": "READY"
+        },
+        {
+          "move": "consume_signal",
+          "entity": "sig",
+          "to": "SIGNAL_DONE"
+        }
+      ]
+    },
+    {
+      "name": "handle_io",
+      "priority": 40,
+      "match": [
+        {
+          "bind": "sig",
+          "in": "IO_COMPLETE"
+        },
+        {
+          "bind": "proc",
+          "in": "BLOCKED"
+        }
+      ],
+      "emit": [
+        {
+          "move": "unblock",
+          "entity": "proc",
+          "to": "READY"
+        },
+        {
+          "move": "consume_signal",
+          "entity": "sig",
+          "to": "SIGNAL_DONE"
+        }
+      ]
+    },
+    {
+      "name": "handle_promote",
+      "priority": 25,
+      "match": [
+        {
+          "bind": "sig",
+          "in": "PROMOTE_REQUEST"
+        },
+        {
+          "bind": "proc",
+          "in": "PRIO_LOW"
+        }
+      ],
+      "emit": [
+        {
+          "move": "promote_to_med",
+          "entity": "proc",
+          "to": "PRIO_MED"
+        },
+        {
+          "move": "consume_signal",
+          "entity": "sig",
+          "to": "SIGNAL_DONE"
+        }
+      ]
+    }
+  ]
+}

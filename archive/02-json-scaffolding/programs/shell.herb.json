@@ -1,0 +1,129 @@
+{
+  "entity_types": [],
+  "containers": [],
+  "moves": [],
+  "pools": [],
+  "transfers": [],
+  "entities": [],
+  "channels": [],
+  "tensions": [
+    {
+      "name": "do_kill",
+      "priority": 20,
+      "match": [
+        {"bind": "cmd", "in": "proc.CMD_SIG", "select": "first",
+         "where": {"op": "==", "left": {"prop": "cmd_id", "of": "cmd"}, "right": 1}},
+        {"bind": "proc", "in": "proc.CPU0", "select": "first",
+         "where": {"op": "==", "left": {"prop": "protected", "of": "proc"}, "right": 0}}
+      ],
+      "emit": [
+        {"move": "proc.terminate", "entity": "proc", "to": "proc.TERMINATED"},
+        {"move": "proc.consume_signal", "entity": "cmd", "to": "proc.SIG_DONE"}
+      ]
+    },
+    {
+      "name": "do_block",
+      "priority": 20,
+      "match": [
+        {"bind": "cmd", "in": "proc.CMD_SIG", "select": "first",
+         "where": {"op": "==", "left": {"prop": "cmd_id", "of": "cmd"}, "right": 6}},
+        {"bind": "proc", "in": "proc.CPU0", "select": "first",
+         "where": {"op": "==", "left": {"prop": "protected", "of": "proc"}, "right": 0}}
+      ],
+      "emit": [
+        {"move": "proc.block_proc", "entity": "proc", "to": "proc.BLOCKED"},
+        {"move": "proc.consume_signal", "entity": "cmd", "to": "proc.SIG_DONE"}
+      ]
+    },
+    {
+      "name": "do_unblock",
+      "priority": 20,
+      "match": [
+        {"bind": "cmd", "in": "proc.CMD_SIG", "select": "first",
+         "where": {"op": "==", "left": {"prop": "cmd_id", "of": "cmd"}, "right": 7}},
+        {"bind": "proc", "in": "proc.BLOCKED", "select": "first"}
+      ],
+      "emit": [
+        {"move": "proc.unblock", "entity": "proc", "to": "proc.READY"},
+        {"move": "proc.consume_signal", "entity": "cmd", "to": "proc.SIG_DONE"}
+      ]
+    },
+    {
+      "name": "do_load",
+      "priority": 20,
+      "match": [
+        {"bind": "cmd", "in": "proc.CMD_SIG", "select": "first",
+         "where": {"op": "==", "left": {"prop": "cmd_id", "of": "cmd"}, "right": 2}},
+        {"bind": "ctl", "in": "input.SHELL_STATE"}
+      ],
+      "emit": [
+        {"set": "ctl", "property": "action", "value": {"prop": "arg_id", "of": "cmd"}},
+        {"move": "proc.consume_signal", "entity": "cmd", "to": "proc.SIG_DONE"}
+      ]
+    },
+    {
+      "name": "do_swap",
+      "priority": 20,
+      "match": [
+        {"bind": "cmd", "in": "proc.CMD_SIG", "select": "first",
+         "where": {"op": "==", "left": {"prop": "cmd_id", "of": "cmd"}, "right": 3}},
+        {"bind": "ctl", "in": "input.SHELL_STATE"}
+      ],
+      "emit": [
+        {"set": "ctl", "property": "action", "value": 10},
+        {"move": "proc.consume_signal", "entity": "cmd", "to": "proc.SIG_DONE"}
+      ]
+    },
+    {
+      "name": "do_list",
+      "priority": 20,
+      "match": [
+        {"bind": "cmd", "in": "proc.CMD_SIG", "select": "first",
+         "where": {"op": "==", "left": {"prop": "cmd_id", "of": "cmd"}, "right": 4}},
+        {"bind": "ctl", "in": "input.SHELL_STATE"}
+      ],
+      "emit": [
+        {"set": "ctl", "property": "action", "value": 20},
+        {"move": "proc.consume_signal", "entity": "cmd", "to": "proc.SIG_DONE"}
+      ]
+    },
+    {
+      "name": "do_help",
+      "priority": 20,
+      "match": [
+        {"bind": "cmd", "in": "proc.CMD_SIG", "select": "first",
+         "where": {"op": "==", "left": {"prop": "cmd_id", "of": "cmd"}, "right": 5}},
+        {"bind": "ctl", "in": "input.SHELL_STATE"}
+      ],
+      "emit": [
+        {"set": "ctl", "property": "action", "value": 30},
+        {"move": "proc.consume_signal", "entity": "cmd", "to": "proc.SIG_DONE"}
+      ]
+    },
+    {
+      "name": "do_spawn",
+      "priority": 20,
+      "match": [
+        {"bind": "cmd", "in": "proc.CMD_SIG", "select": "first",
+         "where": {"op": "==", "left": {"prop": "cmd_id", "of": "cmd"}, "right": 8}},
+        {"bind": "ctl", "in": "input.SHELL_STATE"}
+      ],
+      "emit": [
+        {"set": "ctl", "property": "action", "value": 40},
+        {"move": "proc.consume_signal", "entity": "cmd", "to": "proc.SIG_DONE"}
+      ]
+    },
+    {
+      "name": "cmd_miss",
+      "priority": 2,
+      "match": [
+        {"bind": "cmd", "in": "proc.CMD_SIG", "select": "first"},
+        {"bind": "ctl", "in": "input.SHELL_STATE"}
+      ],
+      "emit": [
+        {"set": "ctl", "property": "action", "value": -1},
+        {"move": "proc.consume_signal", "entity": "cmd", "to": "proc.SIG_DONE"}
+      ]
+    }
+  ]
+}

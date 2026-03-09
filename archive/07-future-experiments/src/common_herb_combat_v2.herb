@@ -1,0 +1,239 @@
+# Common Herb Combat System v2
+#
+# Fixed version addressing Phase 1/2 dependency issues.
+#
+# Key insight: If a rule needs aggregate results, it must either:
+# 1. Put the aggregate in its template (making it Phase 2)
+# 2. Use only base facts (no cross-phase dependencies)
+#
+# This version uses inline aggregates where needed.
+
+# === COMBATANTS ===
+
+FACT hero is_a player
+FACT hero is_a combatant
+FACT hero hp 100
+FACT hero base_attack 25
+FACT hero base_defense 10
+FACT hero location forest
+FACT hero gold 50
+
+FACT hero equipped iron_sword
+FACT hero equipped leather_armor
+FACT iron_sword attack_bonus 10
+FACT leather_armor defense_bonus 5
+
+FACT goblin is_a monster
+FACT goblin is_a combatant
+FACT goblin hp 30
+FACT goblin base_attack 12
+FACT goblin base_defense 3
+FACT goblin location forest
+FACT goblin loot_gold 15
+
+FACT wolf is_a monster
+FACT wolf is_a combatant
+FACT wolf hp 20
+FACT wolf base_attack 8
+FACT wolf base_defense 2
+FACT wolf location forest
+FACT wolf loot_gold 8
+
+# Already dead (excluded from combat)
+FACT skeleton is_a monster
+FACT skeleton is_a combatant
+FACT skeleton hp 0
+FACT skeleton base_attack 15
+FACT skeleton base_defense 5
+FACT skeleton location forest
+FACT skeleton loot_gold 25
+FACT skeleton is_dead true
+
+# === PHASE 1: BASE RULES ===
+
+# Extract individual bonuses (for later aggregation)
+RULE equipment_attack_bonus
+  WHEN ?p equipped ?item
+  AND ?item attack_bonus ?bonus
+  THEN ?p has_attack_bonus ?bonus
+
+RULE equipment_defense_bonus
+  WHEN ?p equipped ?item
+  AND ?item defense_bonus ?bonus
+  THEN ?p has_defense_bonus ?bonus
+
+# Mark living entities (positive tracking avoids negation)
+RULE mark_alive
+  WHEN ?e is_a combatant
+  AND ?e hp ?hp
+  IF (> ?hp 0)
+  THEN ?e is_alive true
+
+# Combat targeting requires both alive (base rule, no aggregates)
+RULE can_attack
+  WHEN ?a is_a combatant
+  AND ?b is_a combatant
+  AND ?a location ?loc
+  AND ?b location ?loc
+  AND ?a is_alive true
+  AND ?b is_alive true
+  AND ?a is_a ?type_a
+  AND ?b is_a ?type_b
+  IF (not= ?a ?b)
+  IF (not= ?type_a ?type_b)
+  THEN ?a can_attack ?b
+
+# === PHASE 2: DAMAGE CALCULATION (uses aggregates) ===
+
+# Calculate pending damage with inline aggregates
+# Damage = (base_attack + sum of bonuses) - (base_defense + sum of bonuses), min 1
+#
+# For players attacking monsters:
+RULE calculate_player_damage
+  WHEN ?p is_a player
+  AND ?p can_attack ?m
+  AND ?p base_attack ?p_atk
+  AND ?m base_defense ?m_def
+  THEN ?m pending_damage_from ?p (max 1 (- (+ ?p_atk (sum ?b WHERE ?p has_attack_bonus ?b)) ?m_def))
+
+# For monsters attacking players (monsters have no equipment, players have defense bonuses):
+RULE calculate_monster_damage
+  WHEN ?m is_a monster
+  AND ?m can_attack ?p
+  AND ?m base_attack ?m_atk
+  AND ?p base_defense ?p_def
+  THEN ?p pending_damage_from ?m (max 1 (- ?m_atk (+ ?p_def (sum ?b WHERE ?p has_defense_bonus ?b))))
+
+# Aggregate total incoming damage per entity
+RULE total_pending_damage
+  WHEN ?e is_a combatant
+  THEN ?e total_pending_damage (sum ?d WHERE ?x pending_damage_from ?e ?d)
+
+# Wait - that's backwards. Let me fix it.
+# ?e is the one receiving damage, so we want facts where ?e is the OBJECT:
+#   (?attacker pending_damage_from ?e ?d) - wrong
+#   (?e pending_damage_from ?attacker ?d) - wrong, ?e is attacker
+# Actually the fact is: (?defender pending_damage_from ?attacker ?d)
+# So for hero's incoming damage: (hero pending_damage_from goblin 2)
+# Wait no, the rule says THEN ?m pending_damage_from ?p ...
+# So it's: (goblin pending_damage_from hero 32) meaning hero did 32 to goblin
+#
+# To sum damage TO ?e, we need: (sum ?d WHERE ?e pending_damage_from ?x ?d)
+# That's what I wrote but got confused. Let me trace:
+#   (goblin pending_damage_from hero 32) = hero did 32 damage to goblin
+#   For goblin's total: sum ?d WHERE goblin pending_damage_from ?x ?d = 32
+
+# Actually I realize the relation name is confusing. Let me rename:
+# pending_damage_from means "pending damage FROM this attacker"
+# So (goblin pending_damage_from hero 32) means goblin has 32 pending damage from hero
+# That IS what we want for summing goblin's incoming damage.
+
+# Hmm but the template says:
+#   THEN ?m pending_damage_from ?p (max 1 (...))
+# That creates a FOUR-argument fact? No, HERB facts are always 3-argument.
+# The template is (subject=?m, relation=pending_damage_from, object=?p)
+# But then where does the damage value go?
+#
+# Wait, I need to reconsider. HERB facts are triples. To store
+# "goblin has 32 pending damage from hero" I need either:
+# 1. (goblin pending_damage 32) - loses attacker info
+# 2. (goblin pending_damage_from_hero 32) - ugly compound relation
+# 3. Create a damage event entity
+#
+# For now, let's simplify: just track total pending damage per entity.
+# We'll lose the "from whom" info but that's ok for this demo.
+
+# === REVISED PHASE 2 ===
+
+# Player attacks monster - creates pending damage
+RULE player_damage_to_monster
+  WHEN ?p is_a player
+  AND ?p can_attack ?m
+  AND ?p base_attack ?p_atk
+  AND ?m base_defense ?m_def
+  THEN ?m has_pending_damage (max 1 (- (+ ?p_atk (sum ?b WHERE ?p has_attack_bonus ?b)) ?m_def))
+
+# Monster attacks player
+RULE monster_damage_to_player
+  WHEN ?m is_a monster
+  AND ?m can_attack ?p
+  AND ?m base_attack ?m_atk
+  AND ?p base_defense ?p_def
+  THEN ?p has_pending_damage (max 1 (- ?m_atk (+ ?p_def (sum ?b WHERE ?p has_defense_bonus ?b))))
+
+# Sum all incoming damage
+RULE total_damage
+  WHEN ?e is_a combatant
+  THEN ?e pending_damage (sum ?d WHERE ?e has_pending_damage ?d)
+
+# Hmm, but aggregate rules can't have RETRACT. So we can't consume the
+# has_pending_damage facts. And we can't apply damage (which needs RETRACT)
+# from a Phase 2 rule.
+#
+# This is the core tension: damage application NEEDS retraction, but
+# damage calculation NEEDS aggregation. They can't be in the same phase.
+#
+# Solution options:
+# 1. Apply damage in a SEPARATE tick (multi-tick combat)
+# 2. Don't use aggregation for damage - accept only one attacker per tick
+# 3. Add a Phase 3 that runs after Phase 2 and can RETRACT
+#
+# For this demo, let's use option 2: first attacker wins, subsequent
+# attacks just derive without effect (duplicate fact prevention).
+
+# Actually, let me think differently. The multi-damage problem is:
+# - goblin attacks hero for 2 damage
+# - wolf attacks hero for 0 damage (defense blocks it, min 1 = 1)
+#
+# If both create (hero pending_damage X), and facts are multi-valued,
+# we'd have (hero pending_damage 2) and (hero pending_damage 1).
+# The apply rule would fire for EACH, doing 2 then 1 = 3 total.
+# That's actually correct! Multi-valued relations + multi-fire = correct sum.
+#
+# Let me go back to the simple approach and verify.
+
+# === SIMPLER VERSION ===
+# Let the rule fire multiple times, once per attacker.
+# Each creates its own pending_damage fact.
+# Apply_damage fires for each, serially reducing HP.
+
+# (Keeping the equipment bonus extraction from Phase 1)
+
+# Direct damage rules (Phase 2 because they use aggregates):
+RULE do_player_attack
+  WHEN ?p is_a player
+  AND ?p can_attack ?m
+  AND ?p base_attack ?atk
+  AND ?m base_defense ?def
+  THEN ?m pending_damage (max 1 (- (+ ?atk (sum ?b WHERE ?p has_attack_bonus ?b)) ?def))
+
+RULE do_monster_attack
+  WHEN ?m is_a monster
+  AND ?m can_attack ?p
+  AND ?m base_attack ?atk
+  AND ?p base_defense ?def
+  THEN ?p pending_damage (max 1 (- ?atk (+ ?def (sum ?b WHERE ?p has_defense_bonus ?b))))
+
+# But wait - these are Phase 2 rules (because of aggregates).
+# Phase 2 rules can't have RETRACT.
+# So we can't apply damage in Phase 2.
+#
+# The Phase 2 rules create pending_damage facts.
+# We need a Phase 3 or next-tick mechanism to apply them.
+#
+# For now, let's accept that damage APPLICATION happens on the NEXT tick.
+# This tick: calculate damage (Phase 2)
+# Next tick: apply damage (Phase 1, RETRACT enabled)
+
+# Actually that doesn't work either because pending_damage persists
+# and apply_damage is a base rule that would fire on tick 1.
+# But then the aggregates wouldn't have run yet.
+#
+# The real solution is: apply_damage needs to fire AFTER Phase 2
+# but still be able to RETRACT. This means we need a Phase 3.
+
+# FOR THIS DEMO: Let's skip aggregation for damage calculation.
+# Just use base stats. This keeps everything in Phase 1.
+
+# === FINAL SIMPLE VERSION (no aggregates in damage) ===
+# This demonstrates the RETRACT verbosity issue clearly.

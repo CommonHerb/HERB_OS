@@ -1,0 +1,239 @@
+# Common Herb Economy System
+#
+# This models the economic simulation from Common Herb:
+# - Jurisdictions with tax rates
+# - Shops that belong to jurisdictions
+# - Items with base prices
+# - Tax calculation and price computation
+# - Purchase transactions
+# - Tax revenue flowing to treasury
+#
+# Key HERB features demonstrated:
+# - FUNCTIONAL relations for single-valued properties
+# - Aggregates for totaling tax revenue
+# - Guards for validation (enough gold, shop has item)
+# - Negation for exemptions
+
+# =============================================================================
+# FUNCTIONAL DECLARATIONS
+# =============================================================================
+# Single-valued relations — new values auto-retract old ones
+
+FUNCTIONAL gold          # Player currency
+FUNCTIONAL treasury      # Jurisdiction treasury
+FUNCTIONAL stock         # Shop inventory count per item
+
+# =============================================================================
+# JURISDICTIONS
+# =============================================================================
+# Each jurisdiction has a name, tax rate, and treasury
+
+FACT gulpin is_a jurisdiction
+FACT gulpin tax_rate 10
+
+FACT northvale is_a jurisdiction
+FACT northvale tax_rate 5
+
+FACT freeport is_a jurisdiction
+FACT freeport tax_rate 0
+
+# Initialize treasuries
+FACT gulpin treasury 1000
+FACT northvale treasury 500
+FACT freeport treasury 200
+
+# =============================================================================
+# SHOPS
+# =============================================================================
+# Shops exist in jurisdictions and stock items
+
+FACT general_store is_a shop
+FACT general_store in_jurisdiction gulpin
+FACT general_store name "General Store"
+
+FACT blacksmith is_a shop
+FACT blacksmith in_jurisdiction gulpin
+FACT blacksmith name "Gulpin Smithy"
+
+FACT north_market is_a shop
+FACT north_market in_jurisdiction northvale
+FACT north_market name "Northern Market"
+
+FACT free_trader is_a shop
+FACT free_trader in_jurisdiction freeport
+FACT free_trader name "Free Trader"
+
+# =============================================================================
+# ITEMS AND BASE PRICES
+# =============================================================================
+# Items have base prices — the pre-tax cost
+
+FACT bread is_a item
+FACT bread base_price 5
+
+FACT sword is_a item
+FACT sword base_price 100
+
+FACT potion is_a item
+FACT potion base_price 25
+
+FACT iron_ore is_a item
+FACT iron_ore base_price 15
+
+# =============================================================================
+# SHOP INVENTORY
+# =============================================================================
+# What each shop stocks and how many
+
+FACT general_store stocks bread
+FACT general_store stocks potion
+FACT general_store stock_bread 20
+FACT general_store stock_potion 10
+
+FACT blacksmith stocks sword
+FACT blacksmith stocks iron_ore
+FACT blacksmith stock_sword 5
+FACT blacksmith stock_iron_ore 50
+
+FACT north_market stocks bread
+FACT north_market stocks potion
+FACT north_market stock_bread 30
+FACT north_market stock_potion 15
+
+FACT free_trader stocks sword
+FACT free_trader stocks potion
+FACT free_trader stock_sword 3
+FACT free_trader stock_potion 20
+
+# =============================================================================
+# PLAYERS
+# =============================================================================
+
+FACT alice is_a player
+FACT alice gold 200
+FACT alice location gulpin
+
+FACT bob is_a player
+FACT bob gold 500
+FACT bob location northvale
+
+# =============================================================================
+# TAX EXEMPTIONS
+# =============================================================================
+# Some players have exemptions in certain jurisdictions
+
+FACT alice exemption gulpin
+
+# =============================================================================
+# PURCHASE REQUESTS (Reified)
+# =============================================================================
+# Purchase requests are reified as entities with properties
+# This is required because HERB facts are triples
+
+FACT request_1 is_a purchase_request
+FACT request_1 buyer alice
+FACT request_1 item bread
+FACT request_1 shop general_store
+
+FACT request_2 is_a purchase_request
+FACT request_2 buyer bob
+FACT request_2 item sword
+FACT request_2 shop free_trader
+
+# Bob also buys potion from gulpin - will pay 10% tax
+FACT request_3 is_a purchase_request
+FACT request_3 buyer bob
+FACT request_3 item potion
+FACT request_3 shop general_store
+
+# =============================================================================
+# RULES
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Rule: Calculate effective price (base + tax)
+# Shop's jurisdiction tax rate applies unless player has exemption
+# Uses reified purchase_request entities
+# -----------------------------------------------------------------------------
+RULE calc_taxed_price
+  WHEN ?req is_a purchase_request
+  AND ?req buyer ?p
+  AND ?req item ?item
+  AND ?req shop ?shop
+  AND ?shop in_jurisdiction ?j
+  AND ?j tax_rate ?rate
+  AND ?item base_price ?base
+  IF (not-exists ?p exemption ?j)
+  THEN ?req effective_price (+ ?base (* ?base (/ ?rate 100)))
+
+RULE calc_exempt_price
+  WHEN ?req is_a purchase_request
+  AND ?req buyer ?p
+  AND ?req item ?item
+  AND ?req shop ?shop
+  AND ?shop in_jurisdiction ?j
+  AND ?p exemption ?j
+  AND ?item base_price ?base
+  THEN ?req effective_price ?base
+
+# -----------------------------------------------------------------------------
+# Rule: Execute purchase if player has enough gold and shop has stock
+# This is Phase 2+ because it depends on calc_price results
+# -----------------------------------------------------------------------------
+RULE execute_purchase
+  WHEN ?req is_a purchase_request
+  AND ?req buyer ?p
+  AND ?req item ?item
+  AND ?req shop ?shop
+  AND ?req effective_price ?price
+  AND ?p gold ?player_gold
+  AND ?shop stocks ?item
+  IF (>= ?player_gold ?price)
+  THEN ?p purchased ?item
+  AND ?p gold (- ?player_gold ?price)
+  RETRACT ?req is_a purchase_request
+
+# -----------------------------------------------------------------------------
+# Rule: Calculate tax portion of purchase for treasury
+# Only fires if purchase was taxed (non-exempt)
+# -----------------------------------------------------------------------------
+RULE calc_tax_revenue
+  WHEN ?p purchased ?item
+  AND ?req buyer ?p
+  AND ?req item ?item
+  AND ?req effective_price ?total
+  AND ?item base_price ?base
+  IF (> ?total ?base)
+  THEN ?req tax_paid (- ?total ?base)
+
+# -----------------------------------------------------------------------------
+# Rule: Mark which jurisdiction receives the tax
+# Links tax_paid to the jurisdiction via the shop
+# -----------------------------------------------------------------------------
+RULE mark_tax_jurisdiction
+  WHEN ?req tax_paid ?tax
+  AND ?req shop ?shop
+  AND ?shop in_jurisdiction ?j
+  THEN ?req tax_to ?j
+
+# -----------------------------------------------------------------------------
+# Rule: Sum tax revenue per jurisdiction this tick
+# Aggregates all tax_paid for purchases in each jurisdiction
+# -----------------------------------------------------------------------------
+RULE aggregate_tax_revenue
+  WHEN ?j is_a jurisdiction
+  THEN ?j tick_revenue (sum ?t WHERE ?req tax_to ?j ?req tax_paid ?t)
+
+# -----------------------------------------------------------------------------
+# Rule: Update treasury with tick revenue
+# Uses FUNCTIONAL treasury to auto-retract old value
+# Consumes tick_revenue to prevent re-firing
+# Only fires if there's actual revenue (> 0)
+# -----------------------------------------------------------------------------
+RULE update_treasury
+  WHEN ?j tick_revenue ?revenue
+  AND ?j treasury ?current
+  IF (> ?revenue 0)
+  THEN ?j treasury (+ ?current ?revenue)
+  RETRACT ?j tick_revenue ?revenue
+

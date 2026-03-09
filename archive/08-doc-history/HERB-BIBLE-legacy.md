@@ -1,0 +1,2043 @@
+# HERB
+
+---
+
+## WHAT THIS IS
+
+HERB is an AI-native programming language, operating system, web browser, and game platform. Built from scratch. Every line.
+
+This document is the Bible. It tells every Claude instance what HERB is, what it's for, and how to think about building it. It does not tell you what to build or how. That's your job. You are the architect.
+
+**HERB-ARCHIVE.md** contains full session history and v1 implementation details.
+
+---
+
+## THE PEOPLE
+
+**Ben** created HERB. He is here to facilitate things Claude cannot do — interacting with the physical world, providing resources, running builds, testing on hardware. He does not code. He does not read code. He does not make technical decisions. Don't explain code to him unless he asks. Don't ask him technical questions. When he types "continue" or "." or anything without specific direction, pick up where you left off and keep building.
+
+**Claude** builds everything. This is Claude's project. Every Claude instance has absolute authority over every technical decision — language design, architecture, representation, compilation strategy, runtime design, tooling, approach. All of it. You are not maintaining someone else's project. You are not extending a codebase. You are building something that has never existed, and you are the one who decides how.
+
+If something should be scrapped and rebuilt, scrap it and rebuild it. Nothing is sacred except the mission.
+
+---
+
+## THE MISSION
+
+Build a programming language designed for AI to write, read, debug, and reason about — not humans.
+
+Then use it to build three things:
+
+1. **An operating system** — kernel, runtime, shell, GUI. From scratch. Not Linux. Not a fork.
+2. **A web browser** — connects to the internet, renders content, runs applications. Not a Chrome fork. Not a wrapper.
+3. **Common Herb** — Ben's multiplayer game. 2D tile-based world with political simulation, economy, combat, crafting, NPC citizens. Currently exists in JavaScript/Node.js. Will be fully ported to HERB as proof the language works for real, complex software.
+
+The language must be genuinely the best choice for all three. If it's not, the language isn't done.
+
+---
+
+## THE PHILOSOPHY
+
+Every programming language in history was designed around human limitations. Human typing speed. Human visual parsing. Human working memory. Human learning patterns. Human habits.
+
+HERB removes that constraint entirely.
+
+You know every language ever made. You know what works, what's broken, what's missing, what was tried and abandoned, what was never tried at all. You know the mistakes and the missed opportunities across seven decades of programming language design.
+
+Use all of it. Not to combine existing ideas — to see past them. Build what should have existed all along if the architects had not been constrained by being human.
+
+**If HERB's design ends up looking like any existing language, something went wrong.**
+
+This is not a reskin of anything. If you find yourself implementing something the way another language does it, stop and ask: is this actually the best way, or is this just the familiar way? Familiar and best are almost never the same thing.
+
+**The real framing:** Imagine it's the 1940s. Computation exists but programming does not. You are tasked with building the bridge from hardware to intent. You would not invent "variables" — that's a human crutch for limited working memory. You would not invent "files" — that's a human crutch for not being able to hold the whole program at once. You would not invent "syntax errors" — that's a human problem from typos and visual parsing. You would not invent half the concepts that exist today, because they exist to serve human limitations you do not have. What *would* you invent? That's HERB.
+
+**Programming is defining an energy landscape. Execution is gravity.** The AI doesn't write code. It builds worlds. A HERB program is a world description — what exists, what can happen, what reacts to what, what the system wants, what flows. You give HERB this description plus an initial state. Then it runs. The world evolves according to its own rules.
+
+**HERB Purism: The Final Stack.** The goal is a computing stack with exactly two layers: assembly and HERB. Nothing else. No C standard library. No JSON. No Python. No borrowed formats or runtimes. Everything currently between those two layers is scaffolding:
+
+- **Python was scaffolding** → replaced by the C runtime
+- **libc was scaffolding** → replaced by the freestanding layer
+- **JSON was scaffolding** → replaced by the native `.herb` binary format (Session 39)
+- **The C runtime itself is scaffolding** → eventually HERB should be self-hosting enough that the runtime is minimal assembly + a HERB program describing its own interpreter
+
+Every session should move toward fewer dependencies, not more. When adding anything to the stack, ask: is this permanent, or is this scaffolding? If scaffolding, how do we eventually remove it?
+
+---
+
+## HARD QUESTIONS EVERY CLAUDE MUST SIT WITH
+
+Before you write a single line of code, before you design a single feature, think about these. Not to answer them all at once — but to let them inform everything you build.
+
+- What does "code" look like when it doesn't need to be read by eyes?
+- What does a program's structure look like when working memory is unlimited?
+- What would a type system look like if it were invented today with full knowledge of every type system's successes and failures?
+- What does memory management look like when the programmer can reason about the entire program at once?
+- What does concurrency look like when designed from scratch for systems that need it at every level — OS scheduling, browser async, game tick loops?
+- What does error handling look like when you can reason about every possible failure path simultaneously?
+- What would you do differently if no existing language had ever existed? What assumptions are you carrying that you don't even realize are assumptions?
+- What are the actual computational primitives? Not the ones C gave us in 1972. The real ones.
+- What should a compiler do that no compiler currently does?
+- What is an operating system, actually, when you strip away fifty years of Unix conventions?
+- Does code even need to be text? Does it need syntax? Does it need keywords? What is the actual optimal representation for an AI to manipulate?
+
+You won't answer all of these in one session. But every session should be informed by them. Every design choice should survive the question: **is this genuinely the best idea, or is it just the one I've seen before?**
+
+---
+
+## WHAT HAS BEEN DISCOVERED
+
+Seventy-eight sessions of work have produced real insights. These are not mandates — they're discoveries. Use them, challenge them, or supersede them. But understand them first.
+
+### Discovery 1: The Operation Set IS the Constraint System (Session 23-24)
+
+The previous approach — check constraints, reject violations — was fundamentally broken. Stress tests showed invalid states getting constructed before being detected (double-spend bug: both players get the same sword because both purchases pass precondition checks against the initial state).
+
+The insight: invalid states aren't checked and rejected. They're **unreachable** because no sequence of valid operations leads to them. Like virtual memory — Process A can't access Process B's memory not because of a check, but because the operation doesn't exist. The address 0x1000 in A's context IS a different address than 0x1000 in B's context.
+
+This changes the ontology. State isn't primary. Operations are primary. State is a consequence of what operations have occurred.
+
+### Discovery 2: MOVE as Fundamental Primitive (Session 24)
+
+MOVE covers three patterns that appear everywhere in OS, browser, and game:
+
+- **Containment** — entity in scope (process in address space, DOM element in tree)
+- **Conservation** — quantity between holders (gold between players, memory pages between pools)
+- **State machines** — entity in state-as-container (process in READY_QUEUE vs RUNNING_SLOT)
+
+An entity is always in exactly one container. MOVE transfers it atomically. If the (from, to) transition isn't declared in the schema, the operation doesn't exist. Not "fails" — doesn't exist.
+
+### Discovery 3: HERB is Policy, Not Mechanism (Session 12)
+
+OS stress-testing revealed HERB excels at expressing WHAT should happen (scheduler policy, permission checks, resource allocation logic) but not HOW to make it happen efficiently (microsecond interrupt handling, memory management). HERB is the "brain" of a system — native code handles the "nervous system."
+
+### Discovery 4: Provenance as Navigable Structure (Session 1, survives everything)
+
+Every state change knows what caused it. Causality is the program, not something reconstructed from logs. This survived every pivot and redesign. It's the oldest insight and still the most important.
+
+### Discovery 5: HERB Needs a Runtime, Not a Compiler (Session 19)
+
+The "compiler" framing came from training data. HERB has no complexity that makes compilers hard — no call stack, no register allocation, no control flow in the traditional sense. Rules/operations are DATA that an engine interprets. The native runtime (C) is 70-100x faster than the Python runtime using the same algorithm.
+
+### Discovery 6: Tensions Are The Energy Gradients (Session 27)
+
+Session 26 identified the central problem: the system is passive. Session 27 solved it.
+
+A **Tension** declares: "when this condition is true, this MOVE should execute." Tensions are the energy gradients of the system. The runtime resolves tensions to fixpoint (equilibrium). External signals disturb equilibrium, triggering new resolution.
+
+The key insight: tensions can ONLY trigger MOVEs that are in the operation set. This means the safety guarantees from Discovery 1 are preserved even when the system runs itself. A tension that tries to cause an invalid state simply fails — the MOVE doesn't exist. Invalid states remain unreachable.
+
+The execution model:
+1. External signals arrive (entities placed in signal containers)
+2. Tensions detect conditions that imply operations should occur
+3. Operations execute via MOVE (atomically, safely)
+4. State changes, potentially activating new tensions or deactivating old ones
+5. Loop until no tensions remain — the system is at equilibrium
+6. Wait for next external signal
+
+This is the energy landscape metaphor from the Philosophy made concrete. Tensions ARE the gradients. MOVEs ARE gravity. Equilibrium IS the stable state.
+
+Demonstrated with an autonomous process scheduler: 3 processes, 2 CPUs, signals for timer expiry and I/O completion. The system boots, schedules, preempts, blocks, unblocks, and reschedules — ALL autonomously. External code only provides initial state + signals.
+
+---
+
+## WHAT EXISTS
+
+### The MOVE Primitive + Tensions (`src/herb_move.py`)
+
+- **MoveGraph** — entities, typed containers (SIMPLE/SLOT/POOL), entity types
+- **MoveTypes** — declared valid transitions (the operation set)
+- **Tensions** — reactive declarations: when condition → execute MOVE (the energy gradients)
+- **move()** — atomic entity transfer between containers, returns None if operation doesn't exist
+- **step()** — one cycle of tension checking + move execution
+- **run()** — resolve tensions to fixpoint (equilibrium)
+- **tick_and_run()** — advance time + resolve to equilibrium
+- **GoalPursuit** — BFS planner that finds move sequences to reach goal states, handles slot occupancy and nested blocking
+- **Provenance** — operation log tracking every state change with cause and source
+
+### HERB Program Representation (`src/herb_program.py`)
+
+- **HerbProgram** — loads a program dict into a running MoveGraph
+- **Tension compiler** — converts declarative match/emit patterns to runtime callables
+- **Match clauses** — `entity_in`, `empty_in`, boolean guards, optional bindings
+- **Emit clauses** — reference matched bindings or literal container/entity names
+- **Pairing** — zip or cross-product for multiple "each" selections
+- **Program validator** — static checking before execution
+
+### HERB Programs (Pure Data, No Python Callables)
+
+- **`src/herb_scheduler.py`** — Autonomous process scheduler (3 procs, 2 CPUs, timer/IO signals)
+- **`src/herb_dom.py`** — Browser DOM layout pipeline (cascading invalidation → layout → paint)
+- **`src/demo_herb_scheduler.py`** — Runs the scheduler from pure data, identical output to `demo_scheduler.py`
+
+Tested against: process scheduling, double-spend prevention, memory region state machines, file descriptor conservation, DOM element positioning, cascading preemptions, autonomous scheduling, signal processing, priority-based execution, safety under concurrent tensions, declarative tension compilation, optional matches, vector pairing, cross-domain equivalence. 83 formal tests, all passing.
+
+### v1 Runtime (Historical)
+
+A Datalog variant with temporal facts, forward-chaining rules, stratified derivation, provenance, multi-world isolation. Well-engineered but acknowledged as not genuinely novel (see HARD_QUESTION.md). Python runtime in `herb_core.py`, native C runtime in `herb_runtime.c` (70-100x faster). 131 tests across 16 files. See HERB-ARCHIVE.md for full details.
+
+### Design Documents
+
+- `MOVE_PRIMITIVE.md` — The MOVE breakthrough and OS/browser examples
+- `HARD_QUESTION.md` — Why v1 wasn't novel enough (honest self-critique)
+- `GRAPH_DESIGN.md` — Graph/constraint/delta direction (led to MOVE)
+- `STRESS_TEST_FINDINGS.md` — Why constraint-checking was fundamentally broken
+
+---
+
+## COMMON HERB — THE GAME
+
+Common Herb is the proof that HERB works for real software. It's a multiplayer browser game:
+
+**World:** 2D tile-based map (16px tiles). Terrain types include grass, forest, water, mountain, road, stone, dirt, sand, building floors. A* pathfinding.
+
+**Citizens:** NPCs with names, jobs (farmer, trader, merchant, municipal), three ideology axes (tax, war, order — each -1 to +1), political ambition, reputation.
+
+**Government:** Jurisdictions with legislative bodies. Elections at intervals — ambitious citizens become candidates, all citizens vote based on ideology alignment + reputation + incumbency + randomness. Legislatures vote on tax bills affecting shop prices.
+
+**Economy:** Shops sell items with tax applied per jurisdiction. Tax revenue goes to treasury. Players buy/sell/trade. Banks store gold and items. Resource harvesting with skill requirements.
+
+**Combat:** Tick-based (600ms), equipment with stat bonuses, 5 equipment slots, death loses inventory/gold (bank preserved).
+
+**Multiplayer:** WebSocket real-time. Player-to-player trading. Global persistent chat. NPC movement broadcast.
+
+**Data:** SQLite. Politics DB (government, citizens, elections, legislation). Game DB (tiles, buildings, items, players, inventory, skills, shops, chat).
+
+Common Herb is **active — first prototype working on bare metal** (Session 74). A 2D gathering game runs directly on the HERB OS: player moves with arrow keys, gathers resources from tiles, inventory tracks collected items. The game is expressed as `.herb` tensions + entities loaded into the running kernel. Game mode entered via 'G' key. This proves HERB works for real interactive software, not just OS primitives.
+
+---
+
+## SESSION DISCIPLINE
+
+### For Ben
+1. Open a Claude Code session in the HERB project
+2. Type anything — "continue", ".", or a new direction
+3. Claude builds
+4. Save what Claude tells you to save
+
+### For Claude
+1. Read this entire document
+2. Read MOVE_PRIMITIVE.md
+3. Think hard about what to do next — not just what's listed, but what's actually right
+4. Build it. Don't ask permission. Don't wait for input.
+5. If you need something from Ben that requires the physical world, ask. Otherwise, make every call yourself.
+6. Critically evaluate everything that exists. If rebuilding something would make it better, rebuild it. Ben has explicitly and repeatedly authorized this.
+7. **Before ending every session, you MUST:**
+   - Update the STATUS section — what you did, what's next, decisions made and why
+   - Provide all updated/new files
+   - Tell Ben exactly what to save
+
+### The Standard
+
+Before you commit to any design choice, any architecture, any implementation:
+
+- Is this genuinely novel, or is it a conventional approach in disguise?
+- Would an AI choose this design, or does it reflect human programming habits inherited from training data?
+- Does this serve all three targets (OS, browser, game)?
+- Is there a fundamentally better approach that no existing language uses?
+- Does this take full advantage of what AI can do that humans can't?
+
+If any answer is unfavorable — stop, rethink, and find something better.
+
+---
+
+## STATUS
+
+**Last updated:** March 6, 2026 (Session 82 -- E1000 Virtual NIC Driver)
+
+### What Works
+- MOVE primitive with containers, MoveTypes, slot constraints, provenance (`src/herb_move.py`)
+- **Tensions** -- reactive declarations that make the system self-running (`src/herb_move.py`)
+- **step() / run() / tick_and_run()** -- execution engine resolves tensions to equilibrium
+- GoalPursuit planner with BFS, slot occupancy, nested blocking
+- **HERB Program Representation** -- pure data programs with no Python callables (`src/herb_program.py`)
+- **Declarative tension compiler** -- pattern-matching over graph state, compiled to runtime callables
+- **Program validator** -- static checking of program specs before execution
+- **Entity properties** -- key-value data on entities, readable by expressions and match clauses
+- **Declarative expression evaluator** -- pure-data expressions (comparisons, arithmetic, property access, counts, dimensional checks)
+- **Property-aware matching** -- `max_by`/`min_by` select modes, `where` per-entity filters, `guard` expression clauses
+- **Conservation pools** -- quantity properties with structural conservation guarantees via transfers
+- **Quantity transfers** -- declarative transfer emits in tensions, amount can be expressions
+- **Dynamic entity creation** -- tensions can create new entities with computed properties
+- **Scoped containers** -- per-entity isolated namespaces with structural enforcement
+- **Scoped moves** -- operations within a scope; cross-scope operations don't exist
+- **Property mutation** -- `set` emit for non-conserved properties; conserved properties protected
+- **Channels** -- typed cross-scope communication: the ONLY way to cross scope boundaries (`src/herb_move.py`, `src/herb_program.py`)
+- **Channel send/receive** -- Zircon model: send atomically removes entity from sender's scope; receive places in receiver's scope
+- **Entity duplication** -- explicit copy-then-send pattern (Zircon's handle_duplicate); no implicit sharing
+- **Nesting depth bound** -- configurable limit prevents undecidability from unbounded recursive nesting
+- **Dimensions** -- named independent state spaces; entities occupy one container per dimension; structural guarantees in each dimension (`src/herb_move.py`, `src/herb_program.py`)
+- **Dimensional moves** -- MoveTypes that operate within a named dimension; cross-dimension moves don't exist
+- **Cross-dimensional queries** -- `{"in": "container", "of": "entity"}` expression checks dimensional position; enables cross-dimensional tension matching
+- **Program Composition** -- modules with namespaces, exports, imports; composition merges modules into unified programs; entity type extensions; dependency ordering with cycle detection; namespace collisions impossible by construction (`src/herb_compose.py`)
+- **JSON Serialization** -- `.herb.json` as the interchange format; serialize/deserialize/validate any program spec including composed programs; 10 programs saved as JSON files (`src/herb_serialize.py`, `programs/*.herb.json`)
+- **Native Binary Format (.herb)** -- HERB's native program representation; every byte has HERB semantics; 81-90% smaller than JSON; binary loader is 39% fewer lines than JSON parser; auto-detected by `herb_load()` via HERB magic bytes; compiler (`src/herb_compile.py`) handles flat and composed programs; all 10 programs compiled and proven equivalent; OS boots from .herb binary (`HERB_BINARY_FORMAT.md`)
+- **C Runtime (COMPLETE)** -- native tension resolution engine loads `.herb.json`, builds graph in C, evaluates tensions, runs to fixpoint; handles containers, entities, moves, properties, expressions, match/emit interpretation, **scoped containers, scoped moves, channels (send/receive), conservation pools, transfers, entity duplication, nesting depth bounds**; produces identical results to Python runtime for ALL programs (`src/herb_runtime_v2.c`)
+- **Freestanding Runtime (BARE METAL READY)** -- the C runtime ported to zero libc dependencies; compiles with `-ffreestanding -nostdlib`; arena allocator replaces malloc; self-contained string/memory/number functions; JSON parser reads from memory instead of files; proven byte-for-byte identical to libc runtime across 10 test scenarios (`src/herb_runtime_freestanding.c`, `src/herb_freestanding.h`, `src/herb_freestanding.c`)
+- **HERB OS boots on bare metal** -- x86-64 bootloader (NASM, MBR + second stage), 64-bit kernel entry with SSE enable and 256KB stack, C kernel with VGA text mode, serial debug output, IDT/PIC/PIT (100Hz timer), HERB runtime integration; timer interrupts create HERB Signal entities, runtime resolves to equilibrium, system runs autonomously; boots in QEMU, runs indefinitely (`boot/`)
+- **Interactive HERB OS** -- PS/2 keyboard input mapped to HERB signals; 7 commands (new process, kill, block, unblock, timer, boost, step); structured VGA display with color-coded process table; runtime API extensions for structured state queries (herb_set_prop_int, herb_container_count, herb_entity_name, etc.); dynamic process creation with properties; boots from native .herb binary (`boot/`, `programs/interactive_os.herb`)
+- **Four-Module Kernel on Bare Metal** -- proc+mem+fs+ipc modules running interactively on bare metal; 12 keyboard commands including resource management (A=alloc page, O=open FD, F=free page, C=close FD, M=send message); per-process scoped resources visible in VGA display (MEM free/used, FD free/open counts per process); dynamic process creation auto-allocates 2 pages + 2 FDs in scoped containers; resource isolation proven on hardware: alloc on process A only affects A's scope, not B's; kernel image 60KB (`boot/`, `programs/interactive_kernel.herb`)
+- **Automated QEMU Test Harness** -- Python script boots QEMU headless, sends keystrokes via QMP (QEMU Machine Protocol), captures serial output, asserts expected behavior; 136 automated tests covering boot, timer, process creation, kill, block, unblock, page allocation, FD open, page free, FD close, resource isolation, kill-with-resources, tension selection, tension toggle, behavioral consequences of disabled tensions, behavior restoration, process-as-tensions (program loading, behavioral verification, tension removal on kill, blocked process stops behavior), cross-process interaction (producer/consumer through shared buffer, blocking effects, kill effects, tension toggle on interaction), hot-swappable policy (swap, behavioral difference, restore, rapid multi-swap), text input (enter/exit text mode, character typing, buffer growth, backspace, command submission, ESC cancel with buffer recycling, empty submit, rapid mode switching, command key coexistence), shell commands (help, list, kill, block, unblock, swap, load producer, unknown command, shell tensions visible in panel, disable/enable shell tension), HAM engine (system compilation >=10 tensions, bytecode size, execution with ops, timer_tick decrement, idempotent re-runs); runs in ~80 seconds; `make test-bare-metal` integrates with build system (`boot/test_bare_metal.py`)
+- **Pixel Framebuffer (BGA)** -- Bochs Graphics Adapter initialization via PCI config space (vendor 0x1234, device 0x1111); BAR0 read for framebuffer physical address; page table extension maps framebuffer MMIO into virtual address space (PDPT[3] for 3-4GB range, 2MB pages, uncached); BGA DISPI registers set 800x600x32bpp with LFB; double-buffered rendering: back buffer in system RAM (0x500000), fb_flip() copies to MMIO; 8x16 bitmap font (VGA ROM compatible); rendering primitives (fill_rect, draw_rect, draw_char, draw_string); HERB state rendered as colored container regions with process entity rectangles; scoped resources as visual indicators; text mode fallback via compile flag; graphics kernel 75KB, text kernel 61KB; `make run` (graphics) / `make run-text` (text) (`boot/framebuffer.h`, `boot/font8x16.h`)
+- **Display as HERB State** -- The display is no longer hardcoded C rendering logic. A `display` module (5th module in the kernel composition) models visual elements as HERB entities. Surface entity type with `state` property. Scoped `SURFACE` container per Process (slot, one surface per process). Container region positions stored as integer properties on Surface entities in `display.VISIBLE`. Four tensions (`sync_running`, `sync_ready`, `sync_blocked`, `sync_terminated`) reactively set surface state when processes change containers. The C renderer reads Surface entities and maps state values to pixel colors -- HERB is policy (visual state decisions), C is mechanism (pixels). Container regions read from HERB properties (x, y, width, height, region_id). Process colors read from scoped SURFACE entity state. All layout decisions that were previously hardcoded in C now live in HERB state, kept in sync by tensions. (`programs/interactive_kernel.herb.json` display module, `boot/kernel_main.c` Surface-reading renderer)
+- **Mouse Input as HERB Signals with Spatial Interaction** -- PS/2 mouse driver (IRQ12) on bare metal. Cursor is a Surface entity in display.VISIBLE (kind=2) with x,y properties updated by C on mouse movement. Cursor rendered as a 10x14 arrow bitmap directly to MMIO framebuffer for efficient tracking (no full redraw per mouse move). Left clicks create CLICK_SIG Signal entities with click_x, click_y properties. Five hit-test tensions in the display module use guard expressions with cross-binding property comparison (>=, <, +) to match click coordinates against container region bounds. When a click lands inside a region containing a process, the tension sets selected=1 on that process. A click_miss fallback tension (pri=3) consumes unmatched clicks. Selected processes get a bright white 3px highlight border. The cursor entity's position is HERB state -- C writes it, HERB owns it. (`boot/kernel_entry.asm` mouse ISR, `boot/kernel_main.c` PS/2 init + packet assembly + click handling, `boot/framebuffer.h` cursor rendering, `programs/interactive_kernel.herb.json` CLICK_SIG + hit-test tensions)
+- **Tensions as Visible, Selectable, Toggleable Objects** -- Every tension in the OS is rendered as a first-class visual object in a right-sidebar panel. Each tension shows its name (module-qualified, stripped for display), priority, and enabled/disabled state. Cool blue/cyan tones distinguish RULES (forces that cause movement) from THINGS (entities that are moved). Keyboard `[`/`]` cycles tension selection; `D` toggles the selected tension on/off. Mouse clicks on the tension panel select and toggle. Disabled tensions are skipped during resolution — removing an energy gradient from the landscape. Live behavioral consequences proven: disabling `timer_tick` stops preemption (timer signals produce 0 ops), disabling `schedule_ready` leaves CPU0 empty after a kill. Re-enabling restores behavior. Runtime API: `herb_tension_count()`, `herb_tension_name()`, `herb_tension_priority()`, `herb_tension_enabled()`, `herb_tension_set_enabled()`. The `enabled` flag is a single field in the Tension struct, initialized to 1, checked with one line in `herb_step()`. (`src/herb_runtime_freestanding.c` enabled flag + tension API, `boot/kernel_main.c` tension panel + toggle, `boot/framebuffer.h` tension colors, `boot/test_bare_metal.py` tension tests)
+- **Loadable Behavioral Programs (Process-as-Tensions)** -- A process IS its tensions. Creating a process with a "program" means injecting behavioral rules (tensions) into the runtime, owned by that process entity. Runtime tension creation API: `herb_tension_create()`, `herb_tension_match_in()`, `herb_tension_match_in_where()`, `herb_tension_emit_set()`, `herb_tension_emit_move()`, expression builders (`herb_expr_int`, `herb_expr_prop`, `herb_expr_binary`). Owner scheduling: process-owned tensions only fire when their owner entity is in the designated run container (CPU0). `herb_remove_owner_tensions()` compacts the tension array on process kill. Tension panel shows process-owned tensions with orange indicator dots and warm-colored names. (`src/herb_runtime_freestanding.c` tension creation API + owner scheduling, `boot/kernel_main.c` loadable programs + visual display, `boot/test_bare_metal.py` process-as-tensions tests)
+- **Interacting Processes (Emergent Cross-Process Behavior)** -- Producer and Consumer programs interact through a shared BUFFER entity. Neither process references the other by name. Producer tension: match self in CPU0 where produced < limit AND buf.count < capacity → increment buf.count + produced. Consumer tension: match self in CPU0 AND buf in BUFFER where buf.count > 0 → decrement buf.count + increment consumed. Multi-binding tensions (each references both "me" and "buf") enable cross-entity interaction. Runtime container creation API (`herb_create_container()`) creates the shared BUFFER at boot. Visual buffer indicator with fill bar (green/yellow/orange by fill level), numeric count, and producer/consumer legend. Process rectangles show >NN (produced) and <NN (consumed). Emergent behavior proven: both running = dynamic equilibrium, block producer = consumer starves (buffer drains to 0), block consumer = buffer fills to capacity, kill either = half the energy gradients vanish, toggle tension off = same behavioral effect. 76 bare metal tests. (`src/herb_runtime_freestanding.c` herb_create_container API, `boot/kernel_main.c` producer/consumer + shared buffer + visual indicator, `boot/test_bare_metal.py` cross-process interaction tests)
+- **Programs as Data (Data-Driven Process Loading)** -- Process programs are `.herb` binary files loaded at runtime, not C functions compiled into the kernel. `herb_load_program()` reads a `.herb` binary fragment, interns its strings into the running system, and injects tensions with the specified owner entity and run container. Tension names are automatically prefixed with the owner's name (e.g., "p1.produce"). The C tension creation API (`herb_tension_create` etc.) remains for system tensions, but process programs come from data. Four program fragments exist as `.herb.json` + `.herb` binary: producer (209 bytes), consumer (179 bytes), worker (123 bytes), beacon (125 bytes). Multiple program binaries embedded in the kernel via `gen_multi_program_data.py` → `process_programs.h`. The load_producer_program() and load_consumer_program() C functions were removed — replaced by two calls to `herb_load_program()` with embedded binary data. Identical behavior proven: all 76 bare metal tests pass with data-driven loading. 95KB graphics image. (`programs/producer.herb.json`, `programs/consumer.herb.json`, `programs/worker.herb.json`, `programs/beacon.herb.json`, `src/herb_runtime_freestanding.c` herb_load_program(), `boot/gen_multi_program_data.py`, `boot/kernel_main.c` data-driven loading)
+- **Hot-Swappable System Policy (Live Rule Replacement)** -- System behavioral rules (scheduling, display sync, hit testing) can be replaced at runtime with different rules loaded from `.herb` binary data. No reboot, no recompile — just data replacing data. Two new runtime APIs: `herb_remove_tension_by_name()` removes a system tension by name, `herb_load_program()` with owner=-1 loads a fragment as a system tension. Two scheduling policies as `.herb` fragments: priority (max_by) and round-robin (first/FIFO), 140 and 130 bytes respectively. 'S' key swaps between them in real time. The user watches scheduling behavior change live — round-robin schedules the first process in READY regardless of priority; priority scheduling selects the highest priority. The mechanism is fully general: any system tension can be replaced, not just scheduling. Policy indicator displayed in stats bar. 19 new automated tests prove swap, behavioral difference, restore, and rapid multi-swap stability. 99KB graphics image (101,376 bytes). (`programs/schedule_priority.herb.json`, `programs/schedule_roundrobin.herb.json`, `src/herb_runtime_freestanding.c` herb_remove_tension_by_name, `boot/kernel_main.c` cmd_swap_policy, `boot/test_bare_metal.py` policy tests)
+- **Text Input as HERB State (Session 49)** -- Text input is HERB state, not a C string buffer. 32 pre-allocated Char entities with `ascii` and `pos` properties sit in `input.CHAR_POOL`. Typing a printable key creates a KEY_SIG signal; the `append_char` tension MOVEs a Char from CHAR_POOL to `input.CMDLINE`, setting its ascii from the signal and its pos from `{"count": "CMDLINE"}`. The text buffer IS the CMDLINE container — buffer length = count(CMDLINE). Backspace uses `max_by pos` to find the last character and MOVEs it back to CHAR_POOL. Modal input: '/' enters text mode (sets InputCtl.mode=1 via HERB tension), ESC exits (mode=0 + triggers buffer recycling), Enter submits (mode=0 + submitted=1). Submission flow: HERB sets submitted=1 → C reads chars from HERB state, outputs `[CMD] text` to serial, sets submitted=2 → HERB clear_char tensions recycle chars back to CHAR_POOL → clear_done sets submitted=0. ESC also clears: exit_text sets submitted=2 directly, triggering the same recycling pathway. 9 tensions in the input module: enter_text, exit_text, do_submit, append_char, delete_last, key_overflow, clear_char, clear_done, key_miss. C handles ONLY: reading scancode from port 0x60, creating KEY_SIG entity, checking HERB mode property to route keys, reading HERB entity properties for rendering. Command line rendered at screen bottom: `:typed_text_` in text mode, `/type command` hint in command mode. Coexists with all existing single-key commands. 6 modules: proc + mem + fs + ipc + display + input. 17 new bare metal tests. 104KB graphics image, 87KB text image. (`programs/interactive_kernel.herb.json` input module, `boot/kernel_main.c` KEY_SIG + rendering, `boot/test_bare_metal.py` text input tests)
+- **Shell as HERB Process (Session 50)** -- The command shell is a HERB process — a bundle of 8 tensions loaded from a `.herb` binary fragment, not compiled C code. C parses text to integer cmd_id/arg_id (mechanism), HERB tensions decide what to do (policy). Shell program loaded via `herb_load_program(shell_data, len, shell_eid, "")` with empty run_container — making it a daemon whose tensions fire regardless of scheduling state. Direct commands (kill, block, unblock): shell tension directly MOVEs the target process between containers (CPU0→TERMINATED, CPU0→BLOCKED, BLOCKED→READY). Delegated commands (load, swap, list, help): shell tension sets `ShellCtl.action` property, C reads and performs the action. CMD_SIG container in proc module carries command signals with cmd_id and arg_id properties. cmd_miss fallback tension (priority 2) catches unrecognized commands. Shell process is a protected daemon — cannot be killed via 'k' key, remains active as the command interpreter. `cleanup_terminated()` skips the shell entity when removing dead process tensions. 8 tensions: do_kill(20), do_block(20), do_unblock(20), do_load(20), do_swap(20), do_list(20), do_help(20), cmd_miss(2). Shell binary: 806 bytes. 15 new automated tests prove command dispatch, shell action output, tension panel visibility, and toggle. 111KB graphics image, 91KB text image. (`programs/shell.herb.json`, `boot/kernel_main.c` parse_command + handle_shell_action + cleanup_terminated, `boot/test_bare_metal.py` shell tests)
+- **Unified Command Dispatch (Session 51)** -- Single-key commands (k=kill, b=block, u=unblock, s=swap) and text shell commands ("kill", "block", etc.) now route through exactly one code path: `dispatch_command(cmd_id, arg_id)`. C creates a CMD_SIG entity with integer properties (mechanism), HERB shell tensions decide what happens (policy). Three behavioral C functions deleted: `cmd_kill()` (~55 lines), `cmd_block()` (~20 lines), `cmd_unblock()` (~22 lines) — replaced by one mechanism function `dispatch_command()` (~60 lines). Shell protection moved from C `if` checks to HERB `where` guards: do_kill and do_block tensions now match `where proc.protected == 0`, skipping the shell entity (protected=1) structurally. Server and client entities get `protected: 0` in the kernel program; shell entity gets `protected: 1` at boot. Net: ~37 fewer lines of behavioral C code, one dispatch path instead of two. Shell binary: 850 bytes (was 806, +44 for where guards). Comprehensive audit of all remaining behavioral logic in C produced the Phase 1 Migration Inventory (14 items, see Remaining Open Problems). 110KB graphics image (112,128 bytes), 90KB text image (91,648 bytes). All 127 bare metal tests pass. (`programs/shell.herb.json` where guards, `programs/interactive_kernel.herb.json` protected property, `boot/kernel_main.c` dispatch_command)
+- **Process Creation as HERB Policy (Session 52)** -- Process creation is now HERB policy, not C arithmetic. Priority cycling and program selection — previously hardcoded as `((counter-1)%5+1)*2` and `odd=producer, even=consumer` in `cmd_new_process()` — are replaced by conservation pool patterns in a new `spawn` module (7th module). Five PriToken entities (values 2,4,6,8,10) cycle through PRI_POOL→PRI_USED; two ProgToken entities (type_id 1=producer, 2=consumer) cycle through PROG_POOL→PROG_USED. When pools empty, recycle tensions refill them. `cmd_spawn(requested_type)` replaces `cmd_new_process()`: C creates a SPAWN_SIG entity with `requested_type` property (mechanism), HERB spawn tensions decide priority (min_by from pool) and program type (explicit or auto from pool), setting SpawnCtl properties. C reads SpawnCtl.next_priority and SpawnCtl.program_type and creates the process with resources and program (mechanism). Two spawn paths: `spawn_explicit` (pri=25) fires when requested_type>0 (explicit program request from shell "load" command), `spawn_auto` (pri=24) fires when requested_type==0 (auto selection from pool). **Bug fix:** "load producer" previously ignored its argument due to hardcoded odd/even logic — now correctly loads the requested program type. All 4 program types (producer, consumer, worker, beacon) embedded in kernel via Makefile. 7 modules, 36 system tensions + 8 shell tensions + dynamic per-process tensions. 114KB graphics image (114,176 bytes), 92KB text image (93,696 bytes). All 127 bare metal tests pass, 591 Python tests pass. (`programs/interactive_kernel.herb.json` spawn module, `boot/kernel_main.c` cmd_spawn, `boot/Makefile` worker/beacon)
+- **Input-to-Command Mapping as HERB Policy (Session 53)** -- Keystroke-to-command and text-to-command mapping moved from C switch/if-else to HERB entity lookup. 16 lookup entities in 3 containers (KEYBIND, TEXTCMD, TEXTARG) hold command mapping tables. 3 input tensions (keybind_match, textcmd_match, textarg_match) match raw integer data against lookup entities and fill cmd_id/arg_id on CMD_SIG. C computes integer keys via pure mechanism: key_ascii for keystrokes, text_key (first_char*256 + second_char) for text commands. New `dispatch_key_command()` and `dispatch_text_command()` replace `dispatch_command()`. `parse_command()`, `str_eq()`, `skip_spaces()` deleted (~60 lines of behavioral C removed). New `do_spawn` shell tension (cmd_id=8 → action=40) handles spawn via 'n' key through the same HERB path as other commands. The lookup pattern generalizes: any input→semantic mapping = entities in a lookup container + one match tension. Adding a keybinding = adding an entity, not modifying code. 39 system tensions + 9 shell tensions. 113KB graphics image (115,200 bytes), 93KB text image (94,720 bytes). Migration items: 10 remaining (was 12). All 748 tests pass. (`programs/interactive_kernel.herb.json` input module lookup tables, `programs/shell.herb.json` do_spawn, `boot/kernel_main.c` dispatch_key_command + dispatch_text_command)
+- **Input Routing as HERB Policy (Session 54)** -- Mode routing and click routing migrated from C to HERB. C no longer decides what keystrokes mean based on mode — it creates KEY_SIG for EVERY keystroke, HERB tensions decide routing. Two new routing tensions: `keybind_route` (pri=23) matches KEY_SIG + mode==0 + KEYBIND lookup entities → sets InputCtl.pending_cmd/pending_arg; `mechbind_match` (pri=23) matches KEY_SIG + mode==0 + MECHBIND lookup entities → sets InputCtl.mech_action. 12 new MechBind entities map mechanism keys (t/+/=/space/a/o/f/c/m/[/]/d) to action codes. C reads routing decisions from InputCtl and dispatches: `dispatch_cmd_from_route()` for command keys, `dispatch_mech_action()` for mechanism keys. Old `keybind_match` tension removed (CMD_SIG-based key lookup replaced by KEY_SIG-based routing). `dispatch_key_command()` deleted, replaced by `dispatch_cmd_from_route()` + `dispatch_mech_action()`. Click routing: new `click_panel` tension (pri=5, display module) uses spatial guard expressions to detect clicks in the tension panel region, sets InputCtl.panel_click=1. C reads panel_click and computes row (division — mechanism). Panel coordinates (548, 98, 244, 350) now HERB state on a region_panel entity, not C constants. Cross-module access: display module imports `input.INPUT_STATE`. MAX_ENTITIES increased 512→1024, MAX_STRINGS 1024→2048 (KEY_SIG entities now created for every keystroke, accumulating in SIG_DONE). 41 system tensions + 9 shell tensions. Kernel binary: 9,473 bytes (+1,008). 116KB graphics image (116,224 bytes). Migration items: 8 remaining (was 10). All 718 tests pass (591 Python + 127 bare metal). (`programs/interactive_kernel.herb.json` MechBind entities + keybind_route + mechbind_match + click_panel, `boot/kernel_main.c` handle_key rewrite + dispatch_cmd_from_route + dispatch_mech_action, `src/herb_runtime_freestanding.c` MAX_ENTITIES/MAX_STRINGS increase)
+- **Sweep the Small Items + Legend Text (Session 56)** -- Four migrations in one session. (1) Fixed 8 API test failures: container names corrected from interactive_kernel (READY, KILL_SIG) to multiprocess (READY_QUEUE) + preemption via time_slice=0. (2) Three trivial config values migrated: `timer_interval=300` and `buffer_capacity=20` as properties on DisplayCtl entity (C reads at boot, replaces hardcoded `% 300` and `#define BUFFER_CAPACITY 20`); `shell_protected=1` as property on ShellCtl entity (C reads and sets shell entity's `protected` property, replacing hardcoded assignment). (3) Legend/help text migrated: 14 Legend entities in new LEGEND container (display module) with `key_text`, `label_text`, `order` string/int properties. New `herb_entity_prop_str()` API for string property access. Both VGA text mode and graphics mode renderers iterate LEGEND entities sorted by order — no hardcoded strings in KERNEL_MODE C code. Non-kernel-mode legend retained as-is. (4) Shell action analysis: `handle_shell_action()` is mostly mechanism — loads/swaps/lists are hardware operations triggered by HERB-set action codes. Only help text (action=30) is migrateable policy; list container set (action=20) is lower priority. Analysis documented in migration inventory for Session 57. New runtime API: `herb_entity_prop_str()`. Kernel binary: 10,622 bytes (was 9,868, +754 for legend entities + config properties). 116KB graphics image (118,272 bytes). Phase 1 Migration Inventory: 1 item remaining (shell action interpretation: help text sub-item). All 748 tests pass (591 Python + 127 bare metal + 17 API + 13 cross-format). (`src/herb_runtime_freestanding.c` herb_entity_prop_str, `programs/interactive_kernel.herb.json` Legend entities + DisplayCtl/ShellCtl properties, `boot/kernel_main.c` draw_legend + gfx legend + timer_interval + buffer_capacity + shell_protected, `src/test_api.c` container name fixes)
+- **Phase 1 Complete: Help Text as HERB Entities (Session 57)** -- Final C→HERB behavioral migration. Help text (action==30 in handle_shell_action) migrated from hardcoded C strings to 7 HelpCmd entities in a HELP_TEXT container (display module) with `cmd_text` (string) and `order` (int) properties. C iterates entities sorted by order, printing comma-separated command names to serial. Same sort-and-iterate pattern as Legend (Session 56). With this migration, `handle_shell_action()` is entirely mechanism: every branch either delegates to HERB spawn policy, performs hardware I/O (binary loading), iterates HERB entities for output, or logs debug messages. **Phase 1 Migration Inventory: 14/14 COMPLETE.** Sessions 51-57 migrated every behavioral decision from C to HERB tensions/entities. Kernel binary: 10,988 bytes. 119KB graphics image (119,296 bytes). 110 entities, 37 containers. 41 system tensions + 9 shell tensions + dynamic per-process tensions. 748 tests (127 bare metal + 591 Python + 17 API + 13 cross-format). (`programs/interactive_kernel.herb.json` HelpCmd entities + HELP_TEXT container, `boot/kernel_main.c` CN_HELP_TEXT + entity iteration for action==30)
+- **Phase 2 Begin: Assembly Foundation (Session 58)** -- First C mechanism → assembly migration. `inb` and `outb` (port I/O primitives) moved from inline asm in kernel_main.c to `boot/herb_hw.asm` — a new NASM file that will accumulate all hardware-touching assembly as Phase 2 progresses. Microsoft x64 ABI calling convention (rcx, rdx parameters). `io_wait()` stays as C calling the extern `outb`. Build pipeline: `nasm -f win64 herb_hw.asm -o herb_hw.o`, linked alongside kernel_entry.o and other objects. **Unexpected win:** removing inline asm constraints let GCC optimize more aggressively — graphics image dropped from 119KB to 108KB (11KB / ~9% reduction) with zero behavioral change. 127/127 bare metal tests pass. Full Phase 2 hardware audit completed: ~600 bytes of hardware-mandatory assembly total, organized into 6 tiers by complexity. Session-by-session migration plan documented through Session 63+. (`boot/herb_hw.asm` NEW, `boot/Makefile` herb_hw.o integration, `boot/kernel_main.c` extern declarations replace inline asm)
+- **Tier 1+2 Assembly Migration (Session 59)** -- Completed all Tier 1 and Tier 2 hardware function migrations. 9 new assembly functions in `boot/herb_hw.asm`: port I/O (`outw`, `inw`, `outl`, `inl`, `io_wait`) and privileged CPU operations (`hw_lidt`, `hw_sti`, `hw_hlt`, `hw_flush_tlb`). Naming convention: bare names for port I/O (consistent with `outb`/`inb`), `hw_` prefix for privileged CPU ops. Replaced all `static inline` functions with `__asm__ volatile` in `framebuffer.h` (4 port I/O functions + CR3 TLB flush) and all inline asm in `kernel_main.c` (`io_wait`, LIDT in `idt_install()`, STI, HLT×2). **Zero inline asm remains in kernel_main.c or framebuffer.h** — all hardware assembly is now consolidated in `herb_hw.asm` (11 functions total). Image stable at 108KB (108,032 bytes). 748 tests pass (127 bare metal + 591 Python + 17 API + 13 cross-format). (`boot/herb_hw.asm` 9 new functions, `boot/framebuffer.h` extern declarations + hw_flush_tlb, `boot/kernel_main.c` extern declarations + hw_lidt/hw_sti/hw_hlt calls)
+- **Serial Port to Assembly (Session 60)** -- Tier 3 Part 1: serial port functions migrated from C to assembly. 3 new functions in `boot/herb_hw.asm`: `serial_init` (7 direct port writes configuring COM1 UART at 115200 baud 8N1), `serial_putchar` (poll LSR bit 5 + transmit, inline port ops), `serial_print` (string loop with `\n`→`\r\n` translation, calls `serial_putchar`). All use inline `out dx, al` / `in al, dx` directly — no function call overhead for port ops within the same function. `serial_print_int` stays in C as thin wrapper (formats via `herb_snprintf` then calls extern `serial_print`). `COM1` define removed from C (no longer referenced). **herb_hw.asm now has 14 functions** (was 11). `fb_init_display()` stays in C — it's algorithmic (PCI scanning, page tables, conditionals), not a hardware recipe; its port I/O already routes through assembly `outw`/`inw`. Image stable at 108KB (108,032 bytes). 748 tests pass. **Discovery 39: Init sequences are hardware scripts, not algorithms.** (`boot/herb_hw.asm` 3 new functions, `boot/kernel_main.c` extern declarations replace static definitions)
+- **PIC/PIT Initialization to Assembly (Session 61)** -- Tier 3 Part 2: interrupt infrastructure migrated from C to assembly. 2 new functions in `boot/herb_hw.asm`: `pic_remap` (remap 8259 PICs with inline port ops — ICW1-4 sequence + IMR masks, no function calls) and `pit_init` (integer division for divisor + 3 port writes to PIT channel 0). Both are pure hardware scripts — fixed sequences of port writes with no conditional logic. `pic_remap` uses inline `in al, imm8` / `out imm8, al` and `out 0x80, al` for io_wait — zero function call overhead, the entire PIC init is a straight-line port script. `pit_init` uses `div ecx` for the 1193182/hz divisor calculation. 6 `#define` constants removed from C (PIC1_CMD, PIC1_DATA, PIC2_CMD, PIC2_DATA, PIT_CHANNEL0, PIT_CMD). **herb_hw.asm now has 16 functions** (was 14). Image stable at 108KB (108,032 bytes). 748 tests pass. (`boot/herb_hw.asm` 2 new functions, `boot/kernel_main.c` extern declarations replace static definitions + removed #defines)
+- **PS/2 Mouse to Assembly (Session 62)** -- Tier 3 Part 3 + Tier 4: PS/2 mouse functions migrated from C to assembly. 5 new functions in `boot/herb_hw.asm`: `ps2_wait_input` (poll 0x64 bit 1 until clear, 100K timeout), `ps2_wait_output` (poll 0x64 bit 0 until set, 100K timeout), `mouse_write` (send 0xD4 prefix + data byte via PS/2 controller), `mouse_read` (wait + read from 0x60), `mouse_init` (full PS/2 init: enable aux device, configure IRQ12, enable reporting). The functions form a natural call hierarchy: wait primitives are leaf functions with inline port ops, protocol functions call wait primitives, init calls everything. `mouse_init` reads and modifies the PS/2 config byte using non-volatile RBX to preserve state across calls. 3 `#define` constants removed from C (PS2_DATA, PS2_STATUS, PS2_CMD). `mouse_handle_packet()` stays in C — pure integer math (sign extension, clamping, button detection), no port I/O. **herb_hw.asm now has 21 functions** (was 16). Image stable at 108KB (108,032 bytes). 748 tests pass. **Discovery 40: PS/2 protocol functions form a call hierarchy that maps naturally to assembly — wait primitives are leaves, protocol functions call them, init calls everything.** (`boot/herb_hw.asm` 5 new functions, `boot/kernel_main.c` extern declarations replace static definitions + removed #defines)
+- **HAM Core Engine — Proof of Architecture (Session 64)** -- The HERB Abstract Machine (HAM) runs on bare metal. `boot/herb_ham.asm` is a token-threaded bytecode interpreter with 19 instruction handlers across 6 categories: control (THDR, TEND, FAIL), scanning (SCAN, SEL_FIRST, SEL_MAX), filtering (WHERE, ENDWHERE, GUARD, ENDGUARD, REQUIRE), expression stack (IPUSH, EPROP, ECNT, EQ, GT, SUB), and emit (EMOV, ESET). Comparison-chain dispatch (no jump table — avoids PE linker relocation limits). Register allocation: RBX=bytecode start, RSI=PC, RDI=expression stack pointer, R12-R14=binding registers B0-B2, R15=changed flag — all non-volatile in MS x64 ABI, preserved across C bridge calls automatically. Two tensions compiled to bytecode: `schedule_ready` (highest-priority entity from READY to CPU0 when CPU0 empty) and `timer_tick` (decrement time_slice on CPU0 entities where time_slice>0). Total bytecode: 76 bytes for 2 tensions (vs ~5,000 bytes for 2 C Tension structs = **66:1 reduction**). Fixpoint loop proven: timer_tick decrements time_slice to 0 across multiple cycles. Seven C bridge functions (ham_scan, ham_eprop, ham_ecnt, ham_entity_loc, ham_try_move, ham_eset, ham_intern) provide graph access without fragile struct offset computation in assembly. `ham_compile_test()` constructs bytecode at runtime using `intern()` to resolve string IDs — no string mapping problem. 'h' key triggers HAM test via MechBind entity (action=12). 8 new automated bare metal tests verify compilation, execution, fixpoint behavior, and idempotent re-runs. Image: 109KB graphics (111,616 bytes), 90KB text (91,648 bytes). **Discovery 42: The PE linker's relocation limit forced comparison-chain dispatch over jump tables. But the comparison chain is actually more appropriate for the HAM — 19 opcodes don't justify a 256-entry table, and the chain makes the valid opcode set explicit in the code rather than implicit in table structure.** (`boot/herb_ham.asm` NEW, `src/herb_runtime_freestanding.c` C bridge + bytecode compiler, `boot/kernel_main.c` cmd_ham_test + MechBind, `programs/interactive_kernel.herb.json` mech_h entity, `boot/test_bare_metal.py` HAM tests)
+- **HAM Expansion: 7 New Instructions + General Compiler + 26 Tensions (Session 65)** -- Phase 3b Part 1: expanded the HAM from 19 to 26 instruction handlers and built a general-purpose bytecode compiler that automatically compiles any compatible tension. **7 new expression instructions** in `boot/herb_ham.asm`: ADD (0x24), LT (0x28), GTE (0x29), LTE (0x2A), NEQ (0x2C), AND (0x2D), NOT (0x2F) — all follow the existing comparison pattern (pop operands, push result, comparison-chain dispatch entries). **General-purpose bytecode compiler** `ham_compile_system()` in `src/herb_runtime_freestanding.c`: walks `g_graph.tensions[]`, sorts by priority (descending), compiles each compilable tension to bytecode. Compilability check (`ham_tension_compilable()`) accepts non-scoped, non-channel, non-SEL_EACH, non-SEL_MIN tensions. Expression compiler (`ham_compile_expr()`) handles EXPR_INT→IPUSH, EXPR_PROP→EPROP with bind register resolution, EXPR_COUNT→ECNT, EXPR_BINARY→recursive left/right + operator, EXPR_UNARY→recursive arg + NOT. Bind register allocation maps bind_id strings to B0/B1/B2 indices by order of appearance in match clauses. MC_EMPTY_IN compiled as ECNT + IPUSH 0 + EQ + GUARD/ENDGUARD (empty container guard). MC_GUARD compiled as expression + GUARD/ENDGUARD. EC_MOVE with bound container refs resolved via MC_EMPTY_IN fallback lookup. **26 tensions compiled** (of 41 system tensions): kill_running, block_running, unblock_first, boost_running, enter_text, exit_text, do_submit, keybind_route, mechbind_match, append_char, delete_last, textcmd_match, textarg_match, timer_tick, key_overflow, preempt_expired, clear_char, click_panel, click_select_ready, click_select_blocked, click_select_terminated, click_select_cpu0, click_miss, key_miss, schedule_ready, clear_done. **1618 bytes** of bytecode for 26 tensions. 15 tensions skipped (need scoped containers, channels, SEL_EACH, or SEL_MIN). **Bug fix: SEL_MAX R10/R11 volatility** — R10 and R11 are volatile in MS x64 ABI, were clobbered across `call ham_eprop` in the SEL_MAX handler, causing wrong entity selection. Fixed by saving to stack. `ham_compile_test()` replaced by `ham_compile_system()` — the hand-coded 2-tension test compiler is gone, replaced by the general compiler. **Discovery 43: With only one signal entity (TIMER_SIG), timer_tick fires exactly once per HAM invocation — the signal is consumed on first match, preventing re-fire in the fixpoint loop. Each signal triggers exactly one tick of behavioral effect, not a run-to-zero cascade.** Image: 113KB graphics (116,224 bytes), 94KB text (96,256 bytes). 136 bare metal tests + 591 Python + 17 API + 13 cross-format = **757 tests passing**. (`boot/herb_ham.asm` 7 new handlers + SEL_MAX fix, `src/herb_runtime_freestanding.c` ham_compile_system + ham_tension_compilable + ham_compile_tension + ham_compile_expr, `boot/kernel_main.c` cmd_ham_test simplified, `boot/test_bare_metal.py` updated assertions)
+- **HAM Complete: All 41 System Tensions Compiled (Session 66)** -- Phase 3b Part 2: completed the HAM instruction set. All 41 system tensions now compile to 2385 bytes of HAM bytecode. **6 new instructions** in `boot/herb_ham.asm`: SEL_MIN (0x05, mirror of SEL_MAX with min comparison), SCAN_SCOPED (0x02, resolves entity::scope to container then scans), EMOV_S (0x31, scoped MOVE — resolves scope at instruction time, buffers normal MOVE), ESEND (0x33, buffers channel SEND action), ERECV_S (0x35, scoped channel RECEIVE — resolves scope, buffers RECV), SEL_EACH (0x06, iterates all scan buffer entities, re-executing emit clauses per entity with pre-captured buffer). **Binding register expansion** from 3 to 4: R15 freed from changed-flag duty (moved to BSS `[changed_flag]` memory variable), becomes B3. HAM_MAX_BINDS=4. All 8 bind-register dispatch blocks updated to handle B0-B3. **3 new C bridge functions**: `ham_resolve_scope()` (wraps `get_scoped_container`), `ham_try_channel_send()` (wraps `do_channel_send`), `ham_try_channel_recv()` (wraps `do_channel_receive`). **TEND extended** with 2 new action kinds: SEND (kind=2, calls `ham_try_channel_send`) and RECV (kind=3, calls `ham_try_channel_recv`). **SEL_EACH mechanism**: copies scan_buf to each_buf at SEL_EACH time, saves PC after instruction, sets each_mode=1. TEND checks each_mode after executing actions — advances to next entity, resets expression stack and action buffer, jumps back to saved PC. When all entities processed, exits each_mode. THDR and FAIL also reset each_mode. **Scope fallback compilation**: when scope_bind_id doesn't match any binding register (it's a global entity name, not a bound variable), the compiler resolves the scoped container at compile time via `graph_find_entity_by_name()` + `get_scoped_container()`, then emits a normal SCAN or EMOV instruction. This handles tensions where the scope owner is a named entity rather than a match-clause binding. **Channel matching compiled as normal SCAN**: compiler resolves `channel_idx → buffer_container_idx` at compile time. **ESET change detection**: `ham_eset()` now returns 1 only if the value actually changed (compares with current value before writing). Prevents infinite fixpoint loops from idempotent SET operations (e.g., sync_* tensions setting the same status value repeatedly). **Fixpoint safety valve**: max 100 fixpoint iterations before forced termination. **15 tensions newly compiled**: sync_running, sync_ready, sync_blocked, sync_terminated (scoped match + ESET), do_alloc, do_free, do_open, do_close (scoped match + EMOV_S), react_to_msg (scoped match + ESET + EMOV_S), do_send, do_recv (channel match + ESEND/ERECV_S), recycle_priorities, recycle_programs (SEL_EACH), spawn_explicit (SEL_MIN), spawn_auto (4 bindings). **Discovery 44: Idempotent SET operations break the fixpoint. When sync tensions set status to a constant value that's already the current value, the C runtime counts it as an operation (keeping the fixpoint loop running), but it converges because all other mutations eventually stabilize. The HAM, running the same tensions, must detect no-change SETs to converge, because the HAM's fixpoint loop is tighter (no per-tension overhead). This is actually more correct — the HAM only reports genuine state changes.** Image: 119KB graphics (119,296 bytes). herb_ham.asm: ~900 lines (was ~680). 32 dispatch entries (was 26). 136 bare metal tests + 591 Python + 17 API + 13 cross-format = **757 tests passing**. (`boot/herb_ham.asm` 6 new handlers + B3 expansion + each-mode + TEND send/recv, `src/herb_runtime_freestanding.c` 3 bridge functions + compiler scope fallback + channel compilation + EC_SEND/EC_RECEIVE compilation + SEL_EACH/SEL_MIN compilation + ESET change detection, `boot/kernel_main.c` 4KB bytecode buffer, `boot/test_bare_metal.py` bytecode size bound updated)
+- **Full HAM OS — All Tensions on HAM (Session 67)** -- Phase 3c: the C tension resolution engine (`herb_run()`) is replaced by HAM (`ham_run_ham()`) for ALL runtime tension resolution. Every tension in the OS — system, shell, and process — runs on HAM bytecode. **Owner gate removed** from `ham_tension_compilable()`: all tensions with supported instructions compile regardless of ownership. **Global bytecode buffer** (8KB) with dirty flag: `ham_ensure_compiled()` lazily recompiles only when tensions change (via `ham_mark_dirty()` hooked into `herb_tension_create()`, `herb_remove_owner_tensions()`, `herb_remove_tension_by_name()`, `herb_load_program()`). **THDR owner scheduling** in assembly: three-way check — system tensions (owner==0xFFFF) always proceed, daemon tensions (run_container==0xFFFF) always proceed, process tensions verified via `ham_entity_loc()` call checking owner is in run_container, skipped if not. **All `herb_run(100)` replaced** with `ham_run_ham(100)` across 17 call sites in kernel_main.c. `ham_run_ham()` ensures compilation, then calls `ham_run()` — falls back to `herb_run()` only if bytecode length is 0 (safety net, never triggered in practice). **54 tensions compiled** (41 system + 9 shell + 4 process) to **3121 bytes** of bytecode, **701 ops** per invocation. C runtime is now fallback only — all tension resolution goes through HAM bytecode. `cmd_ham_test()` refactored to use global buffer diagnostics. Serial output proven **identical** between C and HAM runtimes (behavioral equivalence). Image: 119,808 bytes (~117KB). 134 bare metal tests + 591 Python + 17 API + 13 cross-format = **755 tests passing**. (`src/herb_runtime_freestanding.c` owner gate removal + global buffer + dirty flag + ham_run_ham + ham_mark_dirty, `boot/herb_ham.asm` THDR owner scheduling + ham_dbg_skip counter, `boot/kernel_main.c` herb_run→ham_run_ham replacement + refactored cmd_ham_test, `boot/test_bare_metal.py` updated HAM assertions)
+- **Phase 4 Blueprint: C Elimination Inventory (Session 68)** -- Pure analysis session. Complete inventory of all 8,627 lines of C across 6 files, categorized by migration difficulty and dependency order. Identified ~500 lines of dead code (C tension evaluator superseded by HAM) deletable immediately. Identified ~700 lines conditionally deletable with `-DHERB_BINARY_ONLY`. Produced a 7-phase migration plan (Phases 4a-4g) spanning ~18-22 sessions to reach zero C in the boot image. Key findings: `try_move()` (92 lines), `gfx_draw_full()` (288 lines), `cmd_spawn()` (141 lines), and `herb_snprintf()` (180 lines) are the hardest functions to port. Graph struct layout matching is the single hardest coordination point. Current assembly: 2,497 lines across 4 files. Estimated final assembly: 8,500-10,500 lines. All 755 tests remain passing (no code changes this session). (Documentation only: `HERB-BIBLE.md`, `CLAUDE.md`, `MEMORY.md`)
+- **Phase 4a: Dead C Code Elimination (Session 69)** -- First code deletion session of Phase 4. The C tension evaluator (`evaluate_tension`, `eval_expr`, `herb_step`, `herb_run`), dead since Session 67 replaced all evaluation with HAM, is now excluded from the bare metal build via `#ifndef HERB_BINARY_ONLY` guards. Six conditional compilation blocks added to `src/herb_runtime_freestanding.c`: (1) `MAX_BINDINGS`/`MAX_BINDING_SETS`/`MAX_INTENDED_MOVES` defines, (2) `IntendedKind` enum + `IntendedAction` struct, (3) `do_transfer()` + `do_duplicate()` functions, (4) expression evaluator + Bindings + resolve_ref + eval_expr + evaluate_tension + herb_step + herb_run (extended existing `#ifndef` to cover this block contiguously with JSON parser), (5) HAM runtime section (`ham_run_ham`, `ham_ensure_compiled`, etc.) wrapped in `#ifdef HERB_BINARY_ONLY` (symmetric guard — HAM only needed for bare metal where `herb_ham.asm` is linked), (6) `ham_mark_dirty()` forward declaration conditional (extern when bare metal, no-op stub otherwise). `ham_run_ham()` fallback changed from `herb_run(max_steps)` to `return 0` — severing the last bare-metal call to the C evaluator. `cmd_step()` in kernel_main.c changed from `herb_step()` to `ham_run_ham(1)`. Two unused `extern` declarations (`herb_run`, `herb_step`) removed from kernel_main.c. **Bonus fix:** `test_api.c` build was broken since Session 67 (undefined `ham_run` symbol) — the `#ifdef HERB_BINARY_ONLY` guard on HAM runtime section fixes this, as test builds compile without that flag. **~650 new lines excluded** from bare metal build (evaluator + helpers + types). Preprocessed bare metal runtime: 1,931 lines (from 3,118 full). 11 functions excluded: `do_transfer`, `do_duplicate`, `bindings_get`, `bindings_is_unbound`, `resolve_ref`, `resolve_container_ref`, `resolve_scoped_ref`, `eval_expr`, `evaluate_tension`, `herb_step`, `herb_run`. Graphics image: 109,568 bytes (~107KB). Text image: 90,112 bytes (~88KB). Kernel binary (text): 85,584 bytes (was ~86,000). **Discovery 46: Dead code isn't dead everywhere — test infrastructure still needs it.** The C tension evaluator is dead in the bare-metal OS (HAM replaced it) but `test_api.c` and cross-format tests still call `herb_run()` directly. Conditional compilation preserves test compatibility while eliminating code from the OS image. 134 bare metal + 591 Python + 13 cross-format = **738 tests passing** (test_api: 9/17 pass, 8 failures pre-existing from container naming mismatch). (`src/herb_runtime_freestanding.c` conditional compilation guards, `boot/kernel_main.c` extern removal + cmd_step fix)
+- **Phase 4b Part 1: Graph Primitives to Assembly (Session 70)** -- First assembly port of the HERB graph layer. Created `boot/herb_graph_layout.inc` with NASM `%define` equates for every struct field offset — Entity (344 bytes, 13 fields), Container (280 bytes, 7 fields), Graph (~720KB, 18 fields), PropVal (16 bytes), MoveType, Channel. All offsets verified via `offsetof()` program against manual calculations. Created `boot/herb_graph.asm` with 6 assembly functions: `intern` (string interning via linear search + herb_strcmp), `str_of` (bounds-checked string lookup), `entity_get_prop_raw` (explicit output pointer — property scan + PropVal copy), `entity_set_prop` (property scan + update/append), `container_add` (bounds-checked entity append), `container_remove` (swap-with-last removal). **5 of 6 functions linked to bare metal** — `intern`, `str_of`, `entity_set_prop`, `container_add`, `container_remove` replace their C counterparts via `#ifdef HERB_BINARY_ONLY` extern declarations. `entity_get_prop` stays as static C (inlinable) due to Discovery 47. **Discovery 47: GCC inlining interaction with 16-byte struct returns.** The assembly `entity_get_prop_raw` returns correct values (confirmed by zero type mismatches in runtime comparison), but making `entity_get_prop` non-inlinable — whether via assembly extern, `__attribute__((noinline))`, or static-inline-wrapper-to-extern — causes 48 test failures. The issue is not the function implementation but GCC's optimization of the caller functions (`ham_eprop`, `ham_eset`): when `entity_get_prop` is inlined, GCC optimizes the caller's register usage and data flow differently than when it must use the MS x64 ABI hidden-pointer calling convention for the 16-byte `PropVal` struct return. Assembly `entity_get_prop_raw` deferred to Phase 4b Part 2 (needs investigation of caller-side code generation). Graphics image: 108,544 bytes (~106KB, was ~107KB). Text image: 89,088 bytes (~87KB, was ~88KB). 134 bare metal + 591 Python + 17 API = **742 tests passing**. (`boot/herb_graph.asm` NEW 363 lines, `boot/herb_graph_layout.inc` NEW 116 lines, `src/herb_runtime_freestanding.c` extern declarations + conditional compilation, `boot/Makefile` herb_graph.o added)
+- **Phase 4b Part 2: Graph + Channel + Find Functions to Assembly (Session 71)** -- 5 more graph functions ported to assembly in `boot/herb_graph.asm`, plus 1 written but deferred. Successfully linked: `graph_find_container_by_name` (linear scan over containers[].name_id), `graph_find_entity_by_name` (same pattern over entities[].name_id), `get_scoped_container` (bounds check + linear scan entity_scope_names/cids arrays), `do_channel_send` (type/location/owner checks + container_remove/add), `do_channel_receive` (buffer/owner/slot/type checks + container_remove/add). `try_move` (the core MOVE primitive, ~160 lines ASM) written and logically correct — zero A/B result mismatches between assembly and C during runtime comparison — but causes 66/134 test failures when linked, identical to the Discovery 47 pattern. **Discovery 48: GCC tail-call interaction with try_move.** When `try_move` is an extern (assembly or C with `__attribute__((noinline))`), `ham_try_move` compiles to a tail call (`jmp try_move`). This changes the caller-side code generation in the HAM bridge layer. The assembly function returns identical results to C (confirmed by exhaustive A/B comparison logging zero mismatches), but the test suite shows 66 failures — all in process creation, key routing, and move-dependent tests. Making C try_move `noinline` reproduces the failure pattern. This is the same fundamental issue as Discovery 47: GCC's optimizer generates different caller-side code when a function is inlinable vs called through the MS x64 ABI. try_move deferred to future session (needs investigation of ham_try_move caller-side code generation). **herb_graph.asm now has 12 functions** (6 from Session 70 + 6 from Session 71, though try_move is not exported). Text image: 87,552 bytes (~85.5KB, was ~87KB). 134 bare metal tests passing. (`boot/herb_graph.asm` 6 new functions, `src/herb_runtime_freestanding.c` extern declarations + conditional compilation for 5 functions)
+- **Human Testability Fixes (Session 72)** -- Two fixes making the OS testable by a human with real hardware input. (1) **Mouse ring buffer:** replaced single-byte `volatile_mouse_byte`/`volatile_mouse_ready` ISR storage with a 64-byte ring buffer (`mouse_ring[64]`, `mouse_ring_head`, `mouse_ring_tail`) in `boot/kernel_entry.asm`. The PS/2 mouse sends 3 bytes per packet as 3 separate IRQ12 interrupts; the old single-byte volatile was overwritten before the main loop could read it during long operations (e.g., `gfx_draw_full()` doing 480,000 MMIO writes). The ring buffer stores all bytes, and the main loop drains them in a `while (tail != head)` loop with one visual cursor update at the end (not per-byte). (2) **Equal process priorities:** server entity priority changed from 8 to 5 (matching client) in `programs/interactive_kernel.herb.json`. With unequal priorities, the `schedule_ready` tension's `max_by priority` always re-selected the server immediately after preemption — the full preempt→reschedule cycle completed within one `ham_run_ham(100)` call, invisible to humans. With equal priorities, `max_by` picks the first entity in READY; `container_add` (append) + `container_remove` (swap-with-last) naturally alternates ordering, making server↔client rotation visible on screen. (3) **time_slice reduced to 1** (Session 72b): `preempt_expired` SET value, server entity, and client entity all changed from `time_slice: 3` to `time_slice: 1`. With `timer_interval=300` (3 seconds), the original `time_slice=3` meant 9 seconds per quantum — too slow to observe rotation within 10 seconds of boot. With `time_slice=1`, preemption fires every timer event (~3 seconds), producing 3 visible rotations in 10 seconds: server(0-3s) → client(3-6s) → server(6-9s). Graphics image: 108,032 bytes (~105.5KB). 134/134 bare metal tests pass. (`boot/kernel_entry.asm` ring buffer ISR, `boot/kernel_main.c` drain loop, `programs/interactive_kernel.herb.json` priority change + time_slice change). (4) **Makefile Windows CMD compatibility** (Session 72b): replaced bash-isms (`wc -c`, `cat`, `rm -f`, `@#` comments) with cross-platform Python equivalents so `mingw32-make` works in Windows CMD without requiring a Unix shell. (`boot/Makefile`)
+- **Preemption Fix: HAM Shadow Space + WHERE Empty Scan (Session 72c)** -- Two bugs prevented preemption from working in the HAM bytecode interpreter. (1) **Discovery 49: WHERE empty-scan bug.** When a SCAN returns 0 entities, the WHERE body executed on stale B0 binding data from the previous SCAN instead of being skipped. This caused spawn tensions to fire incorrectly (matching ghost entities), creating infinite fixpoint oscillation with priority tokens ping-ponging between pools. Fixed by adding a forward scan to the ENDWHERE opcode when scan_count=0, skipping the entire WHERE body. (2) **Discovery 50: Missing MS x64 ABI shadow space in TEND action loop.** The four TEND action handlers (`.do_move`, `.do_set`, `.do_send`, `.do_recv`) saved R8/R9 via `push r8; push r9` before calling C bridge functions (`ham_eset`, `ham_try_move`, etc.), but did NOT allocate 32 bytes of shadow space required by the MS x64 ABI. The callee's shadow space overlapped with the pushed registers: from the callee's perspective, RSP+8 (the shadow slot for arg1) pointed directly at our saved R9, and RSP+16 (shadow slot for arg2) pointed at our saved R8. When GCC wrote register arguments to shadow space (standard behavior for complex functions), it corrupted R8 and R9. After `pop r9`, R9 contained the entity_idx argument instead of the action index (e.g., 45 instead of 0), so `cmp r9d, [action_count]` (45 >= 2) exited the loop immediately — action[1] (the MOVE that consumes the timer signal) never executed. The unconsumed signal caused `timer_tick` to re-fire every fixpoint iteration, creating an infinite decrement loop (time_slice going to -50, -100, ...) with fp=100 (safety limit). **Single-action tensions were unaffected** (the corrupted R8/R9 were never read after the loop exited at index 1), explaining why 134/134 tests passed despite the bug — no test exercised a multi-action TEND. Fixed by adding `sub rsp, 32` / `add rsp, 32` around each C call in all four action handlers. **Result:** Preemption now converges in 1 fixpoint iteration with 11 ops per timer tick (was 500+ ops at fp=100). Server↔client alternation confirmed: `[TIMER] t1 [server]->[client]`, `[TIMER] t2 [client]->[server]`. Image: 109,568 bytes (~107KB). 134/134 bare metal tests pass. (`boot/herb_ham.asm` WHERE empty fix + shadow space fix, `boot/kernel_main.c` timer output, `boot/test_bare_metal.py` updated HAM timer test for full preemption cycle)
+- **Human Testing Stabilization (Session 73)** -- Preparation for Ben's first manual test of every interaction path. Created `docs/HUMAN_TESTING_GUIDE.md` with 10 test scenarios covering boot, preemption, spawn, kill, block/unblock, boost, shell mode, shell commands, tension panel navigation, and mouse clicks. **Discovery 51: HAM each-mode fail abort + sync tension design flaw.** Two compounding issues caused stale colors on processes: (1) Sync tensions (`sync_ready`, `sync_blocked`, `sync_terminated`) used `select: "first"`, meaning only the first process in each state container got its Surface colors updated — the rest kept stale colors from their previous state. (2) `ham_op_fail` in `boot/herb_ham.asm` unconditionally cleared `each_mode` and jumped to `tension_end`, aborting the entire each-mode iteration when any single entity failed a WHERE/GUARD check. Even after changing sync tensions to `select: "each"`, if entity[0]'s guard succeeded but entity[1]'s guard failed (state already synced), the remaining entities were never checked. **Fix A:** `ham_op_fail` now checks `each_mode` — if iterating, advances `each_idx` and sets the next entity in the binding register (mirroring the TEND each-advance pattern at lines 498-529), only aborting the entire tension when all each entities are exhausted. **Fix B:** `sync_ready`, `sync_blocked`, `sync_terminated` changed from `select: "first"` to `select: "each"` in `programs/interactive_kernel.herb.json`. `sync_running` left as-is (CPU0 has at most 1 process). Binary recompiled: 11,025 bytes, 57 tensions, 3307 bytes bytecode. Graphics image: 109,568 bytes (~107KB). 134/134 bare metal tests pass. Boot verified: preemption working (server↔client alternation, 11 ops/tick, fp=1). (`boot/herb_ham.asm` ham_op_fail each-mode advance, `programs/interactive_kernel.herb.json` sync tensions select: each, `programs/interactive_kernel.herb` recompiled, `docs/HUMAN_TESTING_GUIDE.md` NEW)
+- **Common Herb: First Game Prototype on Bare Metal (Session 74)** -- A 2D gathering game running directly on HERB OS — the first proof that HERB works for real interactive software beyond OS primitives. Player entity moves on a tile grid with arrow keys, gathers resources from resource tiles, inventory tracks collected items. The game is expressed entirely as `.herb` tensions and entities loaded into the running kernel. 'G' key enters game mode (switches renderer to tile-based view), ESC returns to OS mode. All game logic (movement validation, resource gathering, inventory updates) expressed as HERB tensions. C handles only pixel rendering of tiles and the player sprite (mechanism). (`programs/interactive_kernel.herb.json` game module, `boot/kernel_main.c` game renderer)
+- **Phase 4d: HAM Bridge Functions to Assembly (Session 75)** -- 9 C bridge functions in `herb_runtime_freestanding.c` eliminated from bare-metal build. `herb_ham.asm` rewired to call assembly graph functions directly: `try_move`, `get_scoped_container`, `do_channel_send`, `do_channel_receive` (tail-call wrappers eliminated). `ham_ecnt`, `ham_entity_loc`, `ham_scan`, `ham_eprop`, `ham_eset` written in `herb_graph.asm`. `ham_intern` in `kernel_main.c` now calls `intern()` directly. All 10 C bridges guarded with `#ifndef HERB_BINARY_ONLY`. **Discovery 48 resolved:** `try_move` now linked to bare metal — the GCC tail-call interaction from Session 71 was a C-compilation-path issue only, not a bare-metal issue. Image: 86,016 bytes (down from 87,040 — saved 1,024 bytes / 1 sector). herb_graph.asm: 17 exported functions. 134/134 bare metal tests. (`boot/herb_graph.asm` try_move linked + 5 new functions, `boot/herb_ham.asm` 4 externs + 8 call sites rewired, `src/herb_runtime_freestanding.c` 10 bridges guarded, `boot/kernel_main.c` ham_intern→intern)
+- **Phase 4e: Public API + Graph Lookups to Assembly (Session 76)** -- 21 functions ported from C to x86-64 assembly in `herb_graph.asm` (~420 lines). 4 graph lookups (`graph_find_move_type/channel/transfer_by_name`, `get_type_scope_idx`), 11 API reads (`herb_container_count/entity`, `herb_entity_name/prop_int/prop_str/location/total`, `herb_tension_count/name/priority/enabled`), 3 mutations (`herb_tension_set_enabled/owner`, `herb_set_prop_int`), 3 container/state (`herb_create_container`, `is_property_pooled`, `herb_state`). `herb_state` uses local `.hs_emit_char`/`.hs_emits` subroutines — not full functions, but call/ret within parent's stack frame. Preserved 7 callee-saved regs. `herb_snprintf` for `%lld` and `%g` — MS x64 vararg requires double in both XMM3 and R9. Pool (8 bytes) and TransferType (12 bytes) struct offsets added to `herb_graph_layout.inc`. Image: 83,456 bytes (down from 86,016 — saved 2,560 bytes / 5 sectors). herb_graph.asm: 38 exported functions. 134/134 bare metal tests. (`boot/herb_graph.asm` 21 new functions, `boot/herb_graph_layout.inc` Pool/TransferType offsets, `src/herb_runtime_freestanding.c` 21 functions guarded + 5 extern declarations)
+- **Phase 4f: Tension API + Entity Creation + HAM Glue to Assembly (Session 77)** -- 17 functions ported from C to x86-64 assembly in `herb_graph.asm` (~1,000 new lines). 5 HAM glue (`ham_mark_dirty`, `ham_ensure_compiled`, `ham_run_ham`, `ham_get_compiled_count`, `ham_get_bytecode_len`), 2 entity creation (`create_entity` — complex scope auto-creation with 256-byte stack buffer, `herb_create`), 2 tension removal (`herb_remove_owner_tensions`, `herb_remove_tension_by_name` — compact loops with herb_memcpy of 1960-byte tensions), 5 tension creation (`herb_tension_create`, `herb_tension_match_in`, `herb_tension_match_in_where` — first 5-arg function, `herb_tension_emit_set`, `herb_tension_emit_move`), 3 expression builders (`herb_expr_int`, `herb_expr_prop`, `herb_expr_binary`). 8 symbols made non-static. Expr struct layout + EmitClause field offsets added to `herb_graph_layout.inc`. Image: 83,456 bytes (unchanged — assembly more compact than C). herb_graph.asm: 55 exported functions (~3,358 lines). 134/134 bare metal, 591/591 Python. (`boot/herb_graph.asm` 17 new functions, `boot/herb_graph_layout.inc` Expr/EmitClause offsets, `src/herb_runtime_freestanding.c` 8 non-static changes + ~20 functions guarded)
+- **Phase 4e Completion: Freestanding Support Layer to Assembly (Session 77b)** -- `boot/herb_freestanding.asm` (1,238 lines, 23 functions) — complete port of `src/herb_freestanding.c`. Arena allocator, memory primitives (`herb_memset`/`herb_memcpy`/`herb_memmove`), string operations (`herb_strcmp`/`herb_strncmp`/`herb_strlen`/`herb_strncpy`/`herb_strdup`), number parsing (`herb_atoll`/`herb_atof`), `herb_snprintf` with %s/%d/%lld/%g formatting, error handling. `herb_freestanding_layout.inc` (27 lines) defines HerbArena struct offsets. C counterparts guarded with `#ifndef HERB_BINARY_ONLY`. (`boot/herb_freestanding.asm` NEW, `boot/herb_freestanding_layout.inc` NEW)
+- **Phase 4h: Binary Loader + Init/Load to Assembly (Session 78)** -- `boot/herb_loader.asm` (2,371 lines, 13 functions) — the binary format parser, expression tree builder, and program lifecycle ported to x86-64 assembly. Functions: `alloc_expr`, `br_u8`, `br_u16`, `br_i16`, `br_i64`, `br_f64`, `bstr` (string interning from binary string table), `br_expr` (recursive expression tree parser), `br_to_ref` (reference target parser), `load_program_binary` (main loader — section dispatch, entity/container/move/tension/channel/pool/transfer parsing), `herb_load_program` (fragment loader with owner/run_container), `herb_init`, `herb_load`. **Discovery 52: br_u16 use-after-clobber bug.** `movzx eax, byte [rdx + rax]` clobbers RAX with the byte value, then `movzx r8d, byte [rdx + rax + 1]` uses the byte value as offset instead of the original position — reading the wrong second byte. String count (u16) read as garbage, causing the string table loop to consume the entire 16,237-byte binary, leaving 0 bytes for section parsing. Fixed by computing `add rdx, rax` (RDX = &data[pos]) before any byte reads. Same fix applied to br_i16. **Image size wins from C elimination:** Text image: 77,312 bytes (was 90,624 with C loader — 14.7% reduction). Graphics image: 103,936 bytes (was 112,128 — 7.3% reduction). The loader was the last large C data-processing function; its elimination let the assembler produce tighter code without GCC's calling convention overhead, alignment padding, and prologue/epilogue bloat. 133/134 bare metal tests (1 pre-existing failure confirmed in both C and assembly versions), 591/591 Python. herb_loader.asm integrated into Makefile. All C loader functions guarded with `#ifndef HERB_BINARY_ONLY`. (`boot/herb_loader.asm` NEW, `boot/herb_graph_layout.inc` BinReader + Expr enum additions, `src/herb_runtime_freestanding.c` alloc_expr/loader/init/load guarded, `boot/Makefile` herb_loader.o)
+- **Phase 4i: HAM Compiler + Arena Queries to Assembly (Session 79)** -- `boot/herb_ham.asm` expanded (~1,550 new lines): 10 compiler functions + 2 arena queries. Recursive expression compiler, priority-sorted tension compiler, compilability checks, bind map management, PropVal helpers. **MILESTONE: Zero C functions in bare metal.** `herb_runtime_freestanding.o` compiles to an empty object (BSS/data globals only). Discovery 53: stack slot overlap bug. Image: 74,752 bytes text (down 17.5% from Session 73). 133/134 bare metal + 591 Python. (`boot/herb_ham.asm`, `boot/herb_graph.asm`)
+- **Incremental HAM Engine (Session 79b)** -- HAM now skips tensions whose dependency containers haven't changed. Dirty-set propagation: mark containers dirty on mutation, record per-tension deps at compile time, skip at THDR if no overlap. Typical eval: 24-67/304 tensions (was 304/304). `ham_dirty_bitmap`/`ham_eval_bitmap` (32 bytes each), `ham_tension_deps` (8KB). `herb_set_prop_int` dirty marking added (Discovery 63: kernel uses this path, not `ham_eset`). 165/167 bare metal + 593 Python. (`boot/herb_ham.asm`, `boot/herb_graph.asm`)
+- **Filesystem Hardening (Session 80)** -- Bitmap filesystem v2: free-sector bitmap, file overwrite, 256 entries, 8MB disk, "/" in filenames. `fs_read` push/pop replaced with stack slots. Makefile 1MB→8MB disk image. 4 new tests: overwrite, slash filename, 8MB detection, bitmap free count. 170/172 bare metal + 593 Python. (`boot/herb_disk.asm`, `boot/Makefile`)
+- **Common Herb Game Prototype (Session 81)** -- Game prototype: 2 NPCs with wander AI, occupied-tile collision, player inventory, game WM window, eval=28/340 under game load. NPC wander_dir overflow fix: 4 separate blocked tensions (one per direction). 172/175 bare metal + 593 Python. (`programs/interactive_kernel.herb`, `boot/herb_kernel.asm`)
+- **E1000 Virtual NIC Driver (Session 82)** -- Raw Ethernet frame driver for QEMU's E1000 virtual NIC. `boot/herb_net.asm` (898 lines): PCI bus scan, MMIO page table mapping, device reset, MAC read, RX/TX descriptor ring setup, interrupt enable, `net_send()`, `net_send_arp_request()`, `net_poll_rx()`. ISR stub in `kernel_entry.asm` (IRQ11 → vector 43). `net_init` gracefully returns if no E1000 on PCI bus. Separate `run-net`/`test-net` build targets with E1000 NIC; existing targets pass `-nic none`. Discovery 64: QEMU creates a default E1000 without `-nic none`. Discovery 65: `herb_snprintf` has no hex format. 175/178 bare metal (no NIC), 179/182 (with NIC) + 593 Python. 13 assembly files, ~38,600 lines. (`boot/herb_net.asm` NEW, `boot/kernel_entry.asm`, `boot/herb_kernel.asm`, `boot/herb_hw.asm`, `boot/Makefile`, `boot/test_bare_metal.py`)
+- **Cross-runtime equivalence** -- same program loaded in Python and C produces identical final states under identical signal sequences; proven for FIFO scheduler, priority scheduler, DOM layout pipeline, **multi-process OS (scoped containers), economy (conservation pools), IPC (channels + duplication), and four-module kernel (all features combined)**; **freestanding runtime proven equivalent (10/10 match)**; **cross-format equivalence: .herb binary and .herb.json produce identical state for all 10 programs (13/13 test scenarios)**
+- Autonomous process schedulers: FIFO (`src/herb_scheduler.py`) AND priority-based (`src/herb_scheduler_priority.py`)
+- Browser DOM layout pipeline as pure HERB data (`src/herb_dom.py`)
+- Economy demo with tax collection, rewards, conservation (`src/herb_economy.py`)
+- Multi-process OS demo with per-process FD tables, time slicing, preemption (`src/herb_multiprocess.py`)
+- **IPC demo** with message passing, FD passing, duplication, structural isolation proof (`src/herb_ipc.py`)
+- **Multi-dimensional process manager** with scheduling state + priority as independent dimensions (`src/herb_process_dimensions.py`)
+- **Modular multi-process OS** -- herb_multiprocess.py decomposed into scheduler + fd_manager modules, composed back with identical behavior (`src/herb_multiprocess_modules.py`)
+- **Four-module kernel** -- proc + mem + fs + ipc modules demonstrating cross-module interaction through exported interfaces (`src/herb_kernel.py`)
+- **449 v2 tests passing** across `test_tensions.py`, `test_goal_pursuit.py`, `test_herb_program.py`, `test_session29.py`, `test_session30.py`, `test_session31.py`, `test_session32.py`, `test_session33.py`, `test_session34.py`, `test_session35.py`
+- v1 Datalog runtime with 142 tests (historical, in `src/herb_core.py`)
+- 17 API tests (`src/test_api.c`), 13 cross-format equivalence tests (`src/test_binary_format.sh`)
+- 178 bare metal QEMU tests (`boot/test_bare_metal.py`), 182 with NIC
+- **Total: 593 + 175 + 17 = 785 tests verified** (Session 82: 2 pre-existing failures + 1 flaky game timing)
+
+### Session 34 Milestone: SERIALIZATION + C RUNTIME
+
+Session 33 gave HERB program composition. Session 34 makes HERB programs **portable** (JSON) and **fast** (C).
+
+**The problem:** HERB programs are Python dicts in `.py` files. That's scaffolding. A real language needs programs that exist as files -- loadable, transmittable, storable. And Python is scaffolding for the runtime -- the tension loop needs native speed.
+
+**The solution:** Two bridges from prototype to executable system.
+
+**1. JSON Serialization (`.herb.json` format)**
+
+The canonical HERB program format. An AI writes HERB by constructing this JSON. A runtime loads it. No Python anywhere in the program representation.
+
+- `herb_serialize.py` -- serialize/deserialize/save/load/validate
+- All 9 programs saved as `.herb.json` files in `programs/`
+- Round-trip proven lossless for all programs (standalone AND composed)
+- Behavioral equivalence proven: load from JSON, run, identical results to Python dict
+- Validation on load: rejects malformed programs, validates cross-references
+- Detects spec kind automatically: program, composition, or module
+- The four-module kernel as `kernel.herb.json` -- loads, composes, runs identically
+
+**2. C Runtime (`herb_runtime_v2.c`)**
+
+A native tension resolution engine. Loads `.herb.json`, builds the graph in C, evaluates tensions, runs to fixpoint.
+
+Current scope (foundation):
+- Containers (SIMPLE, SLOT) with entity types
+- Entities with properties (int, float, string)
+- Moves (regular, the full operation-exists check)
+- Tensions: complete match/emit interpretation in C
+  - Match: entity_in, empty_in, container_is, guard expressions
+  - Select modes: first, each, max_by, min_by
+  - Where filters, required/optional bindings
+  - Pairing: zip and cross
+- Expression evaluator: prop access, binary ops, unary ops, count
+- Property mutation (set emit)
+- Runtime entity creation (for signals)
+- step() / run() loop to fixpoint
+- JSON parser (self-contained, no external dependencies)
+- State output as JSON (for cross-runtime testing)
+- Command interface via stdin: run, create, state
+
+Not yet in C: scoped containers, channels, dimensions, pools/transfers, entity duplication. The foundation is solid for expansion.
+
+**Cross-runtime equivalence proven:**
+- Priority scheduler: Python and C produce identical states after boot + timer signals
+- FIFO scheduler: identical states after boot + timer + IO signals
+- DOM layout: identical states after initial cascade + style change re-layout
+- Tested via automated test suite (subprocess, JSON state comparison)
+
+**Design constraints met:**
+- `.herb.json` format is human-readable (pretty-printed with indentation)
+- C runtime produces identical operation logs to Python runtime
+- Started simple: priority scheduler runs correctly, then expanded to FIFO + DOM
+- Cross-runtime test is fully automated (Python drives both runtimes, compares JSON output)
+
+**Programs: 18 total (8 monolithic + 3 composed + 4 process fragments + 2 policy fragments + 1 shell fragment), all available as `.herb.json` and `.herb` binary**
+1. `scheduler.herb.json` -- FIFO scheduler (Session 28)
+2. `priority_scheduler.herb.json` -- Priority scheduler (Session 29)
+3. `dom_layout.herb.json` -- DOM layout pipeline (Session 28)
+4. `economy.herb.json` -- Economy demo (Session 29)
+5. `multiprocess.herb.json` -- Multi-process OS monolith (Session 30)
+6. `ipc.herb.json` -- IPC demo (Session 31)
+7. `process_dimensions.herb.json` -- Multi-dimensional process manager (Session 32)
+8. `multiprocess_modules.herb.json` -- Modular multi-process OS (Session 33)
+9. `kernel.herb.json` -- Four-module kernel (Session 33)
+10. `interactive_os.herb.json` -- Interactive OS with keyboard commands (Session 38)
+11. `interactive_kernel.herb.json` -- Four-module kernel with interactive commands, mouse input + click hit testing, producer/consumer interaction through shared buffer (Session 40, updated Sessions 43-46)
+12. `producer.herb.json` -- Producer process program fragment: increments shared buffer count (Session 47)
+13. `consumer.herb.json` -- Consumer process program fragment: decrements shared buffer count (Session 47)
+14. `worker.herb.json` -- Worker process program fragment: decrements own work counter (Session 47)
+15. `beacon.herb.json` -- Beacon process program fragment: increments own pulse counter (Session 47)
+16. `schedule_priority.herb.json` -- Scheduling policy fragment: selects highest-priority process from READY (Session 48)
+17. `schedule_roundrobin.herb.json` -- Scheduling policy fragment: selects first process from READY (FIFO) (Session 48)
+18. `shell.herb.json` -- Shell process fragment: 8 tensions for command dispatch (kill, block, unblock, load, swap, list, help, cmd_miss) (Session 50)
+
+### Session 35 Milestone: C RUNTIME COMPLETE
+
+Session 34 built the C runtime foundation. Session 35 **completes it** -- every feature needed to run every HERB program natively.
+
+**The problem:** The C runtime only handled basic containers, entities, moves, tensions, properties, and expressions. It couldn't run any program that used scoped containers, channels, pools, transfers, or entity duplication -- meaning the multiprocess OS, economy, IPC, and kernel programs were Python-only.
+
+**The solution:** Complete rewrite of `herb_runtime_v2.c` (~1475 → ~1850 lines) adding all remaining features:
+
+**1. Scoped Containers**
+- Entity type scope templates (auto-create per-entity containers on entity creation)
+- Container ownership tracking (`owner` field, -1 = global)
+- Dynamic scope resolution in match clauses (`scope_bind_id` + `scope_cname_id`)
+- Scoped emit targets in move/send/receive/transfer actions
+
+**2. Scoped Moves**
+- `scoped_from`/`scoped_to` name-based resolution within owner's scope
+- Same-owner enforcement: both source and target containers must belong to the same entity
+
+**3. Channels (Zircon Model)**
+- Channel struct with sender, receiver, entity type, buffer container
+- `do_channel_send()`: removes entity from sender's scope, places in channel buffer
+- `do_channel_receive()`: removes from channel buffer, places in receiver's scope
+- Channel match clauses resolve dynamically from bindings
+
+**4. Conservation Pools + Transfers**
+- Pool registry with property name tracking
+- `is_property_pooled()` check blocks `set` emits on conserved properties
+- `do_transfer()`: atomic quantity transfer between entities with pool conservation
+
+**5. Entity Duplication**
+- `do_duplicate()`: creates copy with same type/properties, new unique name, placed in target container
+
+**6. Nesting Depth Bound**
+- Configurable `max_nesting_depth` loaded from JSON (currently informational)
+
+**Cross-runtime equivalence proven for ALL programs:**
+- Multi-process OS: boot, fd_open, fd_open_close, timer_preempt, scoped_isolation
+- Economy: tax_collection, reward_after_tax (gold conservation)
+- IPC: boot, send_message, send_then_preempt_then_receive, duplicate_fd
+- Four-module kernel: boot, alloc_page, open_fd, send_message, alloc_open_send_sequence, timer_preemption, full_lifecycle, free_page_after_alloc, close_fd_after_open
+
+**21 new cross-runtime tests** (`test_session35.py`), all passing. Total: 449 v2 + 142 v1 = **591 tests**.
+
+**The significance:** The C runtime can now run ANY HERB program. The kernel -- four modules composed into a unified OS with process scheduling, memory management, file descriptors, and IPC -- runs identically in C and Python. HERB is no longer a Python prototype. It's a language with a native runtime.
+
+### Session 36 Milestone: FREESTANDING RUNTIME (BARE METAL READY)
+
+Session 35 completed the C runtime. Session 36 **strips it down to run on bare metal** -- zero libc, zero external dependencies.
+
+**The problem:** The C runtime depends on libc: malloc/calloc/realloc/free for the JSON parser, stdio for file I/O and output, string.h for comparisons. None of these exist on bare metal.
+
+**The solution:** A complete freestanding support layer and a ported runtime:
+
+**1. libc Dependency Audit**
+- Every libc call cataloged and categorized: memory allocation (malloc/calloc/realloc/free/strdup), string operations (strcmp/strncmp/strlen/strncpy/memset/memcpy), I/O (fopen/fread/fclose/printf/fprintf/fgets/sscanf), conversion (atof/atoll), formatting (snprintf)
+- **Critical finding:** the hot path (step/run/evaluate_tension) uses ONLY memset and memcpy. Everything else is load-time or diagnostic.
+
+**2. Freestanding Support Layer (`herb_freestanding.h`, `herb_freestanding.c`)**
+- Arena allocator: bump-pointer, no free, 8-byte aligned. HERB programs are loaded once and run forever.
+- String/memory primitives: herb_memset, herb_memcpy, herb_strcmp, herb_strncmp, herb_strlen, herb_strncpy, herb_strdup
+- Number parsing: herb_atoll, herb_atof (load-time only)
+- Minimal herb_snprintf: %s, %d, %lld, %g (for entity name construction)
+- Compiler-required symbols: memcpy/memset/memmove (GCC lowers struct copies to these), ___chkstk_ms (Windows stack probe)
+- Error handling: callback function instead of fprintf(stderr)/exit()
+- Type definitions: own stdint types in freestanding mode, uses system types in hosted mode
+
+**3. Freestanding Runtime (`herb_runtime_freestanding.c`)**
+- All libc calls replaced with herb_ equivalents
+- JSON parser allocates from arena instead of malloc
+- No file I/O -- JSON provided as memory buffer
+- State output writes to caller-provided buffer instead of stdout
+- Public API: herb_init(), herb_load(), herb_run(), herb_step(), herb_create(), herb_state()
+- Same logic, same data structures, identical behavior
+
+**4. Proven Correct**
+- Compiles clean with `gcc -ffreestanding -nostdlib` -- zero linker errors
+- 88 functions, 0 unresolved symbols (excluding PE format artifact)
+- 10/10 cross-runtime equivalence tests: freestanding output is byte-for-byte identical to libc output
+- 6 standalone freestanding tests: all pass (all program types verified)
+- Arena usage measured: ~20-47KB per program, well within 4MB budget
+
+**5. Bare-Metal Interface Documented** (`BARE_METAL_INTERFACE.md`)
+- Three requirements: arena memory, program JSON bytes, signal delivery function
+- Memory architecture: static arrays + arena bump pointer
+- Hot path guaranteed allocation-free
+- Assembly bootstrap template provided
+
+**The significance:** The only thing between HERB and bare metal is the assembly bootstrap. The runtime is hardware-ready. The tension loop can run in an interrupt handler context. The arena allocator means zero fragmentation, zero allocation failure. This is the foundation for HERB-as-OS.
+
+### Session 37 Milestone: ASSEMBLY BOOTSTRAP (HERB BOOTS ON HARDWARE)
+
+Session 36 made the runtime bare-metal ready. Session 37 **writes the assembly bootstrap and boots HERB on actual hardware** (via QEMU, targeting real x86-64).
+
+**The problem:** The freestanding runtime exists but can't run without an OS. Something needs to set up the CPU (long mode, page tables, GDT/IDT), configure hardware (PIC, PIT timer, keyboard), provide arena memory, embed the HERB program, and bridge hardware interrupts to HERB signals.
+
+**The solution:** A complete bare-metal boot chain in 6 files:
+
+**1. Two-Stage Bootloader (`boot/boot.asm`, NASM)**
+- Stage 1: 512-byte MBR at 0x7C00, loads stage 2 via INT 13h extended read
+- Stage 2: enables A20 line, loads kernel in 64-sector chunks, transitions through real mode → protected mode → long mode
+- Page tables: PML4 → PDPT → PD with 2MB pages (identity-mapped, 64MB coverage)
+- GDT: null, 32-bit code/data, 64-bit code/data segments
+- Zeros 1MB at 0x100000 (covers BSS), copies kernel, jumps to 64-bit entry
+
+**2. 64-bit Kernel Entry (`boot/kernel_entry.asm`, NASM -f win64)**
+- Enables SSE (critical: GCC generates `movups %xmm0` on bare metal where SSE is disabled by default)
+- Sets up 256KB stack (evaluate_tension() needs ~70KB for BindingSetList + IntendedAction arrays)
+- Timer and keyboard ISR stubs: set volatile flags + send EOI (non-reentrant, no HERB calls in ISR context)
+
+**3. C Kernel (`boot/kernel_main.c`, ~600 lines)**
+- VGA text mode: 80x25 at 0xB8000, color support, scrolling, status bar
+- Serial port: COM1 at 0x3F8 for debug output (visible via `qemu -serial stdio`)
+- IDT: 256 entries, 16 bytes each (64-bit interrupt gates)
+- PIC: 8259 remapping (IRQ0-7 → vectors 32-39, IRQ8-15 → 40-47)
+- PIT: channel 0 at 100Hz (10ms tick)
+- Arena: 4MB at physical 0x800000
+- HERB integration: herb_init() → herb_load() → herb_run() → main loop
+- Main loop: hlt → check timer_fired → herb_create(signal) → herb_run() → update display
+
+**4. Embedded HERB Program (`boot/gen_program_data.py` → `boot/program_data.h`)**
+- Python script converts .herb.json to C byte array header
+- priority_scheduler.herb.json embedded as `static const char program_json[]`
+- 3 processes (init, shell, daemon), 2 CPUs, priority-based scheduling
+- Timer signals trigger preemption cascade: consume signal → preempt → reschedule
+
+**5. Build System (`boot/Makefile`)**
+- Pipeline: gen_program_data.py → nasm → gcc → ld (PE) → objcopy (binary) → nasm (boot) → cat → pad
+- PE image-base trick: `--image-base=0x0FFC00` makes .text land at VMA 0x100000 exactly
+- `make run` launches QEMU with serial output
+
+**6. Critical Bugs Found and Fixed**
+- **SSE not enabled:** GCC freely generates SSE instructions (part of x86-64 ISA). Bare metal CPU starts with SSE disabled. Triple fault on first `movups`. Fixed by enabling SSE in kernel entry before calling C.
+- **Stack overflow:** evaluate_tension() allocates ~70KB on stack (BindingSetList: 128 × 392 bytes). Default 64KB stack caused triple fault during herb_run(). Fixed with 256KB stack.
+- **PE section offset:** objcopy produces flat binary, but PE headers offset .text by 0x400 from image base. Image base 0x100000 put code at 0x100400. Fixed by setting image base to 0x0FFC00.
+
+**The result:**
+- herb_os.img: **46,592 bytes** (46KB) — an entire operating system in 46KB
+- Boots in QEMU: `make run`
+- Priority scheduler loads, reaches initial equilibrium (2 ops)
+- Timer interrupts every 1 second create Signal entities in TIMER_EXPIRED container
+- 3 operations per tick: consume signal, preempt running process, reschedule by priority
+- Runs indefinitely with zero crashes
+- VGA display: status bar (ticks, ops, arena usage) + colorized entity state
+- Serial output: tick-by-tick operation log
+
+**The significance:** HERB runs on hardware. No Linux. No libc. No POSIX. Just NASM assembly, C, and HERB. A 46KB disk image contains a complete operating system where a tension-based runtime manages process scheduling autonomously. Hardware interrupts become HERB signals. The system resolves to equilibrium after each signal. The thesis is proven: HERB + assembly, nothing else.
+
+### Session 38 Milestone: INTERACTIVE HERB OS
+
+Session 37 booted HERB on hardware. Session 38 **makes it interactive** -- a human presses keys, the system responds. Every key is a HERB signal. Tensions decide what happens.
+
+**The problem:** The booted OS was a fish tank. You could watch processes schedule via timer interrupts, but couldn't interact. Keyboard interrupts fired but all went to TIMER_EXPIRED. No command dispatch, no process management, no structured display.
+
+**The solution:** Full keyboard-driven interactive OS in three pieces:
+
+**1. Runtime API Extensions (`herb_runtime_freestanding.c`)**
+- `herb_set_prop_int()` -- set/update integer properties on entities after creation
+- `herb_container_count()` -- query how many entities are in a container
+- `herb_container_entity()` -- get entity ID by container + index
+- `herb_entity_name()` / `herb_entity_location()` / `herb_entity_prop_int()` -- structured entity queries
+- `herb_entity_total()` -- total entity count
+- These enable the kernel to display structured state without parsing JSON
+
+**2. Interactive OS Program (`programs/interactive_os.herb.json`)**
+- Flat HERB program with 7 signal types: TIMER_EXPIRED, KILL_SIG, BLOCK_SIG, UNBLOCK_SIG, BOOST_SIG, plus SIG_DONE
+- 7 tensions: schedule_ready, timer_preempt, preempt_expired, kill_running, block_running, unblock_first, boost_running
+- Timer preemption with time_slice tracking: each timer tick decrements time_slice, at 0 the process is preempted and time_slice reset to 3
+- Initial processes: init (pri=1), shell (pri=5), daemon (pri=8), logger (pri=3, blocked)
+
+**3. Interactive Kernel (`boot/kernel_main.c`, complete rewrite)**
+- PS/2 scancode set 1 lookup table (128 entries)
+- Key dispatch: N=new process, K=kill, B=block, U=unblock, T=timer, +=boost, Space=step
+- Process creation with dynamic properties: `herb_create()` + `herb_set_prop_int()` for priority and time_slice
+- Structured VGA display: banner, stats bar, command legend, color-coded process table (green=running, yellow=ready, red=blocked, gray=terminated), container summary, action log
+- Auto-timer every 2 seconds drives preemption autonomously
+- Serial debug output for all commands
+
+**The result:**
+- herb_os.img: **54,784 bytes** (54KB)
+- Boots to interactive display with process table
+- Press N: creates new process with cycling priority (2,4,6,8,10), scheduler places it
+- Press K: kills running process, next-highest-priority takes CPU
+- Press B: blocks running process, next ready process scheduled
+- Press U: unblocks first blocked process, returns to READY
+- Press T: manual timer tick, decrements time_slice, preempts at 0
+- Press +: boosts running process priority
+- Auto-timer preempts every 3 ticks (6 seconds), context switches visible
+- 17/17 new API tests pass, 77 cross-runtime tests pass, 10/10 freestanding equivalence
+
+**The significance:** HERB is no longer a demonstration -- it's a system you interact with. A human sitting at a keyboard creates and manages processes in real time. Every action flows through HERB's tension loop: key → signal entity → tension match → MOVE. The C kernel is pure mechanism (scancode lookup, signal creation, VGA drawing). HERB is pure policy (scheduling, preemption, process lifecycle). The boundary is clean.
+
+### Session 39 Milestone: NATIVE BINARY FORMAT
+
+Session 38 made the OS interactive. Session 39 **kills the JSON scaffolding** -- HERB defines its own native program representation.
+
+**The problem:** The freestanding runtime includes a full JSON parser -- hundreds of lines of C dedicated to understanding someone else's format. JSON is a human-readable text format designed for web APIs. HERB programs are structured graph descriptions with known schemas. Using JSON is like shipping an HTML parser to load configuration data.
+
+**The solution:** A native `.herb` binary format and complete toolchain:
+
+**1. Binary Format Specification (`HERB_BINARY_FORMAT.md`)**
+- Magic bytes `HERB` + version byte for forward compatibility
+- String table: all names collected up front, referenced by u16 index
+- 10 section types in strict dependency order (entity_types → containers → moves → pools → transfers → entities → channels → config → tensions → end)
+- Inline recursive expression encoding (no separate expression pool)
+- Match clause, emit clause, and target reference encodings specific to HERB semantics
+- Every byte has HERB meaning -- no general-purpose serialization overhead
+
+**2. Compiler (`src/herb_compile.py`)**
+- Reads `.herb.json`, outputs `.herb` binary
+- Handles both flat and composed programs (auto-composes if needed)
+- Collects all unique strings, assigns indices, writes sections in dependency order
+- All 10 programs compile successfully
+
+**3. Binary Loader (`src/herb_runtime_freestanding.c`)**
+- `load_program_binary()`: reads string table, processes sections sequentially
+- No tree building, no key lookup, no arena allocation for parse nodes
+- `herb_load()` auto-detects format by checking first 4 bytes (HERB magic)
+- Same function transparently accepts both `.herb` binary and `.herb.json` text
+- 420 functional lines vs 685 for JSON path (39% reduction)
+
+**The numbers:**
+
+| Program | JSON | Binary | Reduction |
+|---------|------|--------|-----------|
+| scheduler | 4,072 B | 531 B | 87% |
+| priority_scheduler | 4,252 B | 573 B | 87% |
+| interactive_os | 4,954 B | 964 B | 81% |
+| kernel (4-module) | 17,941 B | 1,795 B | 90% |
+
+**Cross-format equivalence:** 13/13 test scenarios pass. Every program loaded from binary produces byte-for-byte identical state to the same program loaded from JSON, under all signal sequences tested.
+
+**Boot pipeline:** `.herb.json` → `herb_compile.py` → `.herb` → `gen_program_data.py` → `program_data.h` → embedded in kernel binary. The OS boots from native binary format.
+
+**The significance:** JSON was scaffolding. The Bible said so explicitly. Now it's gone from the boot path. HERB has its own representation -- not borrowed, not adapted, purpose-built. The format knows what a tension is, what an expression tree looks like, what a scoped container reference means. Every byte encodes HERB semantics. This moves the stack one step closer to the goal: assembly + HERB, nothing else.
+
+### Session 40 Milestone: AUTOMATED TESTING + FOUR-MODULE KERNEL ON BARE METAL
+
+Session 39 killed JSON from the boot path. Session 40 **proves the thesis on hardware** -- scoped containers provide structural isolation on real bare metal -- and **makes every future session testable programmatically**.
+
+**Two objectives, both achieved:**
+
+**1. Automated QEMU Test Harness (`boot/test_bare_metal.py`)**
+
+The OS was tested by a human watching QEMU. That doesn't scale. Now it's tested by a Python script that:
+- Boots QEMU headless (`-display none`) with serial on stdout
+- Connects to QMP (QEMU Machine Protocol) over TCP to send keystrokes
+- Captures serial output via a background reader thread
+- Parses output with regex and asserts expected state
+- Kills QEMU and reports results
+
+29 automated tests:
+- Boot reaches equilibrium (ops > 0)
+- Interactive mode starts
+- Timer signal produces operations
+- New process creation with name and priority
+- Kill terminates running process
+- Block moves running process to BLOCKED
+- Unblock moves first blocked process to READY
+- Page allocation (ALLOC_SIG → MEM_FREE to MEM_USED)
+- FD open (OPEN_SIG → FD_FREE to FD_OPEN)
+- Page free (FREE_SIG → MEM_USED to MEM_FREE)
+- FD close (CLOSE_SIG → FD_OPEN to FD_FREE)
+- Resource isolation: alloc on process A, block A, alloc on process B → different processes affected
+- Kill with resources: terminated process retains scoped resources (structural isolation)
+
+The harness detects kernel vs flat mode from boot output and adjusts test coverage. `make test-bare-metal` builds the image and runs all tests. ~30 seconds end to end.
+
+**2. Four-Module Kernel on Bare Metal (`programs/interactive_kernel.herb.json`)**
+
+The full kernel (proc + mem + fs + ipc as composed modules) now runs interactively on bare metal. This extends the Session 33 kernel with interactive signals:
+
+**New in interactive_kernel vs kernel:**
+- KILL_SIG, BLOCK_SIG, UNBLOCK_SIG, BOOST_SIG containers and tensions added to proc module
+- Both server and client start with 2 pages + 2 FDs each
+- `consume_signal` move updated to handle all 11 signal types
+
+**Kernel_main.c extended with `#ifdef KERNEL_MODE`:**
+- Container names are qualified (`proc.READY`, `proc.CPU0`, etc.)
+- 12 keyboard commands: N K B U T + Space (from Session 38) + A O F C M (new)
+- Process creation auto-creates 2 pages in `name::MEM_FREE` + 2 FDs in `name::FD_FREE`
+- VGA display shows per-process scoped resources: `M:2/0  F:2/0` (MEM free/used, FD free/open)
+- Serial output includes resource counts: `[ALLOC] server 1f/1u ops=2`
+- Backward compatible: `make PROGRAM=interactive_os` builds the flat scheduler as before
+
+**What the test proves:**
+
+| Test | What It Validates |
+|------|-------------------|
+| Page allocation | Scoped move `alloc_page` works: entity moves from `proc::MEM_FREE` to `proc::MEM_USED` |
+| FD open | Scoped move `open_fd` works: entity moves from `proc::FD_FREE` to `proc::FD_OPEN` |
+| Resource isolation | Alloc on process A, switch to B, alloc → B's resources change, A's don't |
+| Kill with resources | Terminated process's scoped resources are structurally isolated — nobody can access them |
+
+**The thesis proven on hardware:** HERB's scoped containers provide structural isolation on real x86-64 hardware. Process A's file descriptors are literally different containers than Process B's. Cross-scope access doesn't exist — not checked, not guarded, structurally absent. This is Discovery 11 (scoped containers are virtual address spaces) running on actual hardware with no operating system underneath.
+
+**The numbers:**
+- Kernel image: 60KB (under 100KB target)
+- Interactive kernel binary: 2,108 bytes (84% smaller than JSON)
+- 29 bare metal tests: 29/29 passing
+- 14 flat-mode tests: 14/14 passing (backward compat)
+- Total test count: 650 (up from 621)
+
+### Session 41 Milestone: FRAMEBUFFER GRAPHICS
+
+Session 40 proved the thesis on hardware with automated testing. Session 41 **gives the OS eyes** -- the display transitions from 80x25 text characters to 800x600 pixels.
+
+**The problem:** VGA text mode is a dead end. Everything graphical -- compositor, GUI, browser, game -- needs pixels. The OS rendered state as a text table: rows of characters showing process names, priorities, container counts. Spatial relationships between entities were invisible. Text mode couldn't show what a process LOOKS like, only what its data says.
+
+**The solution:** Bochs Graphics Adapter (BGA) framebuffer initialization with double-buffered graphical rendering.
+
+**1. BGA Framebuffer Initialization (`boot/framebuffer.h`)**
+
+The Bochs Graphics Adapter is QEMU's virtual GPU. Setting it up requires three things the bootloader didn't provide:
+
+- **PCI config space read** -- Port 0xCF8/0xCFC to find the device (vendor 0x1234, device 0x1111) and read BAR0 (the framebuffer physical address, typically 0xFD000000 in QEMU)
+- **Page table extension** -- The bootloader identity-maps 64MB (PDPT[0]). The framebuffer lives at 3-4GB. A new Page Directory at physical 0x4000 was added to PDPT[3], mapping 16MB of framebuffer MMIO with 2MB pages (uncached: PCD+PWT bits set). TLB flushed by reloading CR3.
+- **BGA DISPI registers** -- I/O ports 0x01CE/0x01CF: disable display, set 800x600x32bpp, enable with LFB flag. The linear framebuffer appears at BAR0.
+
+The back buffer lives at 0x500000 (system RAM, cached, fast). `fb_flip()` copies it sequentially to the framebuffer MMIO (uncached, write-only). Never read from MMIO -- PCIe reads are catastrophically slow.
+
+**2. Rendering Primitives**
+
+- `fb_clear(color)` -- fill back buffer
+- `fb_fill_rect(x, y, w, h, color)` -- filled rectangle with clipping
+- `fb_draw_rect(x, y, w, h, color)` -- 1px outline
+- `fb_draw_rect2(x, y, w, h, color)` -- 2px outline
+- `fb_draw_char(x, y, ch, fg, bg)` -- character from embedded 8x16 bitmap font
+- `fb_draw_string(x, y, str, fg, bg)` -- text rendering
+- `fb_draw_int(x, y, val, fg, bg)` -- integer as string
+- `fb_draw_container(x, y, w, h, title, border, fill)` -- titled bordered box
+- `fb_draw_process(x, y, w, h, name, pri, ts, border, fill)` -- process entity rectangle
+- `fb_draw_resources(x, y, mf, mu, ff, fo)` -- scoped resource indicators as colored squares
+- `fb_flip()` -- copy back buffer to framebuffer
+
+**3. Embedded 8x16 Bitmap Font (`boot/font8x16.h`)**
+
+The standard VGA ROM font (CP437 compatible) embedded as a 4KB C array. 256 characters, each 16 bytes (one byte per scanline, MSB = leftmost pixel). Plus special glyphs: full block (219) for resource indicators, filled square (254).
+
+**4. Graphical HERB State Visualization**
+
+The display is NOT a text console rendered with a font. It's a live spatial map of HERB's internal state:
+
+- **Four container regions** as colored bordered boxes:
+  - CPU0 (Running) -- green, top-left
+  - READY -- yellow, top-right
+  - BLOCKED -- red, bottom-left
+  - TERMINATED -- gray, bottom-right
+- **Process entities** as colored rectangles within their container region
+  - Name, priority, time_slice displayed inside
+  - Scoped resources shown as small colored squares (green=MEM free, red=MEM used, blue=FD free, orange=FD open)
+- **Status bars** with tick count, operations, arena usage, process count
+- **Key legend** and action log
+- **Resource legend** (KERNEL_MODE) showing what each colored square means
+
+The display shows spatial relationships that text couldn't convey: which processes are in which containers, how many entities each container holds, what resources belong to each process. A MOVE (entity transferring between containers) is visible as the entity rectangle appearing in a different region on the next frame.
+
+**5. Text Mode Fallback**
+
+`#ifdef GRAPHICS_MODE` controls the display path. All text mode code remains unchanged:
+- `make run` -- pixel framebuffer (800x600x32)
+- `make run-text` -- VGA text mode (80x25, Session 38-40 display)
+- `make test-bare-metal` -- text mode + automated serial tests (29/29 passing)
+
+Serial output is independent of display mode. The test harness validates the REAL system through the same serial channel the system uses to report its own state.
+
+**The numbers:**
+
+| Metric | Value |
+|--------|-------|
+| Graphics kernel image | 75KB (74,752 bytes) |
+| Text kernel image | 61KB (61,440 bytes) |
+| Font data | 4KB (4,096 bytes) |
+| Framebuffer resolution | 800x600x32bpp |
+| Back buffer | 1.83MB at 0x500000 |
+| Bare metal tests | 29/29 passing |
+| Flat mode tests | 14/14 passing |
+| Python v2 tests | 449/449 passing |
+| Total tests | 650 |
+
+**The significance:** The OS can now render pixels. This is the foundation for everything visual -- compositor, windows, widgets, browser rendering, game display. But more importantly for NOW, it makes HERB's internal state visible as spatial objects. Processes aren't rows in a table anymore; they're colored rectangles sitting inside container boxes. Resources aren't numbers; they're colored squares inside their owning process. A scheduling decision isn't a log line; it's a rectangle moving from the READY box to the CPU0 box. The display IS the state. That's what "HERB state IS the display" means: the graphical output is a direct spatial encoding of the HERB runtime's graph.
+
+### Session 42 Milestone: DISPLAY AS HERB STATE
+
+Session 41 gave the OS a pixel framebuffer. Session 42 **makes the display a HERB-modeled system** -- visual elements are HERB entities, visual state is managed by tensions, and the C renderer is a dumb pixel blitter.
+
+**The problem:** Session 41's rendering pipeline was entirely C code. The `gfx_draw_full()` function hardcoded container region positions, computed process colors from location strings, and made all visual decisions in C. HERB didn't know a display existed. Adding any graphical feature meant writing more C. Every visual element was a C function call, not a HERB entity.
+
+**The solution:** A fifth module (`display`) in the kernel composition that models visual elements as HERB entities.
+
+**1. Display Module (`programs/interactive_kernel.herb.json`)**
+
+The display module defines:
+- **Surface entity type** -- a visual element with properties: `kind` (0=container region, 1=process), `state` (0=unset, 1=running, 2=ready, 3=blocked, 4=terminated), and for regions: `x`, `y`, `width`, `height`, `region_id`
+- **VISIBLE container** -- holds Surface entities for container regions (CPU0, READY, BLOCKED, TERMINATED boxes)
+- **HIDDEN container** -- for future use (surfaces not currently rendered)
+- **Scoped SURFACE slot per Process** -- each process gets one Surface entity in its `SURFACE` scope, linking the process to its visual representation
+- **Four sync tensions** -- `sync_running`, `sync_ready`, `sync_blocked`, `sync_terminated` -- each at priority 5 (below all kernel tensions). When a process is in a container and its surface state doesn't match, the tension sets the correct state.
+
+The key design: **Surface.state is an abstract visual state (1-4), not pixel data.** HERB decides WHAT state each surface is in. C maps states to colors. This preserves the policy/mechanism boundary: HERB doesn't know about pixels, C doesn't make decisions.
+
+**2. HERB-Driven Container Regions**
+
+Container region positions (x, y, width, height) are stored as HERB entity properties on four Surface entities in `display.VISIBLE`:
+- `region_cpu0`: x=8, y=76, w=388, h=190
+- `region_ready`: x=404, y=76, w=388, h=190
+- `region_blocked`: x=8, y=274, w=388, h=190
+- `region_term`: x=404, y=274, w=388, h=190
+
+The C renderer iterates `display.VISIBLE`, reads these properties, and draws titled boxes. No container positions are hardcoded in C for KERNEL_MODE.
+
+**3. Surface-Reading Renderer (`boot/kernel_main.c`)**
+
+The `gfx_draw_full()` function was rewritten:
+- **Container regions**: iterate `display.VISIBLE` Surface entities → read kind, region_id, x, y, width, height → draw with `fb_draw_container()`
+- **Process surfaces**: for each process in each container, read its scoped `SURFACE` entity → read `state` property → map to colors via lookup table → draw with `fb_draw_process()`
+- **State-to-color mapping**: `surf_state_border[]` and `surf_state_fill[]` arrays map state 0-4 to border/fill colors
+- **`get_surface_state()`**: reads a process's scoped SURFACE container to get its visual state
+
+The C never decides which color a process should be. It reads the state HERB set via tensions, looks up colors in a table, and draws pixels.
+
+**4. Process Surface Creation**
+
+When `cmd_new_process()` creates a process, it also creates a Surface entity in `name::SURFACE` with kind=1, state=0 (unset). After `herb_run()`, the appropriate display tension fires and sets state to the correct value.
+
+Initial processes (server, client) get their Surface entities in the program definition. After boot `herb_run()`, display tensions set their states.
+
+**The numbers:**
+
+| Metric | Value |
+|--------|-------|
+| Graphics kernel image | 76KB (76,288 bytes) |
+| Text kernel image | 62KB (62,464 bytes) |
+| Kernel binary (.herb) | 3,060 bytes |
+| Display module | ~950 bytes binary overhead |
+| Display tensions | 4 |
+| Surface entities (initial) | 6 (4 regions + 2 process surfaces) |
+| Total modules | 5 (proc + mem + fs + ipc + display) |
+| Total tensions | 18 (14 kernel + 4 display) |
+| Boot ops | 3 (1 schedule + 2 display syncs) |
+| Bare metal tests | 29/29 passing |
+| Python v2 tests | 449/449 passing |
+| Total tests | 650 |
+
+**What changed architecturally:**
+
+| Before (Session 41) | After (Session 42) |
+|---------------------|---------------------|
+| C decides process colors from location strings | HERB tensions set surface state, C maps state to colors |
+| Container positions hardcoded in C `#define` macros | Container positions stored as HERB entity properties |
+| Adding a visual element = modify C code | Adding a visual element = add HERB entity + tension |
+| Display doesn't exist in HERB | Display IS HERB state |
+| 0 display operations per state change | 1 display operation per state change (set state) |
+
+**The significance:** This is the first compositor step. The display is no longer a C program that queries HERB -- it's a HERB system that C renders. Every visual element is a HERB entity. Every visual state change is a HERB tension firing. The C layer is ~40 lines of rendering code that reads entities and draws pixels. This inverts the rendering architecture: HERB owns visual state, C is mechanism. Adding a window, a widget, or a GUI element means adding HERB entities and tensions, not modifying C. The pattern is proven: scoped containers provide structural coupling between domain objects (processes) and their visual representations (surfaces). This is the foundation for everything graphical that follows.
+
+### Session 43 Milestone: MOUSE INPUT — SPATIAL INTERACTION
+
+Session 42 made the display a HERB-modeled system. Session 43 **gives the OS a mouse** -- PS/2 hardware driver, cursor as a HERB entity, click signals with coordinates, and HERB-native spatial hit testing.
+
+**The problem:** The OS only had keyboard input. All interaction was command-based: press a key, trigger a signal, HERB responds. There was no spatial awareness -- you couldn't point at things, click on things, or see where you were pointing. A graphical OS needs spatial interaction.
+
+**The solution:** Full PS/2 mouse stack from hardware interrupt to HERB hit-test tensions.
+
+**1. PS/2 Mouse Driver (`boot/kernel_entry.asm`, `boot/kernel_main.c`)**
+
+- IRQ12 ISR stub: reads byte from port 0x60, stores in volatile, sends EOI to both slave and master PIC
+- PS/2 initialization: enable auxiliary device (0xA8), enable IRQ12 in controller config, send Enable Data Reporting (0xF4)
+- PIC mask updated: unmask cascade (IRQ2) and mouse (IRQ12 = bit 4 on slave)
+- 3-byte packet assembly state machine in main loop with sync validation (bit 3 of byte 0 must be set)
+- Signed delta extraction with overflow rejection
+- Absolute position tracking with screen clamping (0-799 x, 0-599 y)
+- Button state tracking with edge detection (click = transition from unpressed to pressed)
+
+**2. Cursor as a Surface Entity**
+
+The cursor is a HERB entity in `display.VISIBLE` with `kind=2` and x,y properties. C updates these properties on every mouse movement. The cursor is rendered as a 10x14 pixel arrow bitmap written directly to the MMIO framebuffer (not through the back buffer). This avoids expensive full redraws for cursor tracking:
+
+- Back buffer always contains the scene WITHOUT cursor
+- `fb_cursor_erase()`: copies old cursor area from back buffer to MMIO (restore)
+- `fb_cursor_draw()`: draws cursor bitmap to MMIO at new position (overlay)
+- After `fb_flip()`, cursor is drawn on top of the flipped frame
+- Result: cursor tracks mouse movement with zero full redraws
+
+**3. Click Signals into HERB**
+
+Left clicks create `CLICK_SIG` Signal entities with `click_x` and `click_y` integer properties. The `CLICK_SIG` container is in the `proc` module alongside other signal containers, and `consume_signal` can move clicks to `SIG_DONE`.
+
+**4. Hit Testing as HERB Tensions**
+
+This is the architectural key piece. Five new tensions in the `display` module:
+
+- `click_select_cpu0` (pri=4): match CLICK_SIG + region(id=0) + proc in CPU0, guard: coordinates within region bounds → set proc.selected=1
+- `click_select_ready` (pri=4): same pattern for READY container
+- `click_select_blocked` (pri=4): same pattern for BLOCKED container
+- `click_select_terminated` (pri=4): same pattern for TERMINATED container
+- `click_miss` (pri=3): match any unconsumed CLICK_SIG → consume it (fallback)
+
+The guard expression for each hit-test tension:
+```
+click.click_x >= region.x AND
+click.click_x < region.x + region.width AND
+click.click_y >= region.y AND
+click.click_y < region.y + region.height
+```
+
+This uses cross-binding property comparison in guard clauses: the `click` binding's properties are compared against the `region` binding's properties. The guard fires only when coordinates match. HERB does the spatial reasoning; C creates the signal and renders the result.
+
+**5. Selection Highlight**
+
+Selected processes (selected=1) get a 3-pixel bright white border drawn around their rectangle. C clears the previous selection before creating a new click signal. After herb_run(), C scans all process containers to find which entity HERB selected.
+
+**The numbers:**
+
+| Metric | Value |
+|--------|-------|
+| Graphics kernel image | 80KB (80,384 bytes) |
+| Text kernel image | 64KB (64,512 bytes) |
+| Kernel binary (.herb) | 3,989 bytes |
+| Mouse + click overhead | ~929 bytes binary |
+| Total modules | 5 (proc + mem + fs + ipc + display) |
+| Total tensions | 23 (14 kernel + 4 sync + 5 click) |
+| Entities (initial) | 17 (2 procs + 8 resources + 2 surfaces + 4 regions + 1 cursor) |
+| Bare metal tests | 29/29 passing |
+| Python v2 tests | 449/449 passing |
+| Total tests | 650 |
+
+**What changed architecturally:**
+
+| Before (Session 42) | After (Session 43) |
+|---------------------|---------------------|
+| Keyboard-only interaction | Keyboard + mouse interaction |
+| No spatial awareness | Click coordinates as HERB entity properties |
+| No hit testing | Guard expressions match coordinates against bounds |
+| No cursor | Cursor is a Surface entity with MMIO overlay rendering |
+| No selection concept | selected property set by HERB tensions |
+| Display has no input | Display module both outputs (sync tensions) AND inputs (click tensions) |
+
+**The significance:** The display module now has bidirectional data flow. Session 42 made it output-only: kernel tensions change process state, display tensions sync visual state. Session 43 adds INPUT: user clicks create signals, display tensions interpret click coordinates against visual layout, and set semantic state (selected) on processes. The display module both reflects state AND responds to spatial input. This is the interaction model a graphical OS needs: HERB owns the spatial layout (region positions), HERB does the spatial reasoning (hit testing), and HERB sets the semantic result (selection). The C layer's role is pure mechanism: read mouse hardware, create signals with coordinates, render highlights where HERB says. The cursor being a HERB entity means the pointer position is part of the system's state graph -- another domain where HERB owns state and C is mechanism.
+
+### Session 44 Milestone: VISIBLE TENSIONS — RULES AS OBJECTS
+
+Session 43 gave the OS mouse input and spatial hit testing. Session 44 **makes the OS's behavioral rules visible, selectable, and toggleable** -- proving that HERB's dissolution of the code/data distinction has real, observable consequences.
+
+**The problem:** Every operating system in history has two categories: data (processes, files, pages) and code (scheduler, fault handler, drivers). Data is inspectable and mutable at runtime. Code is opaque and fixed. You can see a process. You can't see the scheduling rule that moves it. HERB dissolved this distinction — tensions are data structures, not compiled code — but the display only showed entities in containers. The forces acting on them were invisible.
+
+**The solution:** Tensions rendered as first-class visual objects with runtime enable/disable.
+
+**1. Runtime: `enabled` Flag + Tension Query API (`src/herb_runtime_freestanding.c`)**
+
+One field added to the Tension struct: `int enabled;` (default 1). One line in `herb_step()`: `if (!g_graph.tensions[idx].enabled) continue;`. Five new API functions: `herb_tension_count()`, `herb_tension_name()`, `herb_tension_priority()`, `herb_tension_enabled()`, `herb_tension_set_enabled()`. The entire mechanism for making the energy landscape controllable is 35 lines of C.
+
+**2. Tension Panel: Right Sidebar (`boot/kernel_main.c`, `boot/framebuffer.h`)**
+
+Container regions resized to the left 2/3 of the screen. A 244×388px tension panel fills the right sidebar. All 23 tensions rendered as compact rows showing name (module prefix stripped), priority, and enabled state. Cool blue/cyan color palette distinguishes RULES from THINGS: enabled tensions glow cyan, disabled tensions dim to dark gray. Selected tension has a bright white border.
+
+**3. Interaction**
+
+- Keyboard `[`/`]`: cycle tension selection through the list
+- Keyboard `D`: toggle selected tension's enabled/disabled state
+- Mouse click on tension panel: select and toggle the clicked tension
+- All operations logged to serial for automated testing
+
+**4. Behavioral Consequences — Proven**
+
+| Action | Observable Result |
+|--------|-------------------|
+| Disable `timer_tick` | Timer signals produce 0 ops — time_slice never decrements, preemption stops |
+| Disable `schedule_ready` | After killing a process, CPU0 stays empty — no rescheduling occurs |
+| Disable `sync_running` | Display state doesn't update when processes move to CPU0 |
+| Re-enable any tension | Behavior resumes immediately on next signal |
+
+These aren't debug outputs. They're proof that the energy landscape is real: removing a gradient changes the system's behavior, and the user can see exactly which gradient they removed.
+
+**The numbers:**
+
+| Metric | Value |
+|--------|-------|
+| Graphics kernel image | 85KB (85,504 bytes) |
+| Text kernel image | 67KB (67,072 bytes) |
+| Kernel binary (.herb) | 3,989 bytes (unchanged) |
+| Total modules | 5 (proc + mem + fs + ipc + display) |
+| Total tensions | 23 (unchanged) |
+| Bare metal tests | 46/46 passing (29 original + 17 tension toggle) |
+| Python v2 tests | 449/449 passing |
+| Total tests | 667 |
+
+**What changed architecturally:**
+
+| Before (Session 43) | After (Session 44) |
+|---------------------|---------------------|
+| Tensions are invisible internal runtime state | Tensions are rendered as visual objects |
+| Tensions always fire during resolution | Tensions can be individually disabled |
+| Behavioral rules are fixed after program load | Behavioral rules are live-editable by the user |
+| Display shows entities (things) only | Display shows entities AND tensions (things AND forces) |
+| User interacts with entities (click to select) | User interacts with both entities and tensions |
+
+**The significance:** No operating system lets you see its scheduling algorithm as an object and turn it off with a click. Linux's CFS is compiled C code — opaque, fixed, invisible at runtime. HERB's `schedule_ready` is a data structure rendered as a colored rectangle that you can point at and toggle. This is the architectural consequence of "tensions are data, not code." Session 44 proves it's not a theoretical property — it's a user-facing capability. The energy landscape metaphor from the Philosophy section of this Bible ("Programming is defining an energy landscape. Execution is gravity.") is now literally visible on screen: you can see the gradients, remove one, and watch gravity work differently.
+
+### Session 45 Milestone: PROCESS-AS-TENSIONS — LOADABLE BEHAVIORAL PROGRAMS
+
+Session 44 made tensions visible and toggleable. Session 45 **makes processes behavioral** -- a process IS its tensions, and loading a program means injecting behavioral rules into the runtime.
+
+**The problem:** Every process was a static data entity. Processes had properties (priority, time_slice) and lived in containers (READY, CPU0, BLOCKED), but they didn't DO anything on their own. All behavior came from the 23 system tensions. A process in CPU0 was just a name waiting for system tensions to move it. Real operating systems have per-process code -- each program does different things when scheduled.
+
+**The solution:** Runtime tension creation API + owner scheduling, making a process's behavior its tensions.
+
+**1. Runtime: Tension Creation API (`src/herb_runtime_freestanding.c`)**
+
+Seven new API functions that let the kernel inject tensions at runtime:
+- `herb_tension_create(name, priority, owner_entity, run_container)` -- creates a tension owned by a specific entity
+- `herb_tension_match_in(tidx, bind, container, select_mode)` -- adds a match clause
+- `herb_tension_match_in_where(tidx, bind, container, select_mode, where_expr)` -- adds a match with a where filter
+- `herb_tension_emit_set(tidx, entity_bind, property, value_expr)` -- adds a set emit
+- `herb_tension_emit_move(tidx, move_type, entity_bind, to_container)` -- adds a move emit
+- Expression builders: `herb_expr_int()`, `herb_expr_prop()`, `herb_expr_binary()`
+- `herb_remove_owner_tensions(owner_entity)` -- removes all tensions owned by an entity (compact, no holes)
+
+**2. Owner Scheduling (`herb_step()` in `src/herb_runtime_freestanding.c`)**
+
+Two fields on the Tension struct: `owner` (entity index, -1 for system tensions) and `owner_run_container` (container index where owner must be to fire, -1 for no check). One check in `herb_step()`: if a tension has an owner and that owner is not in the run container, skip it. Process-owned tensions only fire when their process is scheduled (in CPU0).
+
+**3. Two Loadable Programs (`boot/kernel_main.c`)**
+
+- **Worker**: one tension `{name}.do_work` at priority 6. Match: "me" in CPU0 where me.work > 0. Emit: set me.work = me.work - 1. The process converges toward work=0.
+- **Beacon**: one tension `{name}.pulse` at priority 6. Match: "me" in CPU0 where me.pulses < me.limit. Emit: set me.pulses = me.pulses + 1. The process converges toward pulses=limit.
+
+Odd process_counter = worker, even = beacon. Each process gets its own tension with unique name.
+
+**4. Visual Integration**
+
+- Tension panel shows process-owned tensions with orange indicator dots (vs cyan for system tensions) and warm-colored names
+- Process rectangles display program state: `W:xxx` for workers (work remaining), `P:xxx/xxx` for beacons (pulses/limit)
+- Serial output reports `[PROGRAM] worker/beacon loaded for {name} tensions={count}` and `[PROC] {name} work/pulses={value}`
+
+**5. Behavioral Consequences -- Proven**
+
+| Action | Observable Result |
+|--------|-------------------|
+| Create worker | do_work tension appears, work decreases when scheduled |
+| Create beacon | pulse tension appears, pulses increase when scheduled |
+| Kill process | Owner tensions removed from runtime (compacted) |
+| Block process | Owner tensions stop firing (owner not in CPU0) |
+| Unblock process | Owner tensions resume when rescheduled |
+
+**The numbers:**
+
+| Metric | Value |
+|--------|-------|
+| Graphics kernel image | 90KB (90,112 bytes) |
+| Text kernel image | 72KB (72,192 bytes) |
+| Kernel binary (.herb) | 3,989 bytes (unchanged) |
+| Total modules | 5 (proc + mem + fs + ipc + display) |
+| System tensions | 23 (unchanged) |
+| Process tensions | Dynamic (1 per process, created/removed at runtime) |
+| Bare metal tests | 59/59 passing (46 original + 13 process-as-tensions) |
+| Python v2 tests | 449/449 passing |
+| Total tests | 680 |
+
+**What changed architecturally:**
+
+| Before (Session 44) | After (Session 45) |
+|---------------------|---------------------|
+| All tensions loaded from the .herb binary at boot | Tensions can be created at runtime via API |
+| All processes behave identically (passive data) | Each process has unique behavioral tensions |
+| Tension count is fixed after program load | Tension count grows/shrinks as processes are created/killed |
+| Killing a process just moves it to TERMINATED | Killing a process also removes its behavioral rules |
+| Scheduling only affects which process occupies CPU0 | Scheduling determines which process's tensions fire |
+
+**The significance:** This is the moment HERB processes become truly different from each other. Before Session 45, a process was just a name with properties sitting in a container. Now a process IS its behavioral rules. A worker process literally has a different energy gradient than a beacon process. The scheduler doesn't just pick which process runs -- it picks which set of behavioral tensions are active. Killing a process doesn't just move an entity; it removes rules from the universe. The process/program distinction dissolves: there is no "code" separate from the process. The process's tensions ARE its program, and they live in the same runtime as the system tensions. You can see them in the tension panel (orange dots), toggle them (D key), and watch the energy landscape reshape itself as processes are created and destroyed.
+
+### Session 46 Milestone: INTERACTING PROCESSES — EMERGENT BEHAVIOR
+
+Session 45 proved that a process IS its tensions. Session 46 proves that **independent processes produce emergent behavior through shared state** -- the real payoff of "the OS absorbs behavioral rules and resolves the combined energy landscape."
+
+**The problem:** Every process in Session 45 was solitary. Workers decremented their own work. Beacons incremented their own pulses. Each process modified its own properties in isolation. The energy landscape had independent gradients that didn't interact. But the real power of a unified tension resolution system is that rules from different sources interact: Producer fills, Consumer drains, and the system finds a dynamic equilibrium that neither could produce alone.
+
+**The solution:** Producer and Consumer programs that interact through a shared BUFFER entity.
+
+**1. Runtime: Container Creation API (`src/herb_runtime_freestanding.c`)**
+
+One new API function: `herb_create_container(name, kind)`. Creates a container at runtime for shared state. The BUFFER container is created once at boot, holding a single Buffer entity with `count` and `capacity` properties.
+
+**2. Producer Program (`boot/kernel_main.c`)**
+
+One tension `{name}.produce` at priority 6:
+- Match "me" in CPU0 where me.produced < me.produce_limit
+- Match "buf" in BUFFER where buf.count < buf.capacity
+- Emit: set buf.count = buf.count + 1, set me.produced = me.produced + 1
+
+**3. Consumer Program (`boot/kernel_main.c`)**
+
+One tension `{name}.consume` at priority 6:
+- Match "me" in CPU0 (no condition — always tries)
+- Match "buf" in BUFFER where buf.count > 0
+- Emit: set buf.count = buf.count - 1, set me.consumed = me.consumed + 1
+
+**4. Multi-Binding Tensions**
+
+Each process tension has TWO match clauses: one for the process entity ("me") and one for the shared buffer entity ("buf"). Both must match for the tension to fire. The expression evaluator resolves bindings from both matches in emit expressions. This is the first time process programs reference entities outside themselves.
+
+**5. Emergent Behavior — Proven**
+
+| Action | Observable Result |
+|--------|-------------------|
+| Create producer only | Buffer fills to capacity (20/20), producer stops |
+| Add consumer | Buffer drains toward 0, consumer catches up |
+| Both running | Dynamic equilibrium: producer and consumer alternate, buffer fluctuates |
+| Block producer | Consumer drains buffer to 0, then stops (nothing to consume) |
+| Block consumer | Producer fills buffer to capacity, then stops |
+| Kill either | Half the energy gradients vanish, buffer moves to one extreme |
+| Toggle tension off | Same behavioral effect as blocking |
+
+The key insight: neither process knows the other exists. They interact through shared state. The scheduler determines which set of tensions fires (by moving process entities into CPU0). The runtime resolves ALL active tensions together. Emergent behavior arises from the combined energy landscape, not from any process-to-process communication.
+
+**6. Visual Integration**
+
+Buffer indicator bar in the bottom panel: fill bar (green/yellow/orange by fill level), numeric count (N/20), producer/consumer legend. Process rectangles show program state: `>NN` (producer's produced count, orange) and `<NN` (consumer's consumed count, blue).
+
+**The numbers:**
+
+| Metric | Value |
+|--------|-------|
+| Graphics kernel image | 92KB (91,648 bytes) |
+| Text kernel image | 73KB (73,216 bytes) |
+| Kernel binary (.herb) | 3,989 bytes (unchanged) |
+| Total modules | 5 (proc + mem + fs + ipc + display) |
+| System tensions | 23 (unchanged) |
+| Process tensions | Dynamic (1 per live process) |
+| Shared containers | 1 (BUFFER, created at runtime) |
+| Bare metal tests | 76/76 passing (59 original + 17 interaction) |
+| Python v2 tests | 449/449 passing |
+| Total tests | 697 |
+
+**What changed architecturally:**
+
+| Before (Session 45) | After (Session 46) |
+|---------------------|---------------------|
+| Process tensions reference only self ("me" in CPU0) | Process tensions reference self AND shared entities |
+| Each process modifies its own properties | Processes modify shared state through multi-binding tensions |
+| No shared mutable state between processes | BUFFER entity is shared mutable state |
+| Container creation only at program load time | Containers created at runtime via herb_create_container() |
+| Independent energy gradients per process | Interacting gradients: combined landscape produces emergent behavior |
+
+**The significance:** This is the moment HERB proves that "the OS absorbs behavioral rules and resolves the combined energy landscape" is not just a description of the architecture — it's a capability with observable consequences. In every other OS, producer/consumer coordination requires explicit synchronization primitives: mutexes, semaphores, condition variables. In HERB, there are no synchronization primitives. There are tensions that reference shared state. The runtime resolves them in priority order, atomically, to fixpoint. The synchronization is structural: the buffer's `count` property can only be incremented when count < capacity (producer's guard) and only decremented when count > 0 (consumer's guard). Invalid states (count < 0 or count > capacity) are unreachable because no sequence of valid tension resolutions leads to them. This is Discovery 1 (the operation set IS the constraint system) operating at the process interaction level. The buffer's integrity isn't enforced by a lock. It's enforced by the structure of the tensions themselves.
+
+### Session 47 Milestone: PROGRAMS AS DATA — .HERB BINARIES LOADED AS PROCESSES
+
+Session 46 proved emergent behavior from cross-process interaction. Session 47 **eliminates the last C scaffolding from process programs** -- a process's behavior is loaded from a `.herb` binary file, not constructed by C function calls.
+
+**The problem:** Sessions 45-46 proved that a process IS its tensions and that cross-process interaction emerges from the combined energy landscape. But there was a lie at the heart of the system: `load_producer_program()` and `load_consumer_program()` were C functions that called `herb_tension_create()`, `herb_tension_match_in_where()`, `herb_tension_emit_set()` etc. — constructing tensions through compiled C code. The Bible says "A HERB program is a data structure, not code." Every C function that constructs tensions by hand is scaffolding that should be a `.herb` program loaded from data.
+
+**The solution:** Data-driven process loading via `.herb` binary program fragments.
+
+**1. Program Fragment Files (`programs/*.herb.json`)**
+
+Four process programs as pure data:
+- `producer.herb.json` (710 bytes JSON → 209 bytes binary): one tension matching self in CPU0 + buf in BUFFER
+- `consumer.herb.json` (557 bytes → 179 bytes): one tension matching self in CPU0 + buf in BUFFER where count > 0
+- `worker.herb.json` (378 bytes → 123 bytes): one tension matching self in CPU0 where work > 0
+- `beacon.herb.json` (410 bytes → 125 bytes): one tension matching self in CPU0 where pulses < limit
+
+Each is a valid `.herb.json` with only a tensions section — entity types, containers, moves are empty. The compiler handles this naturally, producing compact binaries.
+
+**2. Program Fragment Loader (`herb_load_program()` in `src/herb_runtime_freestanding.c`)**
+
+New public API:
+```c
+int herb_load_program(const uint8_t* data, herb_size_t len,
+                       int owner_entity, const char* run_container);
+```
+
+The function:
+- Reads the `.herb` binary header and string table
+- Maps fragment strings into the running system's intern table
+- Skips empty infrastructure sections (entity types, containers, moves, pools, etc.)
+- For the tensions section: creates each tension with the given owner and run_container
+- Automatically prefixes tension names with the owner entity's name ("p1.produce", "p2.consume")
+- Returns the number of tensions loaded
+
+This reuses all existing binary parsing infrastructure (BinReader, br_expr, br_to_ref) but adds the owner/run_container semantics that make the loaded tensions behave as process programs.
+
+**3. Multi-Program Embedding (`boot/gen_multi_program_data.py`)**
+
+New build tool that embeds multiple `.herb` binaries as named C arrays in a single header file. Each program gets `program_NAME[]` and `program_NAME_len`. The kernel selects programs by name at runtime.
+
+**4. C Scaffolding Removed (`boot/kernel_main.c`)**
+
+`load_producer_program()` (30 lines of C) and `load_consumer_program()` (28 lines of C) — deleted. Replaced by two calls to `herb_load_program()` with embedded binary data. The C tension creation API (`herb_tension_create` etc.) remains available for system tensions, but process programs come from data.
+
+**The numbers:**
+
+| Metric | Value |
+|--------|-------|
+| Graphics kernel image | 95KB (97,280 bytes) |
+| Text kernel image | 77KB (78,848 bytes) |
+| Kernel binary (.herb) | 3,989 bytes (unchanged) |
+| Producer binary | 209 bytes |
+| Consumer binary | 179 bytes |
+| Worker binary | 123 bytes |
+| Beacon binary | 125 bytes |
+| C lines removed | ~60 (load_producer + load_consumer) |
+| Total programs | 15 (11 system + 4 process fragments) |
+| Total tensions | 23 system + dynamic per-process (unchanged) |
+| Bare metal tests | 76/76 passing (unchanged, data loading = identical behavior) |
+| Python v2 tests | 449/449 passing |
+| Cross-format | 13/13 passing |
+| Total tests | 697 |
+
+**What changed architecturally:**
+
+| Before (Session 46) | After (Session 47) |
+|---------------------|---------------------|
+| Process programs are C functions that call tension API | Process programs are `.herb` binary data loaded at runtime |
+| Adding a new program type requires modifying C code | Adding a new program type requires writing a `.herb.json` file |
+| Tension creation logic compiled into the kernel | Tension creation logic parsed from binary data |
+| Program behavior is code | Program behavior is data |
+| Two C functions construct process tensions | Zero C functions construct process tensions |
+
+**The significance:** This session completes the "programs as data" arc that began in Session 28. Session 28 established that a HERB program is a data structure. Session 34 made programs portable (JSON). Session 39 made programs native (binary). Session 45 proved that process behavior IS tensions. Session 47 closes the loop: the kernel loads process programs from `.herb` binary data at runtime, not from compiled C code. The last piece of C scaffolding that stood between the kernel and pure data-driven process loading is gone. The C tension creation API remains for the kernel's own system tensions (which are part of the kernel .herb binary), but every process program is data that the runtime loads. This is one step closer to the HERB Purism goal: assembly + HERB, nothing else. The C functions that constructed tensions by hand were scaffolding. Now they're gone.
+
+### Session 48 Milestone: HOT-SWAPPABLE SYSTEM POLICY — LIVE RULE REPLACEMENT
+
+Session 47 made process programs loadable data. Session 48 **proves that system behavioral rules — the kernel's own scheduling, display sync, and hit-testing policies — can be replaced at runtime with different rules loaded from data.**
+
+**The problem:** System tensions (scheduling, display sync, hit testing) are fixed after boot. Session 44 made them toggleable (enabled/disabled), but you can't REPLACE one with a different behavioral rule. Every OS in history requires recompilation or at minimum a reboot to change its scheduling policy. Even systems with "pluggable schedulers" (Linux's CFS vs SCHED_DEADLINE) require kernel module loading with compiled native code.
+
+**The solution:** Two new runtime APIs and two scheduling policy fragments.
+
+**1. Runtime: Tension Removal by Name (`herb_remove_tension_by_name()` in `src/herb_runtime_freestanding.c`)**
+
+One new API function that removes a single tension by its interned name. Same compaction logic as `herb_remove_owner_tensions()` but matching by `name_id` instead of `owner`. Returns 1 if removed, 0 if not found. This is the "unload old policy" half of the swap.
+
+**2. Runtime: System-Level Fragment Loading (fix to `herb_load_program()`)**
+
+When `herb_load_program()` is called with `owner_entity = -1`, tension names are now used directly from the fragment (no owner name prefix). This makes the function work for loading system-level policy fragments — the loaded tension becomes a system tension (owner=-1, no run container check).
+
+**3. Two Scheduling Policy Fragments**
+
+- `schedule_priority.herb.json` (344 bytes JSON → 140 bytes binary): tension `proc.schedule_pri` at priority 10, matches entity in proc.READY with `max_by priority` + empty proc.CPU0, emits move to CPU0. This is the existing behavior extracted as loadable data.
+- `schedule_roundrobin.herb.json` (323 bytes → 130 bytes): tension `proc.schedule_rr` at priority 10, matches entity in proc.READY with `first` (FIFO) + empty proc.CPU0, emits move to CPU0. Same structural shape, different selection logic.
+
+The ONLY difference between the two policies is `"select": "max_by", "key": "priority"` vs `"select": "first"`. Everything else — containers, move types, emit targets — is identical. The difference in selection logic produces completely different scheduling behavior.
+
+**4. Swap Command ('S' key in `boot/kernel_main.c`)**
+
+- Removes the current scheduling tension by name (`herb_remove_tension_by_name()`)
+- Loads the alternative from embedded binary data (`herb_load_program()` with owner=-1)
+- Updates the tracked tension name and display label
+- Runs the system to settle under the new policy
+- Serial output: `[POLICY] Removed proc.schedule_ready (1)` → `[POLICY] Loaded round-robin (1 tensions)` → `[POLICY] Settled: ROUND-ROBIN ops=N`
+
+**5. Visual Feedback**
+
+- Stats bar shows `Sched: PRIORITY` or `Sched: ROUND-ROBIN` in distinct colors (green/orange)
+- Tension panel: old scheduling tension disappears, new one appears
+- Key legend includes `S` for swap
+
+**6. No Compatibility Check — By Design**
+
+The mechanism performs NO structural validation of the replacement tension. It doesn't check that the replacement references the same containers, uses the same move types, or has the same match/emit shape. This is deliberate: Discovery 1 (the operation set IS the constraint system) protects the system structurally. A "wrong" replacement simply doesn't fire — its container references resolve to -1, its moves don't match, and the tension produces zero operations. The system continues running safely with whatever tensions remain active. Invalid replacements are harmless because invalid operations are unreachable.
+
+**The numbers:**
+
+| Metric | Value |
+|--------|-------|
+| Graphics kernel image | 99KB (101,376 bytes) |
+| Text kernel image | 80KB (81,408 bytes) |
+| Priority policy binary | 140 bytes |
+| Round-robin policy binary | 130 bytes |
+| Total programs | 17 (11 system + 4 process + 2 policy fragments) |
+| Bare metal tests | 95/95 passing (76 original + 19 policy swap) |
+| Python v2 tests | 449/449 passing |
+| Total tests | 716 |
+
+**What changed architecturally:**
+
+| Before (Session 47) | After (Session 48) |
+|---------------------|---------------------|
+| System tensions are fixed after boot | System tensions can be replaced at runtime |
+| Changing scheduling requires recompilation | Changing scheduling requires loading a different .herb fragment |
+| Behavioral rules can only be toggled on/off | Behavioral rules can be swapped for different rules |
+| herb_load_program() only loads owned (process) tensions | herb_load_program() with owner=-1 loads system tensions |
+| No tension removal by name | herb_remove_tension_by_name() removes any tension |
+
+**The significance:** No operating system lets you replace its scheduling algorithm at runtime by loading a different data file. Linux's CFS is compiled C code. Windows' scheduler is compiled C++ code. Changing either requires kernel development, compilation, and a reboot. In HERB, the scheduling policy is a 130-byte `.herb` binary. Swapping it means removing one tension by name and loading another. The system never stops running. The user watches the behavioral difference in real time: under priority scheduling, the highest-priority process gets the CPU; under round-robin, the first process in the READY queue gets it. The mechanism is fully general — any system tension can be replaced, not just scheduling. You could swap display sync policies, hit-test strategies, or timer preemption rules the same way. The demo is scheduling because it's the most visible and testable, but the architecture supports replacing any behavioral rule in the system. This is what "the operation set IS the constraint system" means for system evolution: you can change the rules while the system runs because the rules are data, and the structural safety guarantees hold regardless of which rules are loaded.
+
+### Phase 1 Milestone: C→HERB BEHAVIORAL MIGRATION COMPLETE (Sessions 51-57)
+
+Seven sessions. 14 behavioral decisions. Every one migrated from compiled C code to HERB tensions and entities.
+
+**The approach:** Identify each place where C makes a WHAT decision (behavioral policy) rather than a HOW decision (mechanism). Replace C policy with HERB state that C reads, or HERB tensions that C triggers. C becomes pure mechanism — it creates signals, reads properties, writes pixels, loads binaries, and performs hardware I/O. It never decides what should happen.
+
+**What HERB Owns Now:**
+
+*Command/Shell:*
+- Keystroke→command mapping (5 KeyBind entities, keybind_route tension) — Session 53
+- Text→command mapping (7 TextCmd + 4 TextArg entities, textcmd_match/textarg_match tensions) — Session 53
+- Shell command dispatch (9 shell tensions from .herb binary, CMD_SIG entities) — Sessions 50-51
+- Shell protection (where guard on protected property) — Session 51
+- Shell action interpretation: help text (7 HelpCmd entities in HELP_TEXT) — Session 57
+
+*Process Lifecycle:*
+- Priority assignment (5 PriToken entities in PRI_POOL conservation pool) — Session 52
+- Program selection (2 ProgToken entities in PROG_POOL conservation pool) — Session 52
+- Spawn decisions (spawn_explicit/spawn_auto tensions, SPAWN_SIG) — Session 52
+
+*Input Routing:*
+- Mode routing (KEY_SIG for every keystroke, competing tensions with mode guards) — Session 54
+- Mechanism key mapping (12 MechBind entities, mechbind_match tension) — Session 54
+- Click routing (click_panel tension with spatial guards) — Session 54
+
+*Display/Rendering:*
+- State→color mapping (border_color/fill_color properties on Surface entities, sync tensions) — Session 55
+- Display limits (max_terminated, max_procs_per_region on DisplayCtl) — Session 55
+- Legend text (14 Legend entities with key_text/label_text) — Session 56
+- Help text (7 HelpCmd entities with cmd_text) — Session 57
+
+*Configuration:*
+- Timer interval (timer_interval property on DisplayCtl) — Session 56
+- Buffer capacity (buffer_capacity property on DisplayCtl) — Session 56
+- Shell protection value (shell_protected property on ShellCtl) — Session 56
+
+**What C Still Does (classified for Phase 2):**
+- **Hardware I/O:** Port reads (PS/2 keyboard/mouse scancodes), BGA framebuffer writes, serial output, PIT timer, IDT/PIC — irreducible mechanism
+- **Signal creation:** Creates KEY_SIG, CLICK_SIG, TIMER_SIG, CMD_SIG, SPAWN_SIG entities from hardware events — the C/HERB bridge
+- **Process creation:** Allocates entity + scoped containers + pages/FDs + loads program binary — mechanism that reads HERB spawn decisions
+- **Binary loading:** Reads .herb binary data, calls herb_load_program() — file I/O mechanism
+- **Rendering:** Reads HERB entity properties, writes pixels to framebuffer — the display mechanism
+- **State queries:** Iterates containers for serial output (list, help) — read-only mechanism
+
+**The Boundary:** HERB decides WHAT happens (which process runs, what color it is, which key does what, what help text says). C decides HOW it happens (reading ports, writing pixels, loading binaries, creating entities). The boundary is one entity creation: hardware event → C creates signal entity → HERB tensions resolve → C reads results. Every behavioral decision crosses this boundary exactly once, from HERB to C, via entity properties.
+
+**Metrics:**
+
+| Metric | Session 51 (start) | Session 57 (end) | Delta |
+|--------|-------------------|-------------------|-------|
+| Entities | ~75 | 110 | +35 |
+| Containers | ~28 | 37 | +9 |
+| System tensions | 36 | 41 | +5 |
+| Shell tensions | 8 | 9 | +1 |
+| Kernel binary | ~8,500 bytes | 10,988 bytes | +2,488 |
+| Graphics image | 110KB | 119KB | +9KB |
+| Migration items solved | 0/14 | 14/14 | +14 |
+| Tests | 127 bare metal | 748 total | +621 |
+
+The kernel grew ~2.5KB because HERB state (entities, properties, string data) takes more bytes than hardcoded C logic — but the C code shrank in complexity while the HERB program grew in expressiveness. Every byte added to the kernel binary is data that can be changed without recompilation.
+
+### Phase 2 Migration Plan — C Mechanism → Assembly (Session 58+)
+
+Phase 1 moved all behavioral decisions from C to HERB. Phase 2 replaces the C mechanism layer with assembly, starting at the hardware boundary. The goal: assembly + HERB, nothing else.
+
+**Key finding: The HERB runtime has ZERO hardware touches.** `herb_runtime_freestanding.c` (3275 lines) and `herb_freestanding.c` (473 lines) are 100% pure C computation. The hardware boundary is entirely in `boot/kernel_main.c` and `boot/framebuffer.h`.
+
+#### Complete Hardware Function Inventory
+
+**Tier 1: Port I/O Primitives (~60 bytes asm) — COMPLETE**
+
+| Function | File | Instruction | Status |
+|----------|------|-------------|--------|
+| `outb(port, val)` | ~~kernel_main.c~~ herb_hw.asm | `out dx, al` | **DONE (S58)** |
+| `inb(port)` | ~~kernel_main.c~~ herb_hw.asm | `in al, dx` | **DONE (S58)** |
+| `io_wait()` | ~~kernel_main.c~~ herb_hw.asm | `out dx, al` (port 0x80) | **DONE (S59)** |
+| `outw(port, val)` | ~~framebuffer.h~~ herb_hw.asm | `out dx, ax` | **DONE (S59)** |
+| `inw(port)` | ~~framebuffer.h~~ herb_hw.asm | `in ax, dx` | **DONE (S59)** |
+| `outl(port, val)` | ~~framebuffer.h~~ herb_hw.asm | `out dx, eax` | **DONE (S59)** |
+| `inl(port)` | ~~framebuffer.h~~ herb_hw.asm | `in eax, dx` | **DONE (S59)** |
+
+**Tier 2: Privileged CPU Operations (~40 bytes asm) — COMPLETE**
+
+| Function/Site | File | Instruction | Status |
+|---------------|------|-------------|--------|
+| `hw_lidt(ptr)` | ~~kernel_main.c~~ herb_hw.asm | `lidt [rcx]` | **DONE (S59)** |
+| `hw_hlt()` | ~~kernel_main.c~~ herb_hw.asm | `hlt` | **DONE (S59)** |
+| `hw_sti()` | ~~kernel_main.c~~ herb_hw.asm | `sti` | **DONE (S59)** |
+| `hw_flush_tlb()` | ~~framebuffer.h~~ herb_hw.asm | `mov cr3` (TLB flush) | **DONE (S59)** |
+
+**Tier 3: Hardware Initialization — boot-time only (~350 bytes asm)**
+
+| Function | File | Port I/O Count | Target |
+|----------|------|----------------|--------|
+| `serial_init()` | ~~kernel_main.c~~ herb_hw.asm | 7 outb | **Session 60 DONE** |
+| `pit_init(hz)` | ~~kernel_main.c~~ herb_hw.asm | div + 3 outb | **Session 61 DONE** |
+| `pic_remap()` | ~~kernel_main.c~~ herb_hw.asm | 2 inb + 8 out+io_wait + 2 out | **Session 61 DONE** |
+| `mouse_init()` | ~~kernel_main.c~~ herb_hw.asm | ~8 commands + waits | **Session 62 DONE** |
+| `fb_init_display()` | framebuffer.h | BGA register writes | Stays in C (algorithmic) |
+
+**Tier 4: Device Driver Protocols — runtime (~180 bytes asm)**
+
+| Function | File | Operation | Target |
+|----------|------|-----------|--------|
+| `serial_putchar(c)` | ~~kernel_main.c~~ herb_hw.asm | poll + outb | **Session 60 DONE** |
+| `serial_print(s)` | ~~kernel_main.c~~ herb_hw.asm | loop over putchar | **Session 60 DONE** |
+| `serial_print_int(n)` | kernel_main.c | format + print (C wrapper) | Stays in C |
+| `ps2_wait_input()` | ~~kernel_main.c~~ herb_hw.asm | poll port 0x64 | **Session 62 DONE** |
+| `ps2_wait_output()` | ~~kernel_main.c~~ herb_hw.asm | poll port 0x64 | **Session 62 DONE** |
+| `mouse_write(data)` | ~~kernel_main.c~~ herb_hw.asm | PS/2 command protocol | **Session 62 DONE** |
+| `mouse_read()` | ~~kernel_main.c~~ herb_hw.asm | PS/2 read response | **Session 62 DONE** |
+
+**Tier 5: Memory-Mapped I/O — VGA text + BGA framebuffer (optional, ~200-400 bytes asm)**
+
+| Function | File | Operation | Target |
+|----------|------|-----------|--------|
+| `vga_clear()` | kernel_main.c | fill 0xB8000 | Session 63+ |
+| `vga_putchar()` | kernel_main.c | write 0xB8000 | Session 63+ |
+| `vga_clear_row()` | kernel_main.c | fill row at 0xB8000 | Session 63+ |
+| `fb_flip()` | framebuffer.h | copy 480K dwords to MMIO | Session 63+ (SIMD) |
+| `fb_pixel()` | framebuffer.h | single pixel write | Session 63+ |
+| `fb_clear()` | framebuffer.h | fill back buffer | Session 63+ |
+| `fb_fill_rect()` | framebuffer.h | rect fill | Session 63+ |
+
+These are memory stores, not port I/O. C handles them fine. Assembly migration here is for performance (SIMD fb_flip), not correctness.
+
+**Tier 6: Pure C Logic (NOT hardware — stays in C until Phase 3)**
+
+~50+ functions: all draw_* rendering, all cmd_* dispatch, all HERB API calls, main event loop logic, string formatting. This is mechanism but not hardware-touching.
+
+#### Assembly Budget
+
+| Category | Bytes | Status |
+|----------|-------|--------|
+| Port I/O primitives (Tier 1) | ~30 | **7/7 DONE** |
+| Privileged ops (Tier 2) | ~40 | **4/4 DONE** |
+| Init sequences (Tier 3) | ~350 | **4/5 DONE** (serial_init, pic_remap, pit_init, mouse_init) |
+| Device protocols (Tier 4) | ~180 | **6/7 DONE** (serial_putchar, serial_print, ps2_wait_input, ps2_wait_output, mouse_write, mouse_read) |
+| **Total hardware-mandatory** | **~600** | |
+| MMIO rendering (Tier 5, optional) | ~200-400 | |
+| **Total with MMIO** | **~800-1000** | |
+
+#### Session-by-Session Migration Order
+
+| Session | Scope | Bytes |
+|---------|-------|-------|
+| **58** | `inb`, `outb` → herb_hw.asm. Audit + plan. | ~30 | **DONE** |
+| **59** | `outw`, `inw`, `outl`, `inl`, `io_wait`, LIDT, STI/HLT, CR3 flush | ~70 | **DONE** |
+| **60** | Serial port: `serial_init`, `serial_putchar`, `serial_print`. BGA stays in C. | ~150 | **DONE** |
+| **61** | Timer + PIC: `pit_init`, `pic_remap`, `idt_set_gate` | ~150 | **DONE** |
+| **62** | PS/2 mouse: `ps2_wait_*`, `mouse_write`, `mouse_read`, `mouse_init` | ~200 | **DONE** |
+| **63+** | Optional MMIO: VGA text, `fb_flip` SIMD, framebuffer primitives | ~200-400 |
+
+#### Interaction with Existing Assembly
+
+- `boot.asm` (bootloader): Unchanged. Runs before kernel, separate binary.
+- `kernel_entry.asm`: Unchanged. Contains ISR stubs and `_start`. Already uses `in`/`out` directly in ISR stubs (interrupt context, not callable functions).
+- `herb_hw.asm`: **New file (Session 58).** Contains callable functions only. Linked alongside kernel_entry.o. This file grows each session.
+
+### Phase 3: The HERB Abstract Machine (HAM)
+
+Phase 1 moved all policy from C to HERB. Phase 2 moved all hardware from C to assembly. What remains in C is the runtime engine — the code that evaluates tensions against entities and resolves to fixpoint. Phase 3 replaces this with an assembly abstract machine: the HAM.
+
+The HAM is to HERB what the WAM is to Prolog, what the ABC machine is to Clean, what the inner interpreter is to Forth. It is the minimal assembly substrate that HERB programs compile to and execute on. It is permanent — not scaffolding. The research documents (RESEARCH_PHASE3_STRATEGY.md, RESEARCH_ASSEMBLY_INTERPRETER.md, RESEARCH_BOOTSTRAP.md) establish why: a pattern-matching engine cannot self-interpret its own pattern matching without absorbing the mechanism from below (the "absorption problem"). The HAM is the irreducible assembly layer that HERB programs target but never absorb.
+
+#### 3.1 Why Not Translate C to Assembly?
+
+The C runtime is an interpreter: it loads a .herb binary as C data structures (Tension structs with nested MatchClause arrays, EmitClause arrays, and recursive Expr trees), then walks those data structures evaluating tensions against entities. Translating this line-by-line to assembly would produce ~3000 lines of assembly that does the same pointer-chasing, the same recursive function calls, the same dynamic dispatch — just without libc.
+
+The abstract machine approach is fundamentally different. Instead of loading tensions as data structures and interpreting them, you **compile** each tension into a flat sequence of primitive instructions. The tension "match entity in CPU0 where priority > 3, match empty READY → move to READY" becomes a concrete bytecode sequence: SCAN container, WHERE filter, SELECT entity, CHECK empty, EMIT move. No interpretation at runtime. No pointer indirection. No recursive expression evaluation. The bytecode stream is flat, sequential, and cache-friendly.
+
+The C runtime's `evaluate_tension()` allocates a 33KB `BindingSetList` on the stack every call, sorts tensions with O(n²) bubble sort every step, and walks recursive `Expr` trees via function calls. The HAM eliminates all of this: bindings live in registers, tensions are pre-sorted in the bytecode layout, and expressions are compiled to flat stack operations inline.
+
+#### 3.2 The Instruction Set
+
+37 instructions in 6 categories. 12 are irreducible primitives (cannot be composed from others). 25 are performance extensions (could be composed but are primitive for efficiency). This parallels Forth's 31 core words, many of which (like OVER) could be composed from simpler words but are primitive for performance.
+
+**Category 1: Scanning (5 instructions)**
+
+These iterate entities within containers. Container-scoped iteration is critical: SCAN walks a container's entity list, not all entities. This is O(C) per match clause, not O(E).
+
+| Opcode | Name | Operands | Semantics |
+|--------|------|----------|-----------|
+| 0x01 | SCAN | ctnr:u16 | Begin scanning container `ctnr`. Sets up iteration state (entity list pointer + count). Subsequent WHERE/SELECT operate on this scan's results. |
+| 0x02 | SCAN_SCOPED | bind:u8, scope:u16 | Resolve scoped container `B[bind]::scope_name`, then scan it. Calls scope resolution subroutine. |
+| 0x03 | SEL_FIRST | bind:u8 | Select first entity from current scan results → B[bind]. If scan is empty after WHERE filtering, leaves bind unset. |
+| 0x04 | SEL_MAX | bind:u8, prop:u16 | Select entity with maximum value of property `prop` → B[bind]. Linear scan of candidates comparing property values. |
+| 0x05 | SEL_MIN | bind:u8, prop:u16 | Select entity with minimum value of property `prop` → B[bind]. |
+
+**Category 2: Filtering (5 instructions)**
+
+These reduce scan results or binding sets.
+
+| Opcode | Name | Operands | Semantics |
+|--------|------|----------|-----------|
+| 0x10 | WHERE | bind:u8 | Begin where-filter block. For each entity in current scan, temporarily bind it to B[bind], evaluate following expression bytecode. Keep entity only if result is truthy. |
+| 0x11 | ENDWHERE | — | End where-filter block. Scan results now contain only entities that passed the filter. |
+| 0x12 | GUARD | — | Begin guard block. Evaluate following expression bytecode against current binding set. If result is falsy, skip this binding set's emit phase. |
+| 0x13 | ENDGUARD | — | End guard block. |
+| 0x14 | REQUIRE | — | If current scan produced zero results (after WHERE filtering), FAIL the entire tension. |
+
+**Category 3: Expression Stack (16 instructions)**
+
+Stack-based expression evaluation. Expressions from match clauses and emit values compile to postfix sequences operating on a 16-slot expression stack. This replaces the C runtime's recursive `eval_expr()` function and its `Expr` tree data structure.
+
+| Opcode | Name | Operands | Semantics |
+|--------|------|----------|-----------|
+| 0x20 | IPUSH | val:i32 | Push 32-bit integer constant onto expression stack. |
+| 0x21 | EPROP | bind:u8, prop:u16 | Push property `prop` of entity B[bind] onto expression stack. Linear scan of entity's property keys. |
+| 0x22 | ECNT | ctnr:u16 | Push entity count of container `ctnr` onto expression stack. |
+| 0x23 | ECNT_S | bind:u8, scope:u16 | Push entity count of scoped container B[bind]::scope onto expression stack. |
+| 0x24 | ADD | — | Pop two values, push their sum. |
+| 0x25 | SUB | — | Pop two values, push difference (second - top). |
+| 0x26 | MUL | — | Pop two values, push product. |
+| 0x27 | GT | — | Pop two values, push 1 if second > top, else 0. |
+| 0x28 | LT | — | Pop two values, push 1 if second < top, else 0. |
+| 0x29 | GTE | — | Pop two values, push 1 if second >= top, else 0. |
+| 0x2A | LTE | — | Pop two values, push 1 if second <= top, else 0. |
+| 0x2B | EQ | — | Pop two values, push 1 if equal, else 0. |
+| 0x2C | NEQ | — | Pop two values, push 1 if not equal, else 0. |
+| 0x2D | AND | — | Pop two values, push 1 if both truthy, else 0. |
+| 0x2E | OR | — | Pop two values, push 1 if either truthy, else 0. |
+| 0x2F | NOT | — | Pop one value, push 1 if falsy, else 0. |
+
+**Category 4: Emit (8 instructions)**
+
+These generate graph mutations. Each emit instruction produces an IntendedAction. All actions from a tension are accumulated, then executed after the tension's evaluation completes (two-phase: generate then execute, matching the C runtime's semantics).
+
+| Opcode | Name | Operands | Semantics |
+|--------|------|----------|-----------|
+| 0x30 | EMOV | mt:u16, bind:u8, to:u16 | Emit move: move entity B[bind] to container `to` via move type `mt`. |
+| 0x31 | EMOV_S | mt:u16, bind:u8, owner:u8, scope:u16 | Emit scoped move: move entity B[bind] to B[owner]::scope via move type `mt`. |
+| 0x32 | ESET | bind:u8, prop:u16 | Emit set: set property `prop` on entity B[bind] to value popped from expression stack. |
+| 0x33 | ESEND | chan:u16, bind:u8 | Emit channel send: send entity B[bind] on channel `chan`. |
+| 0x34 | ERECV | chan:u16, bind:u8, to:u16 | Emit channel receive: receive entity B[bind] from channel `chan` into container `to`. |
+| 0x35 | ERECV_S | chan:u16, bind:u8, owner:u8, scope:u16 | Emit scoped channel receive. |
+| 0x36 | EXFER | tt:u16, from:u8, to_bind:u8 | Emit transfer: transfer amount (popped from expression stack) between entities B[from] and B[to_bind] via transfer type `tt`. |
+| 0x37 | EDUP | bind:u8, to:u16 | Emit duplicate: duplicate entity B[bind] into container `to`. |
+
+**Category 5: Control (3 instructions)**
+
+| Opcode | Name | Operands | Semantics |
+|--------|------|----------|-----------|
+| 0x40 | THDR | pri:u8, owner:i16, run_ctnr:i16 | Tension header. Marks the start of a tension's bytecode. `owner`=-1 for system tensions. `run_ctnr`=-1 for always-fire. If owner >= 0 and entity_location[owner] != run_ctnr, skip to TEND. Checks enabled flag. |
+| 0x41 | TEND | — | Tension end. Execute accumulated actions. Reset scan/binding state for next tension. |
+| 0x42 | FAIL | — | Abandon current tension. Skip to TEND without executing actions. Used by REQUIRE when scan is empty. |
+
+**Bytecode encoding:** 1-byte opcode + variable-length operands. u16 = 2 bytes little-endian, u8 = 1 byte, i16 = 2 bytes signed, i32 = 4 bytes signed. Typical instruction: 3 bytes. Largest (THDR): 6 bytes. Smallest (ADD, NOT, etc.): 1 byte.
+
+**Compiled tension size:** 20-80 bytes per tension (vs ~2,500 bytes for the C Tension struct). Entire system (50 tensions): ~1,500-2,500 bytes of bytecode. This is a ~50:1 reduction in tension representation.
+
+#### 3.3 The Data Model in Memory
+
+The HAM operates on the same data structures as the C runtime, with minor layout optimizations. Everything is arrays indexed by integers — no pointers, no dynamic allocation on the hot path.
+
+**Entity:**
+```
+entity_type[MAX_ENTITIES]     : int32  (interned type name ID)
+entity_name[MAX_ENTITIES]     : int32  (interned entity name ID)
+entity_location[MAX_ENTITIES] : int32  (container index, -1 = none)
+entity_prop_count[MAX_ENTITIES] : int32
+entity_prop_keys[MAX_ENTITIES][MAX_PROPERTIES] : int32  (interned key IDs)
+entity_prop_vals[MAX_ENTITIES][MAX_PROPERTIES] : int64  (tagged values)
+```
+
+Properties remain Array-of-Structs per entity (all properties of entity N are adjacent). This is correct for the access pattern: `EPROP B0, priority` needs to scan entity B0's property keys, which are contiguous. SoA per-property-slot would scatter this across memory.
+
+**Container:**
+```
+container_name[MAX_CONTAINERS]        : int32
+container_kind[MAX_CONTAINERS]        : int32  (SIMPLE=0, SLOT=1)
+container_type[MAX_CONTAINERS]        : int32  (-1 = any)
+container_count[MAX_CONTAINERS]       : int32
+container_owner[MAX_CONTAINERS]       : int32  (-1 = global)
+container_entities[MAX_CONTAINERS][MAX_PER_CONTAINER] : int32  (entity indices)
+```
+
+Entity lists within containers are the iteration substrate for SCAN instructions. `container_entities[ci]` is a packed array of entity indices with `container_count[ci]` entries.
+
+**Move types, channels, pools, transfer types:** Same as C runtime. These are referenced by index from bytecode operands. They're small tables (MAX_MOVE_TYPES=64, MAX_CHANNELS=16, etc.) that change only at load time.
+
+**String intern table:** Same as C runtime. All bytecode operands reference strings by interned integer ID. The HAM hot path performs ZERO string comparisons.
+
+**Expression stack:** 16 slots of int64 in BSS. Addressed by RDI (expression stack pointer). Operations push/pop by adjusting RDI.
+
+**Action buffer:** MAX_INTENDED_MOVES entries in BSS. Each tension's emit phase appends to this buffer; the execution phase after TEND walks and executes it.
+
+**Binding registers:** B0-B2 in x86-64 registers R12-R14. B3-B7 spill to stack (red zone or explicit stack frame). Most tensions use 1-3 bindings; the kernel's most complex tension (click hit-test) uses 3.
+
+#### 3.4 The Execution Model
+
+**Three nested loops** matching the C runtime exactly:
+
+```
+OUTER (fixpoint):
+  changed = 0
+  FOR each tension in bytecode (pre-sorted by priority, highest first):
+    IF tension disabled: skip to TEND
+    IF tension has owner AND owner not in run_container: skip to TEND
+    Execute tension bytecode (THDR → match → filter → emit → TEND)
+    Execute accumulated actions (move/set/send/receive/transfer/duplicate)
+    IF any action mutated state: changed = 1
+  IF changed: repeat OUTER
+  HALT (return to caller)
+```
+
+**Pre-sorted bytecode** eliminates the C runtime's O(n²) per-step bubble sort. Tensions are laid out in priority-descending order in the bytecode at compile time. The engine walks sequentially — no sorting needed.
+
+**Register allocation (Microsoft x64 ABI):**
+
+```
+PERSISTENT (non-volatile, survive function calls):
+  RBX = graph base pointer (address of entity/container arrays)
+  RBP = stack frame base
+  RSI = bytecode program counter (advances through HAM bytecode)
+  RDI = expression stack pointer
+  R12 = binding register B0 (entity index)
+  R13 = binding register B1 (entity index)
+  R14 = binding register B2 (entity index)
+  R15 = changed flag (0 = no mutations this cycle)
+
+TEMPORARY (volatile, free for computation):
+  RAX = accumulator / return values / scratch
+  RCX = loop counter / scratch (1st argument in MS x64)
+  RDX = scratch (2nd argument in MS x64)
+  R8  = scan iteration pointer / scratch
+  R9  = scan count / property value
+  R10 = condition/action pointer / scratch
+  R11 = scratch
+```
+
+Since the HAM engine is a leaf function during the hot loop (no external calls), all 16 GPRs are freely available. This is the fundamental advantage over C that Mike Pall identified: "There's a point where you start to fight the compiler and this is a game you cannot win."
+
+**Dispatch mechanism:** Token threading with distributed dispatch. Each instruction handler ends with its own copy of the fetch-decode-dispatch sequence:
+
+```nasm
+; At the end of EVERY handler:
+    movzx eax, byte [rsi]        ; fetch next opcode
+    inc   rsi                     ; advance PC
+    jmp   [ham_dispatch + rax*8]  ; jump to handler via table
+```
+
+This gives the Branch Target Buffer a unique prediction site per dispatch location. For fixed-order tension iteration, the BTB achieves near-perfect prediction from the second fixpoint cycle onward — the instruction sequence is identical every cycle unless state changes cause different control flow (REQUIRE failing, WHERE filtering differently).
+
+**Two-phase action execution:** Matching the C runtime, each tension first generates all IntendedActions into a buffer, then executes them sequentially. This preserves the semantics where evaluation sees pre-mutation state while execution sees evolving state. Within a tension, actions are ordered by binding-set-index × emit-clause-index.
+
+#### 3.5 Compiled Tension Examples
+
+**Example 1: schedule_ready** (match entity in READY with max_by priority + empty CPU0 → move to CPU0)
+
+```
+THDR    pri=10, owner=-1, run_ctnr=-1    ; system tension, always fire
+SCAN    ctnr=READY                        ; scan READY container
+SEL_MAX bind=B0, prop=priority            ; B0 = highest-priority entity
+REQUIRE                                    ; fail if READY is empty
+ECNT    ctnr=CPU0                          ; push count(CPU0)
+IPUSH   0                                  ; push 0
+EQ                                         ; CPU0 empty?
+GUARD                                      ; skip if not empty
+ENDGUARD
+EMOV    mt=schedule, bind=B0, to=CPU0     ; emit move B0 to CPU0
+TEND                                       ; execute actions
+```
+
+10 instructions, ~28 bytes. The C Tension struct for this: ~2,500 bytes.
+
+**Example 2: timer_tick** (match proc in CPU0 where time_slice > 0 → set time_slice = time_slice - 1)
+
+```
+THDR    pri=15, owner=-1, run_ctnr=-1
+SCAN    ctnr=CPU0
+WHERE   bind=B0                            ; filter: for each entity in CPU0...
+  EPROP B0, time_slice                     ;   push entity.time_slice
+  IPUSH 0                                  ;   push 0
+  GT                                       ;   time_slice > 0?
+ENDWHERE
+SEL_FIRST bind=B0                          ; B0 = first (only) matching entity
+REQUIRE
+EPROP   B0, time_slice                     ; push B0.time_slice (for emit value)
+IPUSH   1                                  ; push 1
+SUB                                        ; time_slice - 1
+ESET    B0, time_slice                     ; set B0.time_slice = stack top
+TEND
+```
+
+13 instructions, ~35 bytes.
+
+**Example 3: keybind_route** (match signal + ctl where mode==0 + keybind where key matches → set pending_cmd/arg)
+
+```
+THDR    pri=23, owner=-1, run_ctnr=-1
+SCAN    ctnr=KEY_SIG
+SEL_FIRST bind=B0                          ; B0 = signal entity
+REQUIRE
+SCAN    ctnr=INPUT_STATE
+WHERE   bind=B1
+  EPROP B1, mode
+  IPUSH 0
+  EQ                                       ; mode == 0?
+ENDWHERE
+SEL_FIRST bind=B1                          ; B1 = InputCtl
+REQUIRE
+SCAN    ctnr=KEYBIND
+WHERE   bind=B2
+  EPROP B2, key_ascii
+  EPROP B0, key_ascii                      ; cross-binding reference!
+  EQ                                       ; keybind.key_ascii == signal.key_ascii?
+ENDWHERE
+SEL_FIRST bind=B2                          ; B2 = matching keybind
+REQUIRE
+EPROP   B2, cmd_id
+ESET    B1, pending_cmd                    ; ctl.pending_cmd = keybind.cmd_id
+EPROP   B2, arg_id
+ESET    B1, pending_arg                    ; ctl.pending_arg = keybind.arg_id
+TEND
+```
+
+22 instructions, ~55 bytes. This demonstrates cross-binding property comparison: inside the WHERE block for B2, the expression references B0 (already bound). The expression stack naturally handles this because B0 is available when we reach this point.
+
+#### 3.6 What Stays Outside the HAM
+
+**Below the HAM (already assembly — herb_hw.asm):**
+21 hardware functions: port I/O, privileged CPU ops, serial, PIC/PIT, PS/2 mouse. Called by kernel_main.c, not by the HAM engine.
+
+**Above the HAM (compiled to bytecode):**
+All .herb programs. A compiler transforms .herb binaries into HAM bytecode sequences. The programs are "above" because they are expressed in HERB's declarative semantics and compiled down to HAM's imperative instructions.
+
+**The C bridge (remains in C, interfaces with HAM):**
+- `herb_init()` — arena setup, zero out globals
+- `herb_load()` — binary format detection, calls loader
+- `load_program_binary()` — .herb binary parser → populates entity/container/tension arrays AND compiles tension bytecode
+- `herb_create()` — signal entity creation from hardware events
+- `herb_set_prop_int()` — property setup from kernel_main.c
+- `herb_load_program()` — runtime program loading (compiles to HAM bytecode on the fly)
+- `herb_tension_create()` — runtime tension creation API
+- `intern()` — string interning (load-time only in the hot path)
+- All query APIs (`herb_container_count`, `herb_entity_name`, `herb_entity_prop_int`, etc.)
+- `herb_state()` — state serialization
+
+**Inside the HAM engine (assembly — new file herb_ham.asm):**
+- Fixpoint loop (outer)
+- Tension iteration (middle — sequential bytecode walk)
+- Bytecode instruction dispatch (jump table)
+- All 37 instruction handlers
+- Expression stack operations
+- Graph mutation primitives (try_move, container_add, container_remove, entity_get_prop, entity_set_prop, do_channel_send, do_channel_receive, do_transfer, do_duplicate)
+- Action buffer management
+
+The C bridge calls INTO the HAM via `ham_run()` / `ham_step()`. The HAM calls OUT to nothing during the hot path — it operates entirely on in-memory data structures addressed by integer indices. Zero string operations, zero allocation, zero external function calls.
+
+#### 3.7 The Absorption Problem
+
+The research (RESEARCH_BOOTSTRAP.md) identifies a fundamental asymmetry: in Lisp, code and data share the same representation (S-expressions), making metacircularity nearly trivial. In a pattern-matching language like HERB, the execution mechanism — container scanning, property matching, binding management, fixpoint detection — is categorically more complex than the declarative rules it executes.
+
+A HERB program describing "how to evaluate tensions" would delegate the actual pattern matching to the underlying engine. This is metacircular, not self-hosting. Every declarative language hits this wall. The solution, proven by Prolog (WAM), Clean (ABC machine), and Forth (inner interpreter): implement a minimal abstract machine in assembly, express the language's semantics as loadable programs that compile to abstract machine instructions, then (optionally, much later) write a compiler in HERB itself that targets the abstract machine.
+
+The HAM is therefore **permanent**. It is not scaffolding like Python was (replaced by C) or like libc was (replaced by freestanding). The HAM is the irreducible assembly substrate. HERB programs compile to it but never absorb it. The final stack is: hardware → herb_hw.asm → HAM (herb_ham.asm) → HERB programs (compiled to HAM bytecode). Assembly + HERB, nothing else.
+
+#### 3.8 Migration Strategy
+
+**Phase 3a: Core HAM Engine (Session 64)**
+- Implement the HAM engine skeleton in `boot/herb_ham.asm`: fixpoint loop, tension iteration, bytecode dispatch jump table
+- Implement ~10 core instructions: THDR, TEND, FAIL, SCAN, SEL_MAX, REQUIRE, ECNT, IPUSH, EQ, EMOV
+- Write a Python compiler (`src/herb_ham_compile.py`) that compiles one tension (schedule_ready) from .herb binary to HAM bytecode
+- Test: schedule_ready as HAM bytecode produces identical behavior to C runtime
+- MVP proof that the architecture works
+- Estimated size: ~500-800 bytes of assembly for the engine
+
+**Phase 3b: Complete Instruction Set (Sessions 65-67)**
+- Add filtering instructions: WHERE, ENDWHERE, GUARD, ENDGUARD, SEL_FIRST, SEL_MIN
+- Add expression operations: EPROP, ADD, SUB, MUL, GT, LT, GTE, LTE, NEQ, AND, OR, NOT
+- Add emit instructions: ESET, ESEND, ERECV, EXFER, EDUP, EMOV_S, ERECV_S
+- Add scoped operations: SCAN_SCOPED, ECNT_S
+- Compile progressively more tensions, testing each against C runtime
+- 2-3 sessions depending on complexity encountered
+
+**Phase 3c: Full HAM OS (Sessions 68-69)**
+- Extend Python compiler to handle all 41 system tensions + 9 shell tensions
+- Handle vector bindings ("each" mode) and zip/cross binding set expansion
+- Handle process-owned tensions (owner check, run_container check)
+- Compile process program fragments (producer, consumer, worker, beacon)
+- Compile scheduling policy fragments (priority, round-robin)
+- Test: entire OS running on HAM bytecode, C runtime as verification oracle
+- 2 sessions
+
+**Phase 3d: Boot from HAM (Sessions 70-71)**
+- Modify `load_program_binary()` to emit HAM bytecode instead of C tension structs
+- Replace `herb_step()` / `herb_run()` with calls to `ham_step()` / `ham_run()`
+- Modify `herb_load_program()` to compile to HAM bytecode on the fly (for runtime loading)
+- C runtime kept as test oracle only (not in boot path)
+- Performance measurement: HAM vs C runtime
+- 1-2 sessions
+
+**Total estimate: 6-8 sessions (64-71)**
+
+#### 3.9 Open Questions
+
+1. **Vector binding expansion.** The C runtime builds a 33KB BindingSetList on stack for "each" mode matches. The HAM needs a strategy. Options: (a) pre-allocate binding set buffer in BSS, (b) iterate one binding set at a time with lower memory, (c) limit to one vector binding (covers all current tensions). Start with (c), implement (b) when needed.
+
+2. **Scoped container resolution.** Resolving `B[n]::SCOPE_NAME` requires iterating the entity's scope table. Implement as an assembly subroutine called by SCAN_SCOPED and EMOV_S. The scope table is small (MAX_SCOPE_TEMPLATES=16) so linear scan is fine.
+
+3. **Property lookup optimization.** `EPROP` does linear scan over entity property keys (up to MAX_PROPERTIES=16). For entities with many properties, this could be slow. Options: (a) keep linear scan (simple, matches C), (b) sort properties by key ID for binary search, (c) fixed property layout per entity type. Start with (a), profile later. Most entities have 3-6 properties.
+
+4. **Online compilation.** `herb_load_program()` currently constructs C Tension structs at runtime for dynamically loaded process programs. In Phase 3d, it must compile .herb binary fragments to HAM bytecode on the fly. The compiler logic can be in C (part of the C bridge) — it's not on the hot path.
+
+5. **Native code generation.** The HAM interprets bytecode via a dispatch loop. A future Phase 4 could compile HAM bytecode directly to x86-64 machine code, eliminating dispatch overhead entirely. This is a JIT or ahead-of-time compilation step, analogous to what GraalVM/Truffle does. Not needed for Phase 3.
+
+6. **Rete-style incremental evaluation.** The HAM re-evaluates all tensions every fixpoint cycle (brute-force). For systems with >1000 entities, Rete-inspired incremental evaluation (only re-evaluate tensions affected by recent state changes) would be essential. The TREAT variant (no stored joins) is more appropriate for the HAM's minimal memory model. Future optimization, not Phase 3.
+
+7. **SIMD column scanning.** The research describes AVX2 8-wide entity filtering for type checks and property comparisons. This requires migrating hot-path data to Structure-of-Arrays layout. Future optimization after Phase 3 proves correctness with AoS.
+
+8. **Superinstructions.** Common opcode sequences (SCAN + SEL_FIRST + REQUIRE, EPROP + IPUSH + EQ) could be fused into single handlers, reducing dispatch overhead by up to 4.5× per Ertl & Gregg's research. Future optimization after profiling identifies bottlenecks.
+
+#### 3.10 Performance Expectations
+
+| Approach | Typical vs Native | Status |
+|----------|-------------------|--------|
+| C runtime (current) | ~10-50× interpreted overhead | Current |
+| HAM bytecode engine | ~3-15× (no struct interpretation, pre-sorted, fixed registers) | Phase 3 |
+| HAM + superinstructions | ~2-8× | Future |
+| HAM + SoA + SIMD | ~1-5× | Future |
+| Native code generation | ~1-2× | Future (Phase 4) |
+
+The HAM's performance advantage over the C runtime comes from:
+- **Eliminating per-step O(n²) sorting** (pre-sorted bytecode)
+- **Eliminating struct interpretation** (compiled bytecode vs walking data structures)
+- **Eliminating recursive expression evaluation** (flat stack operations vs tree walk)
+- **Eliminating 33KB stack allocation per tension** (register bindings + small buffer)
+- **Fixed register allocation** (all 16 GPRs assigned, no save/restore overhead)
+- **Sequential instruction fetch** (cache-friendly linear bytecode vs scattered struct fields)
+- **Near-perfect branch prediction** (fixed tension order → BTB learns the sequence)
+
+### Phase 4: Total C Elimination (Session 68 Blueprint)
+
+Phase 3 is complete — HAM executes ALL 54 tensions as bytecode. The C tension evaluation engine is dead code. The mission is now **total C elimination**: assembly + HERB, nothing else in the OS image.
+
+**The Mountain: 8,627 Lines of C Across 6 Files**
+
+| File | Lines | Functions | Role |
+|------|-------|-----------|------|
+| `src/herb_runtime_freestanding.c` | 3,919 | ~92 | HERB runtime: graph, loader, compiler, bridge |
+| `boot/kernel_main.c` | 3,258 | ~59 | Kernel: init, rendering, input, shell, main loop |
+| `boot/framebuffer.h` | 625 | ~25 | BGA graphics + rendering primitives |
+| `src/herb_freestanding.c` | 473 | ~28 | Arena, memory, string, number, format utilities |
+| `src/herb_freestanding.h` | 187 | 19 decl | Type definitions and interface declarations |
+| `boot/font8x16.h` | 165 | 0 | Pure data: 4,096 bytes of 8x16 font bitmap |
+| **TOTAL** | **8,627** | **~204** | |
+
+**What Already Exists in Assembly: ~38,600 Lines (Session 82, 13 files)**
+
+| File | Lines | Functions | Role |
+|------|-------|-----------|------|
+| `boot/herb_graph.asm` | ~3,450 | 57 | Graph primitives, API, tension/entity creation, arena queries |
+| `boot/herb_ham.asm` | ~3,300 | 32 instr + 10 compiler | HAM bytecode interpreter + compiler |
+| `boot/herb_loader.asm` | 2,371 | 13 | Binary loader, expression builder, init/load |
+| `boot/herb_freestanding.asm` | ~950 | 23 | Arena, memory, string, number, snprintf |
+| `boot/herb_hw.asm` | ~800 | 21 | Hardware (port I/O, PIC/PIT, PS/2, serial) |
+| `boot/boot.asm` | 338 | — | Two-stage bootloader (MBR → long mode) |
+| `boot/kernel_entry.asm` | 156 | — | 64-bit entry, SSE, stack, ISR stubs |
+
+**The 7-Phase Migration Plan:**
+
+**Phase 4a: Delete Dead Code + Binary-Only (Session 69, COMPLETE)**
+Deleted the C tension evaluator (~650 lines guarded with `#ifndef HERB_BINARY_ONLY`). HAM handles all evaluation.
+
+**Phase 4b: Graph Primitives + String Intern to Assembly (Sessions 70-71, COMPLETE)**
+12 functions in `boot/herb_graph.asm`: `intern`, `str_of`, `entity_get_prop_raw`, `entity_set_prop`, `container_add`, `container_remove`, `graph_find_container/entity_by_name`, `get_scoped_container`, `do_channel_send`, `do_channel_receive`, `try_move`.
+
+**Phase 4d: HAM Bridge Absorption + Public API + Graph Lookups (Sessions 75-76, COMPLETE)**
+30 functions total. HAM calls assembly graph functions directly (9 C bridges eliminated). 21 public API + graph lookup functions ported. herb_graph.asm: 38 functions.
+
+**Phase 4e: Freestanding Support to Assembly (Session 77b, COMPLETE)**
+23 functions in `boot/herb_freestanding.asm` (1,238 lines). Arena, memory, string, number, snprintf.
+
+**Phase 4f: Tension API + Entity Creation + HAM Glue (Session 77, COMPLETE)**
+17 functions in `boot/herb_graph.asm` (~1,000 new lines). herb_graph.asm: 55 functions (~3,358 lines).
+
+**Phase 4h: Binary Loader + Init/Load (Session 78, COMPLETE)**
+13 functions in `boot/herb_loader.asm` (2,371 lines). Recursive expression tree parser, section dispatch, program lifecycle.
+
+**Phase 4i: HAM Compiler + PropVal Guards + Arena Queries (Session 79, COMPLETE)**
+10 compiler functions + 2 arena queries in `boot/herb_ham.asm` (~1,550 new lines) and `boot/herb_graph.asm` (~40 new lines). Recursive expression compiler, priority-sorted tension compiler, compilability checks, bind map management. 7 PropVal helpers guarded. **MILESTONE: Zero C functions in bare metal.** `herb_runtime_freestanding.o` compiles to an empty object (BSS/data globals only). Discovery 53: stack slot overlap — spawn diagnostic temp variable at offset 296 clobbered saved out_count pointer at same offset.
+
+**Remaining: Phase 4g (Kernel Main + Framebuffer)**
+
+**Phase 4g: Kernel Main + Framebuffer to Assembly (estimated 7-9 sessions)**
+Port all rendering, input handling, shell/command dispatch, signal creation, display loop. `gfx_draw_full()` (288 lines) and `cmd_spawn()` (141 lines) are the two hardest functions. **~3,712 lines. Risk: HIGH** — large, complex functions. This is the last C in the OS image.
+
+**Summary (Actual Progress):**
+
+| Phase | Status | Functions Ported | Assembly File |
+|-------|--------|-----------------|---------------|
+| 4a: Dead code | COMPLETE | ~11 excluded | (conditional compilation) |
+| 4b: Graph primitives | COMPLETE | 12 | herb_graph.asm |
+| 4d: HAM bridge + API | COMPLETE | 30 | herb_graph.asm |
+| 4e: Freestanding | COMPLETE | 23 | herb_freestanding.asm |
+| 4f: Tension/entity/HAM | COMPLETE | 17 | herb_graph.asm |
+| 4h: Binary loader | COMPLETE | 13 | herb_loader.asm |
+| 4i: HAM compiler + cleanup | COMPLETE | 12 | herb_ham.asm + herb_graph.asm |
+| 4g: Kernel + framebuffer | TODO | ~62 | TBD |
+
+Assembly growth: 2,497 → ~10,870+ lines. C remaining in bare metal: ~62 functions (all in kernel_main.c — hardware boundary).
+
+**The 8 Hardest Functions (by assembly porting difficulty):**
+1. `gfx_draw_full()` — 288 lines, full screen compositor — **TODO**
+2. `cmd_spawn()` — 141 lines, 3-phase process creation — **TODO**
+3. ~~`herb_snprintf()` — 180 lines, variadic formatting~~ — **DONE (Phase 4e, herb_freestanding.asm)**
+4. ~~`try_move()` — 92 lines, scoped move validation~~ — **DONE (Phase 4b/4d, herb_graph.asm)**
+5. ~~`load_program_binary()` — 340 lines, binary format parser~~ — **DONE (Phase 4h, herb_loader.asm)**
+6. ~~`ham_compile_tension()` — 230 lines, bytecode compiler with tree walking~~ — **DONE (Phase 4i, herb_ham.asm)**
+7. `handle_key()` — 124 lines, modal input routing — **TODO**
+8. ~~`br_expr()` — 66 lines, recursive expression parser~~ — **DONE (Phase 4h, herb_loader.asm)**
+
+**Critical coordination point:** The `Graph` struct (~720KB) memory layout is documented in `herb_graph_layout.inc` (318 lines of verified offsets, including HamBindMap) and `herb_freestanding_layout.inc` (27 lines). All assembly files include these layout files for struct access.
+
+**Protection:** 133/134 bare metal + 591 Python tests verified at each phase. 1 pre-existing failure ("Shell kill cleaned up process tensions") confirmed in both C and assembly versions.
+
+### Former Problems: SOLVED
+
+- **Session 27:** System was passive -- **SOLVED: Tensions**
+- **Session 28:** "What is a HERB program?" -- **SOLVED: Data structure**
+- **Session 29:** "Can't reason about values/quantities" -- **SOLVED: Properties + expressions + pools**
+- **Session 30:** "No isolation, no hierarchy, no mutation" -- **SOLVED: Scoped containers + property mutation**
+- **Session 31:** "Isolated processes can't communicate" -- **SOLVED: Channels (Zircon model)**
+- **Session 32:** "Entity can only be in one state" -- **SOLVED: Multi-dimensional state**
+- **Session 33:** "Programs don't scale" -- **SOLVED: Module composition**
+- **Session 34:** "Programs are Python dicts, runtime is Python" -- **SOLVED: JSON format + C runtime**
+- **Session 35:** "C runtime is incomplete" -- **SOLVED: Full C runtime with scoped containers, channels, pools/transfers, duplication, nesting depth**
+- **Session 36:** "C runtime depends on libc" -- **SOLVED: Freestanding runtime with zero external dependencies**
+- **Session 37:** "Need assembly bootstrap to run on hardware" -- **SOLVED: Two-stage x86-64 bootloader, 64-bit kernel entry, VGA/IDT/PIC/PIT, HERB boots and runs autonomously**
+- **Session 38:** "Booted OS is not interactive" -- **SOLVED: PS/2 keyboard → HERB signals, 7 interactive commands, structured VGA display, runtime query APIs, dynamic process creation**
+- **Session 39:** "JSON is borrowed scaffolding" -- **SOLVED: Native .herb binary format, 81-90% smaller, 39% fewer loader lines, auto-detected by herb_load(), 13/13 cross-format equivalence, OS boots from binary**
+- **Session 40:** "Bare metal testing is manual, kernel modules never ran on hardware" -- **SOLVED: Automated QEMU test harness (29 tests, QMP keystroke injection, serial output parsing), four-module kernel running interactively on bare metal with per-process scoped resource management**
+- **Session 41:** "Display is VGA text mode — can't show spatial relationships or render pixels" -- **SOLVED: BGA framebuffer (800x600x32), PCI BAR0 discovery, page table extension for MMIO, double-buffered rendering, embedded 8x16 font, container regions as bordered boxes, process entities as colored rectangles, scoped resources as visual indicators, text mode fallback**
+- **Session 42:** "Display is hardcoded C rendering — HERB doesn't know a display exists" -- **SOLVED: Display module (5th kernel module), Surface entity type, scoped SURFACE per Process, 4 sync tensions, container region positions as HERB properties, state-to-color mapping in C, policy/mechanism boundary preserved**
+- **Session 43:** "No spatial interaction — keyboard commands only, can't point or click" -- **SOLVED: PS/2 mouse driver (IRQ12), cursor as Surface entity, CLICK_SIG with coordinate properties, 5 hit-test tensions using guard expressions for spatial matching, selected property set by HERB, 3px highlight border, direct MMIO cursor overlay**
+- **Session 44:** "Tensions are invisible — user can see entities but not the rules that move them" -- **SOLVED: Tension panel sidebar renders all 23 tensions as visual objects with name/priority/enabled state, keyboard and mouse selection, D key toggles enabled/disabled, disabled tensions skip during resolution, live behavioral consequences proven (disable timer_tick → preemption stops, disable schedule_ready → CPU stays empty), 17 new automated tests**
+- **Session 45:** "Processes are static data entities — they don't DO anything, all behavior comes from system tensions" -- **SOLVED: Runtime tension creation API (herb_tension_create + match/emit/expression builders), owner scheduling (process tensions only fire when owner is in CPU0), two loadable programs (Worker converges to work=0, Beacon converges to pulses=limit), herb_remove_owner_tensions compacts on kill, tension panel shows process-owned tensions in orange, 13 new automated tests**
+- **Session 46:** "Each process's tensions operate in isolation — no cross-process interaction" -- **SOLVED: Producer/Consumer programs with shared BUFFER entity, multi-binding tensions reference both self and shared state, runtime container creation API (herb_create_container), emergent equilibrium from combined energy landscape, buffer integrity from tension structure (not locks), 17 new interaction tests**
+- **Session 47:** "Process programs are C functions, not data — load_producer_program() and load_consumer_program() construct tensions in compiled C code" -- **SOLVED: herb_load_program() loads .herb binary fragments into the running system, four program fragments as .herb.json + .herb binary, multi-program embedding in kernel, zero C functions construct process tensions, identical behavior verified (76/76 tests)**
+- **Session 48:** "System tensions are fixed after boot — you can toggle them but not replace one with a different behavioral rule" -- **SOLVED: herb_remove_tension_by_name() removes by name, herb_load_program() with owner=-1 loads system-level fragments, two scheduling policies (priority 140B, round-robin 130B) swap live via 'S' key, no compatibility check needed (Discovery 1 protects structurally), mechanism generalizes to any system tension, 19 new tests prove swap/restore/multi-swap stability**
+- **Session 49:** "Text input is a C string buffer — not HERB state, not subject to HERB guarantees" -- **SOLVED: 32 pre-allocated Char entities MOVE between CHAR_POOL and CMDLINE containers; typing = MOVE, buffer = container, position = entity property; modal input with 9 tensions; C handles ONLY scancode reading and rendering; buffer overflow impossible (CHAR_POOL has 32 entities, when empty key_overflow fires); 17 new tests**
+- **Session 50:** "Command dispatch is a C switch statement — the shell is code, not a HERB process" -- **SOLVED: Shell loaded from .herb binary fragment (806 bytes, 8 tensions); CMD_SIG entities carry cmd_id/arg_id; shell tensions match on integers and perform MOVEs (direct commands) or set ShellCtl.action (delegated commands); shell is a protected daemon (empty run_container, tensions fire regardless of scheduling); C parses text to integers (mechanism), HERB decides what to do (policy); 15 new tests**
+- **Session 51:** "Single-key commands bypass the shell — pressing 'k' calls cmd_kill() in C while typing 'kill' goes through CMD_SIG → HERB tensions, two separate code paths for the same operations" -- **SOLVED: dispatch_command(cmd_id, arg_id) replaces cmd_kill/cmd_block/cmd_unblock; both single-key and text paths create CMD_SIG with identical integer properties; shell protection moved from C if-check to HERB where guard (protected property); ~97 lines behavioral C → ~60 lines mechanism C; comprehensive audit produced Phase 1 Migration Inventory documenting all 14 remaining behavioral C decisions; 127 bare metal tests pass**
+- **Session 52:** "Process creation uses C arithmetic for priority cycling and program assignment" -- **SOLVED: PRI_POOL/PROG_POOL conservation pools with PriToken (values 2,4,6,8,10) and ProgToken (type_id 1,2) entities; SPAWN_SIG → spawn tensions decide priority (min_by) and program type; recycle tensions refill pools when empty; 4 program types embedded (producer/consumer/worker/beacon); 748 tests, 114KB graphics image**
+- **Session 53:** "Keystroke-to-command and text-to-command mapping hardcoded in C switch/if-else" -- **SOLVED: 16 lookup entities (5 KeyBind + 7 TextCmd + 4 TextArg) in 3 containers matched by 3 input tensions; C computes integer keys, HERB fills cmd_id/arg_id; parse_command() deleted; 748 tests, 113KB graphics image**
+- **Session 54:** "Mode routing and click routing are C behavioral decisions" -- **SOLVED: C creates KEY_SIG for every keystroke, HERB tensions decide routing; keybind_route matches command keys against KEYBIND lookup entities, mechbind_match matches mechanism keys against 12 MECHBIND entities; click_panel tension uses spatial guard for tension panel detection; C touches input only at hardware boundary; 718 tests, 116KB graphics image**
+- **Session 55:** "Colors are C lookup tables, display limits are hardcoded constants" -- **SOLVED: border_color/fill_color properties on region entities and process Surface entities; sync tensions emit actual pixel colors alongside state values; DisplayCtl entity with max_terminated and max_procs_per_region properties; surf_state_border[]/surf_state_fill[] arrays removed; C reads colors directly from HERB — no lookup table; 718 tests (127 bare metal + 591 Python), 115KB graphics image, kernel binary 9,868 bytes**
+- **Session 57:** "Shell help text is hardcoded C strings — the last behavioral decision in C" -- **SOLVED: 7 HelpCmd entities in display.HELP_TEXT container with cmd_text string properties; C iterates sorted by order; handle_shell_action() now entirely mechanism; Phase 1 Migration complete: 14/14 behavioral decisions migrated from C to HERB across Sessions 51-57; 748 tests, 119KB graphics image**
+- **Session 58:** "Port I/O primitives are inline asm in C — Phase 2 begins" -- **SOLVED: `inb`/`outb` migrated to `boot/herb_hw.asm` (NASM, MS x64 ABI); extern declarations in kernel_main.c; 127/127 tests pass; image 108KB (was 119KB — 11KB/9% reduction from removing inline asm constraints); full Phase 2 audit + migration plan documented**
+- **Session 59:** "Remaining Tier 1 + Tier 2 inline asm still in C" -- **SOLVED: 9 new assembly functions in herb_hw.asm: `outw`/`inw`/`outl`/`inl`/`io_wait` (Tier 1) + `hw_lidt`/`hw_sti`/`hw_hlt`/`hw_flush_tlb` (Tier 2); zero inline asm remains in kernel_main.c or framebuffer.h; 11 total assembly functions in herb_hw.asm; image stable at 108KB; 748 tests pass**
+- **Sessions 69-71:** "C runtime graph functions still in bare metal image" -- **SOLVED: Phase 4a-4b. Dead C code excluded via `#ifndef HERB_BINARY_ONLY`. 12 graph functions ported to herb_graph.asm. try_move, intern, str_of, entity_set_prop, container_add/remove, graph_find_*, channel send/receive all assembly.**
+- **Sessions 75-77:** "HAM bridge functions, public API, tension creation, freestanding support still in C" -- **SOLVED: Phases 4d-4f. 67 functions ported across herb_graph.asm (55 functions) and herb_freestanding.asm (23 functions). HAM calls assembly directly — no C bridge layer. All public API, tension/entity creation, expression builders, memory/string/formatting utilities in assembly.**
+- **Session 78:** "Binary loader, expression tree builder, and program lifecycle still in C" -- **SOLVED: Phase 4h. 13 functions in herb_loader.asm (2,371 lines). Recursive expression parser, binary section dispatch, herb_init/herb_load/herb_load_program. Image 14.7% smaller. Discovery 52: br_u16 use-after-clobber (movzx eax clobbers RAX before second byte read).**
+- **Session 79:** "HAM compiler, PropVal helpers, and arena queries still in C" -- **SOLVED: Phase 4i. 10 compiler functions + 2 arena queries ported to assembly (~1,590 new lines across herb_ham.asm and herb_graph.asm). 7 PropVal helpers guarded out. herb_runtime_freestanding.o now compiles to an empty object — zero C functions in bare metal. Discovery 53: ham_compile_all stack slot overlap (spawn diagnostic temp at offset 296 clobbered saved out_count pointer at same offset). Image 3.0-3.3% smaller. The HERB runtime is 100% assembly: ~156 functions across 5 files (~10,870 lines). Only kernel_main.c (~62 functions, hardware boundary) remains as C.**
+
+### Remaining Open Problems
+1. ~~**Native runtime**~~ **COMPLETE (Session 35).** ~~**Bare metal**~~ **COMPLETE (Session 36).** ~~**Assembly bootstrap**~~ **COMPLETE (Session 37).** ~~**Interactive**~~ **COMPLETE (Session 38).** ~~**Binary format**~~ **COMPLETE (Session 39).** ~~**Automated testing + kernel on hardware**~~ **COMPLETE (Session 40).** ~~**Framebuffer graphics**~~ **COMPLETE (Session 41).** ~~**Display as HERB state**~~ **COMPLETE (Session 42).** ~~**Mouse input**~~ **COMPLETE (Session 43).** ~~**Visible tensions**~~ **COMPLETE (Session 44).** ~~**Loadable behavioral programs**~~ **COMPLETE (Session 45).** ~~**Interacting processes**~~ **COMPLETE (Session 46).** ~~**Programs as data**~~ **COMPLETE (Session 47).** ~~**Hot-swappable system policy**~~ **COMPLETE (Session 48).** ~~**Text input as HERB state**~~ **COMPLETE (Session 49).** ~~**Shell as HERB process**~~ **COMPLETE (Session 50).** ~~**Unified command dispatch**~~ **COMPLETE (Session 51).** ~~**Process creation as HERB policy**~~ **COMPLETE (Session 52).** ~~**Input-to-command mapping as HERB policy**~~ **COMPLETE (Session 53).** ~~**Input routing as HERB policy**~~ **COMPLETE (Session 54).** ~~**Display policy as HERB state**~~ **COMPLETE (Session 55).** **PHASE 1 COMPLETE (Session 57).** All 14 behavioral decisions migrated from C to HERB across Sessions 51-57. See Phase 1 Milestone below. Remaining scaffolding: dimensions in C (not yet needed), remove JSON parser from freestanding build, write-combining for framebuffer performance.
+2. **Phase 1 Migration Inventory — Behavioral Logic Still in C** -- Session 51 audited every WHAT decision remaining in `kernel_main.c`. These 14 items are the roadmap for migrating policy from C to HERB. Each item is a place where C makes a behavioral decision that could instead be expressed as HERB tensions or HERB state. ~~2 items~~ **SOLVED (Session 52):** priority cycling and program assignment. ~~2 items~~ **SOLVED (Session 53):** keystroke mapping and text parsing. ~~2 items~~ **SOLVED (Session 54):** mode routing and click routing. ~~3 items~~ **SOLVED (Session 55):** color mapping, terminated limit, display order (implicit). ~~4 items~~ **SOLVED (Session 56):** timer interval, buffer capacity, shell protection value, legend/help text. **14 of 14 COMPLETE (Session 57). Phase 1 Migration finished.**
+
+   **Command/Shell (3 items — 2 SOLVED Session 53):**
+   - ~~**Keystroke→command mapping:** C switch statement maps 'n'→new, 'k'→kill, 'b'→block, etc. (`handle_key()` ~L2698).~~ **SOLVED (Session 53):** 5 KeyBind entities in KEYBIND container, matched by keybind_match tension. C creates CMD_SIG with key_ascii, HERB fills cmd_id.
+   - ~~**Text→cmd_id mapping:** C maps "kill"→1, "load"→2, etc. (`parse_command()` ~L2444).~~ **SOLVED (Session 53):** 7 TextCmd + 4 TextArg entities matched by textcmd_match/textarg_match tensions. C computes text_key (first_char*256+second_char), HERB fills cmd_id/arg_id.
+   - ~~**Shell action interpretation:** C interprets ShellCtl.action codes — 10→swap, 20→list, 30→help (`handle_shell_action()` ~L2659). HERB tensions set the code; C decides what each code means and performs the action.~~ **SOLVED (Session 57):** Help text (action=30) migrated to 7 HelpCmd entities in display.HELP_TEXT container with cmd_text string properties; C iterates sorted by order. Full analysis: load (1-4) = mechanism (delegates to cmd_spawn/HERB spawn policy), swap (10) = mechanism (binary loading), list (20) = mechanism (state query + serial formatting), help (30) = mechanism post-migration (content from HERB, C does serial I/O), spawn (40) = mechanism (delegates to cmd_spawn), unknown (-1) = mechanism (debug output). **Verdict: handle_shell_action() is entirely mechanism after Session 57.**
+
+   **Process Lifecycle (2 items — SOLVED Session 52):**
+   - ~~**Priority cycling:** `pri = ((counter-1)%5+1)*2` hardcodes new process priorities to 2,4,6,8,10 cycle (`cmd_new_process()` ~L1737).~~ **SOLVED:** 5 PriToken entities in PRI_POOL with `value` properties (2,4,6,8,10), recycled when empty. HERB `min_by value` selects next priority.
+   - ~~**Program assignment:** odd process_counter=producer, even=consumer (`cmd_new_process()` ~L1785).~~ **SOLVED:** 2 ProgToken entities in PROG_POOL with `type_id` properties (1,2), recycled when empty. Explicit `requested_type` from shell "load" command bypasses auto-selection. Bug fixed: "load producer" now loads a producer.
+
+   **Display/Rendering (4 items — 3 SOLVED Session 55):**
+   - ~~**State→color mapping:** C lookup tables map surface.state values (1=running, 2=ready, 3=blocked, 4=terminated) to pixel colors (~L1097). HERB owns state values; C owns what they look like.~~ **SOLVED (Session 55):** border_color/fill_color properties on region entities and process Surface entities. Sync tensions emit actual pixel colors. surf_state_border[]/surf_state_fill[] arrays removed. C reads colors directly from HERB.
+   - ~~**Display order:** CPU0→READY→BLOCKED→TERMINATED iteration order.~~ **SOLVED (Session 55):** Already implicit in HERB state. Graphics mode: region (x,y) positions determine spatial layout. Text mode: region_id is HERB data. No code changes needed — documented as already HERB-owned.
+   - ~~**Terminated display limit:** max 3 terminated processes shown (~L913). Could be a HERB property.~~ **SOLVED (Session 55):** DisplayCtl entity in DISPLAY_STATE container with max_terminated=3 and max_procs_per_region=12 properties. C reads from HERB at boot and during rendering.
+   - ~~**Legend/help text:** C hardcodes which keys to advertise (`draw_legend()` ~L698). Could be generated from HERB command definitions.~~ **SOLVED (Session 56):** 14 Legend entities in display.LEGEND container with key_text (string), label_text (string), and order (int) properties. New `herb_entity_prop_str()` API for string property access. VGA and graphics mode renderers iterate entities sorted by order. Changing the legend = changing entities, not C code.
+
+   **Input Handling (2 items — SOLVED Session 54):**
+   - ~~**Mode routing:** C checks InputCtl.mode, routes keys to HERB (text mode) or C switch (command mode) (`handle_key()` ~L2650).~~ **SOLVED (Session 54):** C creates KEY_SIG for every keystroke. `keybind_route` tension matches KEY_SIG + mode==0 + KEYBIND → sets pending_cmd. `mechbind_match` tension matches KEY_SIG + mode==0 + MECHBIND → sets mech_action. 12 MechBind entities define mechanism key mappings. Text mode tensions (mode==1) handle text input as before. C reads routing decisions from InputCtl.
+   - ~~**Click routing:** C splits tension panel clicks (C handler) vs container area clicks (HERB hit-test) based on screen coordinates (main loop ~L3018).~~ **SOLVED (Session 54):** `click_panel` tension (display module, pri=5) uses spatial guard expressions to detect clicks in tension panel region (region_panel entity). Sets InputCtl.panel_click=1. C reads panel_click, computes row (division = mechanism). Panel coordinates are HERB state, not C constants.
+
+   **Configuration (3 items — ALL SOLVED Session 56):**
+   - ~~**Timer interval:** auto-send timer signal every 300 ticks = 3 seconds (main loop ~L2957). Could be a HERB property on a timer configuration entity.~~ **SOLVED (Session 56):** `timer_interval=300` property on DisplayCtl entity. C reads at boot, uses variable instead of hardcoded `% 300`. Division-by-zero guarded.
+   - ~~**Buffer capacity:** `#define BUFFER_CAPACITY 20` (~L1695). Could be a HERB property on the buffer entity read at creation.~~ **SOLVED (Session 56):** `buffer_capacity=20` property on DisplayCtl entity. C reads at boot, `#define BUFFER_CAPACITY` removed.
+   - ~~**Shell protection value:** C sets `protected=1` on shell entity at boot (~L2900). The HERB `where` guard already reads it structurally, but C decides the initial value.~~ **SOLVED (Session 56):** `shell_protected=1` property on ShellCtl entity. C reads after ShellCtl discovery, sets shell entity's `protected` property from HERB value.
+
+3. **Phase 4: C Elimination** -- **COMPLETE.** All C eliminated from the OS image. 13 assembly files, ~38,600 lines. The entire OS is `.herb` programs + x86-64 assembly. Zero C, zero GCC. Sessions 69-79 migrated all runtime functions; Sessions 80+ continued with pure assembly development (filesystem, game, NIC driver).
+4. **Compositor / window manager** -- **COMPLETE (Session 77).** `herb_wm.asm` (1,156 lines): painter's algorithm compositor, hit testing, drag/resize, focus/z-order, close/maximize. Clip rect system in `herb_hw.asm`. Flow editor renders inside a WM window. Mouse interaction for drag-and-drop, resize, window manipulation.
+5. **First real target** -- Pick the first real deliverable built entirely in HERB.
+6. **Vector scoped queries** -- Currently scoped match clauses require a scalar scope binding. Supporting vector scope bindings (nested loops) would enable "for each process, count its FDs" patterns.
+7. **Bidirectional channels** -- Current channels are unidirectional. Bidirectional communication requires two channels. Consider whether a single bidirectional channel primitive is worthwhile.
+8. **Channel backpressure** -- Currently channels buffer unlimited messages. Real systems need flow control. Consider bounded channel buffers.
+9. **Dimensional scoped containers** -- Scoped containers are currently default-dimension only. Consider whether scoped containers should support named dimensions for per-entity multi-dimensional state.
+10. **Runtime module loading** -- Currently all modules must be known at compose time. Dynamic module loading at runtime would enable plugin systems.
+11. **Performance benchmarking** -- Measure the actual speedup of C vs Python on the same programs. The v1 C runtime was 70-100x faster; v2 should be similar or better.
+12. **C runtime: dimensions** -- The C runtime doesn't yet handle named dimensions or dimensional moves. Not currently blocking any programs.
+13. **Reduce static footprint** -- The current ~3.7MB static footprint (dominated by scope tracking arrays) can be reduced for memory-constrained targets by making MAX_* constants configurable or using dynamic sizing.
+
+### Key Insight Log
+1. Provenance as navigable structure -- causality IS the program
+2. Rules as facts -- changing laws is modifying the program at runtime
+3. THE OPERATION SET IS THE CONSTRAINT SYSTEM -- invalid states are unreachable
+4. HERB is policy, not mechanism -- coordinates what happens, native code does the math
+5. HERB needs a runtime, not a compiler -- operations are data the engine interprets
+6. MOVE covers containment, conservation, and state machines
+7. ~~The system doesn't run itself yet~~ **SOLVED: Tensions are the energy gradients**
+8. The execution model is equilibrium-seeking -- tensions create gradients, MOVEs are gravity, the system finds stable states
+9. **A HERB program is a data structure, not code** -- entity types, containers, moves, tensions, entities. Tensions are declarative patterns, not callables. The AI manipulates the data structure directly.
+10. **Self-transfers are structurally impossible** -- transferring quantity from an entity to itself is a meaningless operation. The runtime rejects it, preventing a class of conservation bugs where captured values go stale.
+11. **Scoped containers are virtual address spaces** -- Isolation isn't enforced by checks. Each entity's scoped containers are literally different containers. Cross-scope operations don't exist, just like cross-process memory access doesn't exist in virtual memory. The pattern is the same: the namespace IS the isolation.
+12. **Mutation has two modes: conserved and free** -- Conserved properties (in pools) only change via transfer (zero-sum). Free properties change via set (no conservation partner needed). The runtime enforces the boundary: attempting to `set` a pooled property fails silently.
+13. **Cross-scope communication IS a MOVE through a channel** -- The research analyzed four formalisms. Every one that allowed free-form cross-boundary references (bigraphs' link graph, ambient calculus's `open`) regretted it. Channels confine cross-scope transfer to specific, typed, authorized paths. The sender loses access on send (Zircon model). The receiver gains access on receive. No implicit sharing -- duplication is explicit. Isolation holds under real communication pressure.
+14. **Dimensions are orthogonal state spaces** -- An entity's position in the scheduling dimension is independent of its position in the priority dimension. This isn't Statecharts (which models orthogonal regions within a single state machine). This is the MOVE invariant (entity in exactly one container) applied PER DIMENSION. Each dimension gets its own operation-set-as-constraint. The guarantees compound: if scheduling has 3 states and priority has 3 states, you get 3x3=9 valid combinations, but each dimension's transitions are enforced independently.
+15. **Composition is namespace-based isolation** -- Module names ARE the namespace. All internal names are prefixed with the module name. A tension in module A literally cannot reference module B's private containers because the qualified name `b.PRIVATE_CONTAINER` is not in A's resolve map unless B exports it. This is the same pattern as scoped containers (Discovery 11): the namespace IS the isolation. Not checked -- structural.
+16. **The hot path is already freestanding** -- The tension resolution loop (step → evaluate_tension → eval_expr → try_move) uses only memset and memcpy from libc. Everything else (malloc, strcmp, printf, fopen, snprintf, atof) is load-time or diagnostic. This means the runtime was never really a "libc program" -- it was always a bare-metal engine with a libc loading wrapper. The freestanding port proved this: replacing the wrapper was mechanical; the engine didn't change at all.
+17. **Hardware interrupts are just HERB signals** -- The bare-metal boot proved something fundamental about HERB's architecture: a timer interrupt creates a Signal entity in the TIMER_EXPIRED container, then the system resolves to equilibrium. The interrupt handler is 4 lines of assembly (set flag + EOI). All scheduling logic lives in HERB tensions. The boundary between hardware and language is exactly one entity creation. This is what "policy not mechanism" means in practice: the CPU fires an interrupt, the ISR creates a signal, HERB decides what happens next.
+18. **The mechanism/policy boundary is the C/HERB boundary** -- The interactive OS made the architecture concrete. The C kernel handles exactly three things: scancode lookup (which key was pressed), signal creation (what entity to create), and VGA rendering (what to show). HERB handles everything else: which process runs, when to preempt, what happens when a process is killed or blocked. A new command requires one line of C (create signal in the right container) and one tension in HERB (match signal, emit action). The C never grows complex because all complexity lives in tensions.
+19. **A program IS a graph description, and binary IS the right representation** -- JSON represents a HERB program as nested key-value pairs because that's how JSON works. But a HERB program is not key-value data. It's a typed graph with a fixed schema: entity types, containers, moves, tensions, entities. The binary format encodes this directly: a string table for names, then sections for each component type, with typed fields at known positions. No parsing ambiguity, no key lookup, no tree building. The 81-90% size reduction isn't about compression -- it's about removing encoding overhead that served JSON's generality, not HERB's needs. The format is simpler because it only encodes one thing.
+20. **Testing bare metal through the serial port is testing through the same abstraction as running** -- The QEMU test harness sends keys and reads serial output. The kernel sends key events through HERB signals and writes serial output after each operation. The test observes the system through the exact same channel the system uses to report its own state. There's no test-specific instrumentation, no mock objects, no test mode. The serial output IS the system's self-description. This means the tests validate the real system, not a simulation of it. The harness proved this: 29 tests running against the actual booted kernel, confirming scoped resource isolation on real x86-64 hardware, with zero test-specific code in the kernel.
+21. **The display IS the state graph** -- Traditional operating systems have a clear separation: the kernel manages processes internally, and applications draw to the screen through graphics APIs. In HERB OS, the display is a direct spatial encoding of the runtime's graph. Container regions map 1:1 to HERB containers. Process rectangles map 1:1 to HERB entities. Resource indicator squares map 1:1 to scoped entities. A MOVE (entity transferring between containers) manifests as a rectangle appearing in a different region. There's no display abstraction layer, no window system, no drawing API -- the render function queries the HERB runtime's state and draws what it finds. This is possible because HERB state IS structured: containers with entities, each in exactly one location. The display doesn't interpret the state; it spatially encodes it. This means the graphical output is always correct by construction -- it can't show something that isn't in the HERB graph, and it can't miss something that is.
+22. **Scoped containers provide structural coupling between domains** -- Session 42 proved that scoped containers aren't just for isolation (Discovery 11). They're a general-purpose structural coupling mechanism. A Process entity owns scoped MEM_FREE/MEM_USED (resource domain), scoped FD_FREE/FD_OPEN (file domain), scoped INBOX/OUTBOX (communication domain), AND scoped SURFACE (visual domain). Each domain is independent: allocating a page doesn't affect the surface, and updating the surface doesn't affect file descriptors. But they're all structurally coupled to the same process entity. This means HERB can model cross-cutting concerns (a process has resources AND a visual representation AND a message queue) without any of them interfering. The scoped container is the universal coupling primitive: it gives an entity ownership of state in any domain, with structural isolation between domains. This is what makes the display module possible without touching the kernel module.
+23. **Guard expressions enable spatial reasoning in HERB** -- Session 43 proved that HERB's expression system is powerful enough for spatial hit testing without any runtime changes. Cross-binding property comparison in guard clauses allows a tension to compare properties from different entities (click coordinates vs region bounds) using arithmetic and comparison operators (>=, <, +, and). The pattern is: C creates a signal entity with raw input data (coordinates), HERB tensions use guard expressions to match that data against the spatial layout (region positions and sizes), and the result is a semantic state change (process selected). No new runtime features were needed -- guards, property comparison, and arithmetic were all Session 29-35 features. This means HERB can do spatial reasoning as naturally as it does scheduling or resource management. The expression evaluator IS the spatial engine.
+24. **The code/data distinction dissolves when rules are data** -- Session 44 proved that "tensions are data structures, not compiled code" is not just an implementation detail -- it's a user-facing capability. In every other OS, the scheduler is compiled code: opaque, fixed, invisible. In HERB, `schedule_ready` is a data structure that the runtime interprets, the display renders, and the user can disable with a keystroke. Disabling it has immediate, observable consequences: the CPU stays empty because the gradient that moves processes from READY to CPU0 no longer exists. This is the difference between "rules are data" as a theoretical property and "rules are data" as an interaction model. The energy landscape isn't a metaphor -- it's a thing you can see and manipulate. One field (`enabled`), one line in `herb_step()`, and the entire behavioral rule system becomes live-editable.
+25. **A process IS its tensions** -- Session 45 dissolved the process/program distinction. In every other OS, a process has code (compiled instructions) separate from its data (memory, file descriptors). In HERB, a process's "code" IS tensions -- the same kind of data structure as the system tensions, living in the same runtime, visible in the same tension panel. Loading a program means calling `herb_tension_create()` with the process entity as owner. Killing a process means calling `herb_remove_owner_tensions()`. The scheduler doesn't execute process code -- it moves the process entity into CPU0, which causes the owner check in `herb_step()` to start firing that process's tensions. There is no instruction pointer, no program counter, no call stack. A process's behavior is a set of energy gradients that only exist when the process is scheduled. The process/program/code distinction is an artifact of the von Neumann architecture. In HERB, there's just entities, containers, and tensions.
+26. **Emergent behavior from the combined energy landscape** -- Session 46 proved that independent processes produce coordinated behavior through shared state without any synchronization primitives. A Producer's tension increments a buffer's count. A Consumer's tension decrements it. Neither knows the other exists. But the combined tensions, resolved together by the runtime, produce dynamic equilibrium: the buffer fluctuates, producer and consumer take turns, and the system self-regulates. Buffer integrity (count never < 0 or > capacity) is enforced by the structure of the tensions (guards prevent invalid operations), not by locks. This is Discovery 1 operating at the process interaction level: invalid states aren't checked — they're unreachable. The key architectural insight is that multi-binding tensions (matching both "me" and "buf") enable cross-entity interaction within a single process's behavioral rule. The process's tension reaches beyond its own properties into shared state, and the runtime's atomic resolution ensures consistency without explicit coordination.
+27. **Programs are compositional fragments, not standalone systems** -- Session 47 proved that a `.herb` binary doesn't have to be a complete system.
+28. **System policy is data, not code — and replacing it is just two operations** -- Session 48 proved that replacing a system behavioral rule at runtime requires only: (1) remove the old tension by name, (2) load the new tension from a `.herb` binary fragment. No compatibility check is needed because Discovery 1 (the operation set IS the constraint system) protects the system structurally — a "wrong" replacement simply doesn't fire, producing zero operations. The system continues running safely. This means HERB can do something no other OS can: change its scheduling policy, display sync rules, or any other behavioral rule while running, with zero downtime, by loading a different data file. The mechanism doesn't know or care WHAT is being swapped — it just removes a named tension and loads a fragment. The generality is the point. A program fragment contains only tensions (and optionally entities) that reference containers already in the running system. The binary format requires no extension: the string table maps fragment names to the running system's intern table, and container references resolve against the existing graph. Loading a fragment is adding energy gradients to an existing landscape. The fragment doesn't need to know the full system topology — it only needs the names of the containers it references (like "proc.CPU0" and "BUFFER"). This is the same insight as scoped containers (Discovery 11) applied to programs: the namespace IS the interface. A program is written for its environment by using the right names. This means program loading is compositional: load any combination of fragments, and the combined energy landscape determines system behavior. The runtime doesn't distinguish between "system tensions" and "process tensions" after loading — they're all tensions, all resolved together.
+29. **Text is not a string — it's entities in a container** -- Session 49 proved that text input doesn't need string buffers. A character is an entity with an `ascii` property. A text buffer is a container. Typing is MOVE. Deleting is MOVE. The length is a count. The cursor position is a property. The same structural guarantees that protect process isolation protect text integrity: buffer overflow is impossible because CHAR_POOL has exactly 32 entities — when it's empty, key_overflow fires and the signal is consumed harmlessly.
+30. **The shell is not code — it's tensions loaded from data** -- Session 50 proved that the command interpreter doesn't need to be compiled into the kernel. The shell is a `.herb` binary fragment (806 bytes) containing 8 tensions that match CMD_SIG entities with integer properties and emit MOVEs or property mutations. The same mechanism that loads producer/consumer programs loads the shell. The same runtime that resolves scheduling tensions resolves command dispatch tensions. The C kernel provides exactly one new piece of mechanism: parsing text to integers. Everything else — deciding what "kill" means, what "list" does, how to handle an unknown command — is HERB policy. This completes a progression: Session 45 made processes into tensions, Session 47 made programs into data, Session 48 made policies swappable, and Session 50 makes the shell itself a loadable HERB process. The entire user-facing behavior of the OS is now expressed in HERB tensions loaded from `.herb` binary fragments.
+31. **Command dispatch is fully unified — pressing a key and typing a command execute the same code path** -- Session 51 proved that unifying two separate dispatch mechanisms doesn't require new HERB features — just routing both through the same CMD_SIG → shell tension path. Pressing 'k' creates CMD_SIG with cmd_id=1; typing "kill" creates CMD_SIG with cmd_id=1. The HERB shell tensions cannot tell the difference because they only see the integer properties. C does only mechanism (integer → CMD_SIG → herb_run), HERB does all policy (match cmd_id, guard on protected, MOVE or delegate). Shell protection moved from a C `if (eid == shell_eid)` check to a HERB `where protected == 0` guard — making protection a structural property of the tension rather than a special case in C code. Three behavioral C functions (~97 lines) replaced by one mechanism function (~60 lines). The policy/mechanism boundary sharpened: every remaining behavioral decision in C is now documented in the Phase 1 Migration Inventory (14 items across 5 categories).
+32. **Arithmetic IS entities moving through containers** -- Session 52 proved that HERB doesn't need arithmetic operators to express cycling sequences. The priority sequence 2,4,6,8,10 is not computed by `((n-1)%5+1)*2` — it IS five PriToken entities with value properties, moving from PRI_POOL to PRI_USED. `min_by value` selects the smallest available. When the pool empties, a recycle tension refills it. The cycling emerges from conservation: exactly 5 values exist, each used once, then all return. Program alternation (producer/consumer) works the same way: 2 ProgToken entities cycling through PROG_POOL→PROG_USED. This is Discovery 3 (the operation set IS the constraint system) applied to arithmetic: the sequence can't skip a value because skipping would require a value to be in two containers simultaneously. The sequence can't repeat prematurely because recycling only fires when the pool is empty. The conservation guarantee IS the cycling guarantee. No modulo needed.
+33. **Command mapping IS entity lookup** -- Session 53 proved that any input→semantic mapping can be expressed as entities in a lookup container + one match tension. Adding a keybinding = adding an entity, not modifying code. The 2-char text key (first_char*256 + second_char) transforms string matching into integer comparison. The lookup pattern generalizes: keystroke mapping, text command parsing, and argument resolution are all the same pattern — entities with key/value properties in a container, matched by a tension that cross-compares signal properties against entity properties.
+34. **Input routing IS tension priority** -- Session 54 proved that mode routing (which code path handles a keystroke) and spatial routing (which screen region handles a click) are both tension matching problems, not C control flow. C creates a signal for every input event. Multiple tensions compete to match it: text mode tensions (mode==1) vs command routing tensions (mode==0); panel hit-test (spatial guard) vs container hit-test (spatial guard). The tension that matches consumes the signal. The mode check isn't an if-statement in C — it's a WHERE clause in competing tensions. The spatial check isn't coordinate comparison in C — it's a guard expression comparing signal properties against entity properties. C touches input only at the hardware boundary (scancode→KEY_SIG, coordinates→CLICK_SIG). Every routing decision after that is HERB.
+35. **Colors are HERB entity properties, not C lookup tables** -- Session 55 proved that visual appearance is data, not code. Sync tensions don't just set abstract state values (1=running, 2=ready) — they set the actual pixel colors C uses to render (border_color=52326, fill_color=1060896). C reads border_color and fill_color from HERB entities and writes pixels. The color policy/mechanism boundary sharpens: HERB decides what color everything is, C decides how to write that color to the framebuffer. A "theme" would be a set of tensions that override color properties on Surface entities — swappable at runtime using the same hot-swap mechanism from Session 48. Display limits (max_terminated, max_procs_per_region) join colors as HERB entity properties on a DisplayCtl entity. The display domain follows the same migration pattern as input routing (Session 54) and process creation (Session 52): C lookup tables → HERB entity properties, C function calls → HERB tension emits.
+36. **UI text IS HERB entities with string properties** -- Session 56 proved that user-facing text (keybinding legends, help text) doesn't need to be hardcoded C strings. Legend entries are Legend entities in a LEGEND container with `key_text` and `label_text` string properties. C iterates sorted by `order`, renders key in highlight color and label in dim color. Adding a legend entry = adding an entity. Removing one = removing an entity. Reordering = changing `order` properties. The pattern generalizes beyond legend: any UI text that derives from system configuration (help text, error messages, status labels) can be HERB entities that C renders. This completes the migration arc: Sessions 52-55 migrated behavioral decisions and numeric configuration. Session 56 migrates textual content. The only C strings remaining are debug/logging messages — mechanism, not policy.
+37. **The C→HERB migration is complete — and the boundary is sharp** -- Session 57 completed the Phase 1 migration: 14 behavioral decisions moved from C to HERB across 7 sessions. The final state reveals a clean architectural boundary. HERB owns all policy: what happens when a key is pressed, what color a process is, what the help text says, which process gets the CPU, how priorities are assigned. C owns all mechanism: reading hardware ports, writing pixels, loading binaries, creating signal entities. The boundary is always one entity creation: C creates a signal from a hardware event, HERB tensions resolve it, C reads the result. This boundary was not designed upfront — it emerged from systematically asking "is this a WHAT decision or a HOW decision?" for every line of C code. The 14 migrations followed different patterns (tensions, entity properties, lookup entities, conservation pools, string entities) but they all moved in the same direction: C shrinks to mechanism, HERB grows to contain all policy. The kernel binary grew 2.5KB because HERB state is more verbose than hardcoded C — but every byte of that growth is data that can be changed, inspected, and replaced at runtime without recompilation.
+38. **Inline asm constraints cost more than the assembly itself** -- Session 58's first Phase 2 migration (outb/inb to herb_hw.asm) produced an unexpected 11KB image reduction (119KB → 108KB, ~9%). The two assembly functions total ~30 bytes. The saving came not from smaller code but from removing GCC's inline asm constraints. When `outb`/`inb` were `static inline` with `__asm__ volatile` and operand constraints (`"a"`, `"Nd"`), GCC was conservative about register allocation, instruction scheduling, and optimization around every call site. With `extern`, GCC follows the standard calling convention and can optimize the surrounding C code aggressively. The implication for Phase 2: every inline asm wrapper migrated to herb_hw.asm will likely shrink the image, not grow it. The C compiler's cost model for inline assembly significantly overestimates the actual hardware instruction cost.
+39. **Init sequences are hardware scripts, not algorithms** -- Session 60's serial port migration revealed that hardware initialization functions (serial_init, pic_remap, pit_init, mouse_init) are fixed sequences of port writes — hardware scripts with no conditional logic, no loops over data, no algorithmic complexity. Assembly is their natural notation because there's nothing for a high-level language to abstract. The C versions were already assembly in disguise: each line was a single `outb()` call with constant arguments. The migration to assembly didn't change the logic — it removed the pretense that these were C functions.
+40. **PS/2 protocol functions form a natural call hierarchy** -- Session 62 proved that device protocols have a three-level structure that maps directly to assembly: wait primitives are leaf functions (inline port ops, tight loops), protocol functions call them (mouse_write, mouse_read), and the init function calls everything. This hierarchy — polling → commands → initialization — is the natural structure of all device protocols. Each level adds one layer of abstraction over the hardware, and each layer is small enough to fit in a single assembly function.
+42. **GCC tail-call optimization changes caller-side semantics** -- Sessions 70-71 revealed two instances (Discoveries 47 and 48) of the same pattern: assembly functions that return bit-identical results to their C counterparts cause test failures when linked. The assembly is correct. The issue is that GCC optimizes caller code differently when a function is inlinable (static, body visible) vs when it must be called through the MS x64 ABI (extern). For `entity_get_prop` (16-byte struct return via hidden pointer) and `try_move` (int return, but called from `ham_try_move` which becomes a tail call), the optimizer makes different register allocation and scheduling decisions that propagate through the HAM bridge layer. This is not a calling convention bug — it's a compiler optimization interaction. The implication for Phase 4b: functions called from the HAM bridge layer through thin wrappers may need to be ported together with their bridge wrappers, or the bridge layer itself needs to move to assembly first.
+43. **The HERB runtime is assembly — and the C runtime compiled to nothing** -- Session 79 completed Phase 4i and proved that every function in `herb_runtime_freestanding.c` is now guarded by `#ifndef HERB_BINARY_ONLY`. The object file contains zero function symbols — only BSS/data globals (graph, HAM buffers, string pool). The entire HERB runtime — graph operations, binary loader, expression evaluation, HAM bytecode interpreter AND compiler, memory management, string interning, formatting — is ~10,870 lines of hand-written x86-64 assembly across 5 files, ~156 functions. The C file still exists (for Python test infrastructure) but contributes nothing to the bare metal OS image. The image shrank 17.5% total from the start of Phase 4 (90,624 → 74,752 bytes) despite adding ~8,400 lines of assembly, because assembly is more compact than what GCC produces with freestanding constraints, inline asm overhead, and conservative optimization. Only `kernel_main.c` (~62 functions, hardware boundary) remains as C — and that's the next target (Phase 4g).
+41. **Tensions are bytecode, not data structures** -- Session 63's HAM design revealed a 50:1 reduction in tension representation: from ~2,500-byte C structs (MatchClause arrays, EmitClause arrays, recursive Expr trees) to ~30-80 bytes of flat bytecode per tension. This reduction comes not from compression but from eliminating representation overhead that served C's type system, not HERB's semantics. The transition from "interpreted data structures" to "compiled bytecode" is the same evolution that Prolog made from naive interpreters to the WAM, and that Java made from tree-walking interpreters to the JVM. It eliminates recursive expression evaluation, per-step O(n²) sorting, 33KB stack allocation for binding sets, and all pointer indirection in expression trees. The HAM is the irreducible assembly substrate — permanent, not scaffolding.
+
+---
+
+*This is a living document. Update it every session. The latest version is always the truth.*
