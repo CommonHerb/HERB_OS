@@ -1788,6 +1788,64 @@ def run_tests(image_path, net=False):
             m = re.search(r"\[PING\] reply from 10\.0\.2\.2 seq=1", serial)
             t.check("PING echo reply received", m is not None)
 
+            # ============================================================
+            # UDP Tests (Session 85)
+            # ============================================================
+            print("\n" + "=" * 60)
+            print("UDP Tests (Session 85)")
+            print("=" * 60)
+
+            # Wait for auto-UDP to complete (sent at tick 20)
+            time.sleep(2)
+            serial = t.get_serial()
+
+            # ---- TEST: UDP Sent ----
+            print("\n--- Test: UDP Sent ---")
+            m = re.search(r"\[UDP\] sent to 10\.0\.2\.2:7777 len=4", serial)
+            t.check("UDP packet sent (auto-udp)", m is not None)
+
+            # ============================================================
+            # DNS Tests (Session 86)
+            # ============================================================
+            print("\n" + "=" * 60)
+            print("DNS Tests (Session 86)")
+            print("=" * 60)
+
+            # Wait for auto-DNS resolve (tick 25)
+            time.sleep(3)
+            serial = t.get_serial()
+
+            # ---- TEST: DNS Query Sent ----
+            print("\n--- Test: DNS Query Sent ---")
+            m = re.search(r"\[DNS\] query: example\.com", serial)
+            t.check("DNS query sent (auto-resolve)", m is not None)
+
+            # ---- TEST: DNS Response Received ----
+            print("\n--- Test: DNS Response Received ---")
+            m = re.search(r"\[DNS\] resolved: example\.com", serial)
+            t.check("DNS response received and parsed", m is not None)
+
+            # ============================================================
+            # TCP Tests (Session 87)
+            # ============================================================
+            print("\n" + "=" * 60)
+            print("TCP Tests (Session 87)")
+            print("=" * 60)
+
+            # Wait for auto-TCP (tick 30, needs DNS resolved first)
+            time.sleep(4)
+            serial = t.get_serial()
+
+            # ---- TEST: TCP SYN Sent ----
+            print("\n--- Test: TCP SYN Sent ---")
+            m = re.search(r"\[TCP\] SYN sent to .+:\d+ seq=\d+", serial)
+            t.check("TCP SYN sent (auto-connect)", m is not None)
+
+            # ---- TEST: TCP Handshake ----
+            print("\n--- Test: TCP Handshake ---")
+            m = re.search(r"\[TCP\] ACK sent, connection ESTABLISHED", serial)
+            t.check("TCP handshake completed", m is not None)
+
         else:
             print("\n(NIC tests skipped — use --net flag)")
 
