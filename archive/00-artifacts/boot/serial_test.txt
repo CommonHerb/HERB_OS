@@ -1,0 +1,217 @@
+HERB OS v3 - Four-Module Kernel
+  Framebuffer: detecting BGA...
+  Framebuffer: 800x600x32 initialized
+  Runtime initialized
+=== Boot-time compilation ===
+[COMPILE] interactive_kernel: 25463 bytes
+[COMPILE] shell: 939 bytes
+[COMPILE] producer: 213 bytes
+[COMPILE] consumer: 183 bytes
+[COMPILE] worker: 127 bytes
+[COMPILE] beacon: 129 bytes
+[COMPILE] schedule_priority: 144 bytes
+[COMPILE] schedule_roundrobin: 134 bytes
+[COMPILE] turing: 905 bytes
+[COMPILE] test_flow: 318 bytes
+  Program loaded
+[LOAD] Turing machine loaded
+[LOAD] test_flow loaded
+[EDKEY] ascii= buf=346 pool=128 buf=1 ops=1
+  [COMP] proc.kill_running OK len=34
+  [COMP] proc.block_running OK len=34
+  [COMP] proc.unblock_first OK len=34
+  [COMP] proc.boost_running OK len=42
+  [COMP] input.enter_text OK len=63
+  [COMP] input.exit_text OK len=72
+  [HAM] Compiling spawn.spawn_explicit mc[0]=cidx 18(proc.SPAWN_SIG) mc[1]=cidx 41(spawn.SPAWN_STATE) mc[2]=cidx 37(spawn.PRI_POOL)
+  [COMP] spawn.spawn_explicit OK len=80
+  [COMP] editor.exit_editor OK len=63
+  [HAM] Compiling spawn.spawn_auto mc[0]=cidx 18(proc.SPAWN_SIG) mc[1]=cidx 41(spawn.SPAWN_STATE) mc[2]=cidx 37(spawn.PRI_POOL) mc[3]=cidx 39(spawn.PROG_POOL)
+  [COMP] spawn.spawn_auto OK len=92
+  [COMP] input.do_submit OK len=72
+  [COMP] input.mechbind_match OK len=80
+  [HAM] Compiling spawn.recycle_priorities mc[1]=cidx 38(spawn.PRI_USED)
+  [COMP] spawn.recycle_priorities OK len=33
+  [COMP] input.keybind_route OK len=88
+  [COMP] world.npc_wander_w OK len=192
+  [COMP] world.npc_wander_n OK len=192
+  [COMP] input.textcmd_match OK len=55
+  [COMP] world.npc_wander_s OK len=192
+  [COMP] world.npc_wander_e OK len=192
+  [COMP] input.append_char OK len=81
+  [HAM] Compiling spawn.recycle_programs mc[1]=cidx 40(spawn.PROG_USED)
+  [COMP] spawn.recycle_programs OK len=33
+  [COMP] editor.type_char OK len=102
+  [COMP] editor.backspace OK len=119
+  [COMP] input.delete_last OK len=86
+  [COMP] world.npc_blocked_2 OK len=64
+  [COMP] world.npc_blocked_3 OK len=64
+  [COMP] input.textarg_match OK len=55
+  [COMP] world.npc_blocked_0 OK len=64
+  [COMP] world.npc_blocked_1 OK len=64
+  [COMP] input.swap_to_rr OK len=67
+  [COMP] input.swap_to_pri OK len=67
+  [COMP] proc.timer_tick OK len=41
+  [COMP] tm_carry OK len=93
+  [COMP] tm_flip OK len=88
+  [COMP] input.key_overflow OK len=41
+  [COMP] editor.key_overflow OK len=41
+  [COMP] input.clear_char OK len=59
+  [COMP] ipc.do_send OK len=39
+  [COMP] proc.preempt_expired OK len=44
+  [COMP] tm_consume OK len=22
+  [COMP] world.do_gather OK len=76
+  [COMP] world.move_north OK len=169
+  [COMP] world.move_south OK len=169
+  [COMP] world.move_east OK len=169
+  [COMP] fs.do_open OK len=42
+  [COMP] fs.do_close OK len=42
+  [COMP] ipc.do_recv OK len=41
+  [COMP] mem.do_alloc OK len=42
+  [COMP] mem.do_free OK len=42
+  [COMP] world.move_west OK len=169
+  [COMP] input.clear_done OK len=49
+  [COMP] proc.schedule_ready OK len=35
+  [COMP] tm_reset OK len=47
+  [COMP] ipc.react_to_msg OK len=44
+  [COMP] world.cleanup_move OK len=22
+  [COMP] display.sync_running OK len=63
+  [COMP] display.sync_ready OK len=63
+  [COMP] display.sync_blocked OK len=63
+  [COMP] display.sync_terminated OK len=63
+  [COMP] display.click_panel OK len=107
+  [COMP] world.cleanup_gather OK len=22
+  [COMP] display.click_select_ready OK len=107
+  [COMP] display.click_select_blocked OK len=107
+  [COMP] display.click_select_terminated OK len=107
+  [COMP] display.click_select_cpu0 OK len=107
+  [COMP] input.cleanup_detect OK len=44
+  [COMP] display.click_miss OK len=22
+  [COMP] input.key_miss OK len=22
+  [COMP] world.npc_reset_moved OK len=38
+[HAM] eval=87/272
+  Boot: 13 ops
+[FLOW] count=2
+[FLOW] FLOW_DST entities=3
+[FLOW] e=346 doubled=20 cumsum=10
+[FLOW] e=347 doubled=40 cumsum=30
+[FLOW] e=348 doubled=60 cumsum=60
+  Cursor entity found (id=12)
+  Input control entity found (id=43)
+  Buffer created (capacity=20)
+  Shell process created (id=350, tensions=9)
+  [COMP] proc.kill_running OK len=34
+  [COMP] proc.block_running OK len=34
+  [COMP] proc.unblock_first OK len=34
+  [COMP] proc.boost_running OK len=42
+  [COMP] input.enter_text OK len=63
+  [COMP] input.exit_text OK len=72
+  [HAM] Compiling spawn.spawn_explicit mc[0]=cidx 18(proc.SPAWN_SIG) mc[1]=cidx 41(spawn.SPAWN_STATE) mc[2]=cidx 37(spawn.PRI_POOL)
+  [COMP] spawn.spawn_explicit OK len=80
+  [COMP] editor.exit_editor OK len=63
+  [HAM] Compiling spawn.spawn_auto mc[0]=cidx 18(proc.SPAWN_SIG) mc[1]=cidx 41(spawn.SPAWN_STATE) mc[2]=cidx 37(spawn.PRI_POOL) mc[3]=cidx 39(spawn.PROG_POOL)
+  [COMP] spawn.spawn_auto OK len=92
+  [COMP] input.do_submit OK len=72
+  [COMP] input.mechbind_match OK len=80
+  [HAM] Compiling spawn.recycle_priorities mc[1]=cidx 38(spawn.PRI_USED)
+  [COMP] spawn.recycle_priorities OK len=33
+  [COMP] input.keybind_route OK len=88
+  [COMP] world.npc_wander_w OK len=192
+  [COMP] world.npc_wander_n OK len=192
+  [COMP] input.textcmd_match OK len=55
+  [COMP] world.npc_wander_s OK len=192
+  [COMP] world.npc_wander_e OK len=192
+  [COMP] input.append_char OK len=81
+  [HAM] Compiling spawn.recycle_programs mc[1]=cidx 40(spawn.PROG_USED)
+  [COMP] spawn.recycle_programs OK len=33
+  [COMP] editor.type_char OK len=102
+  [COMP] editor.backspace OK len=119
+  [COMP] input.delete_last OK len=86
+  [COMP] world.npc_blocked_2 OK len=64
+  [COMP] world.npc_blocked_3 OK len=64
+  [COMP] input.textarg_match OK len=55
+  [COMP] world.npc_blocked_0 OK len=64
+  [COMP] world.npc_blocked_1 OK len=64
+  [COMP] input.swap_to_rr OK len=67
+  [COMP] input.swap_to_pri OK len=67
+  [COMP] proc.timer_tick OK len=41
+  [COMP] tm_carry OK len=93
+  [COMP] shell.do_kill OK len=60
+  [COMP] shell.do_block OK len=60
+  [COMP] shell.do_unblock OK len=47
+  [COMP] shell.do_load OK len=49
+  [COMP] shell.do_swap OK len=50
+  [COMP] shell.do_list OK len=50
+  [COMP] shell.do_help OK len=50
+  [COMP] shell.do_spawn OK len=50
+  [COMP] tm_flip OK len=88
+  [COMP] input.key_overflow OK len=41
+  [COMP] editor.key_overflow OK len=41
+  [COMP] input.clear_char OK len=59
+  [COMP] ipc.do_send OK len=39
+  [COMP] proc.preempt_expired OK len=44
+  [COMP] tm_consume OK len=22
+  [COMP] mem.do_free OK len=42
+  [COMP] world.move_west OK len=169
+  [COMP] world.do_gather OK len=76
+  [COMP] world.move_north OK len=169
+  [COMP] world.move_south OK len=169
+  [COMP] world.move_east OK len=169
+  [COMP] fs.do_open OK len=42
+  [COMP] fs.do_close OK len=42
+  [COMP] ipc.do_recv OK len=41
+  [COMP] mem.do_alloc OK len=42
+  [COMP] tm_reset OK len=47
+  [COMP] input.clear_done OK len=49
+  [COMP] proc.schedule_ready OK len=35
+  [COMP] ipc.react_to_msg OK len=44
+  [COMP] display.sync_running OK len=63
+  [COMP] display.sync_ready OK len=63
+  [COMP] display.sync_blocked OK len=63
+  [COMP] display.sync_terminated OK len=63
+  [COMP] display.click_panel OK len=107
+  [COMP] world.cleanup_gather OK len=22
+  [COMP] world.cleanup_move OK len=22
+  [COMP] display.click_select_ready OK len=107
+  [COMP] display.click_select_blocked OK len=107
+  [COMP] display.click_select_terminated OK len=107
+  [COMP] display.click_select_cpu0 OK len=107
+  [COMP] input.cleanup_detect OK len=44
+  [COMP] display.click_miss OK len=22
+  [COMP] input.key_miss OK len=22
+  [COMP] shell.cmd_miss OK len=37
+  [COMP] world.npc_reset_moved OK len=38
+[HAM] eval=77/231
+  Shell control entity found (id=44)
+  Spawn control entity found (id=45)
+  Display control entity found (id=18)
+  timer_interval=300 buffer_capacity=20
+  Game control entity found (id=87)
+  Player entity found (id=88)
+Starting interactive mode
+[DISK] no slave drive detected
+[NET] E1000 found slot=3 BAR0=-21233664 IRQ=11
+[NET] MMIO mapped
+[NET] PCI cmd: before=263 after=263
+[NET] MAC=82:84:0:18:52:86 IRQ=11 initialized
+[NET] STATUS=-2146957437
+[NET] RCTL=67141658
+[NET] RDBAL=3956784
+[NET] RDLEN=512
+[NET] RDH=0
+[NET] RDT=31
+[NET] expected_RDBAL=3956784
+  Mouse initialized (IRQ12)
+[ARP] request: who has 10.0.2.2?
+[HAM] eval=103/462
+[TIMER] t1 ops=29 [server]->[client]
+[BUFFER] count=0/20
+[HAM] eval=101/462
+[TIMER] t2 ops=29 [client]->[server]
+[BUFFER] count=0/20
+[HAM] eval=101/462
+[TIMER] t3 ops=29 [server]->[client]
+[BUFFER] count=0/20
+[HAM] eval=101/462
+[TIMER] t4 ops=29 [client]->[server]
+[BUFFER] count=0/20

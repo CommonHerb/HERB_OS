@@ -1,0 +1,110 @@
+# Common Herb Combat - Simple Version
+#
+# This version avoids the Phase 1/2 conflict by computing
+# effective stats directly without intermediate aggregation.
+# Uses FUNCTIONAL declarations for single-valued relations.
+
+# === DECLARATIONS ===
+# hp and gold are single-valued — new values auto-retract old ones
+FUNCTIONAL hp
+FUNCTIONAL gold
+
+# === COMBATANTS ===
+
+FACT hero is_a player
+FACT hero is_a combatant
+FACT hero hp 100
+FACT hero attack 35
+FACT hero defense 15
+FACT hero location forest
+FACT hero gold 50
+
+FACT goblin is_a monster
+FACT goblin is_a combatant
+FACT goblin hp 30
+FACT goblin attack 12
+FACT goblin defense 3
+FACT goblin location forest
+FACT goblin loot_gold 15
+
+FACT wolf is_a monster
+FACT wolf is_a combatant
+FACT wolf hp 20
+FACT wolf attack 8
+FACT wolf defense 2
+FACT wolf location forest
+FACT wolf loot_gold 8
+
+# Skeleton is already dead
+FACT skeleton is_a monster
+FACT skeleton is_a combatant
+FACT skeleton hp 0
+FACT skeleton attack 15
+FACT skeleton defense 5
+FACT skeleton location forest
+FACT skeleton loot_gold 25
+FACT skeleton is_dead true
+
+# === RULES ===
+
+# Mark who is alive (positive tracking)
+RULE mark_alive
+  WHEN ?e is_a combatant
+  AND ?e hp ?hp
+  IF (> ?hp 0)
+  THEN ?e is_alive true
+
+# Player targets monsters
+RULE player_targets_monster
+  WHEN ?p is_a player
+  AND ?m is_a monster
+  AND ?p location ?loc
+  AND ?m location ?loc
+  AND ?p is_alive true
+  AND ?m is_alive true
+  THEN ?p can_attack ?m
+
+# Monster targets players
+RULE monster_targets_player
+  WHEN ?m is_a monster
+  AND ?p is_a player
+  AND ?m location ?loc
+  AND ?p location ?loc
+  AND ?m is_alive true
+  AND ?p is_alive true
+  THEN ?m can_attack ?p
+
+# Calculate and apply damage in one rule
+# Damage = attacker's attack - defender's defense (min 1)
+# hp is FUNCTIONAL — new value auto-retracts old
+# IMPORTANT: Must RETRACT can_attack to prevent infinite loop
+RULE combat_damage
+  WHEN ?a can_attack ?d
+  AND ?a attack ?atk
+  AND ?d defense ?def
+  AND ?d hp ?old_hp
+  IF (> ?old_hp 0)
+  THEN ?d hp (max 0 (- ?old_hp (max 1 (- ?atk ?def))))
+  RETRACT ?a can_attack ?d
+
+# Check for death
+RULE death_check
+  WHEN ?e is_a combatant
+  AND ?e hp ?hp
+  AND ?e is_alive true
+  IF (<= ?hp 0)
+  THEN ?e is_dead true
+  RETRACT ?e is_alive true
+
+# Loot drop (when monster dies, player gets gold)
+# gold is FUNCTIONAL — new value auto-retracts old
+RULE loot_drop
+  WHEN ?m is_a monster
+  AND ?m is_dead true
+  AND ?m loot_gold ?loot
+  AND ?p is_a player
+  AND ?p location ?loc
+  AND ?m location ?loc
+  AND ?p gold ?current
+  THEN ?p gold (+ ?current ?loot)
+  RETRACT ?m loot_gold ?loot

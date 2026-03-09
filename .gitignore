@@ -32,9 +32,6 @@ test_serial.log
 # Local IDE/editor config
 .claude/settings.local.json
 
-# Documentation (kept local only)
-*.md
-
 # OS junk
 .DS_Store
 Thumbs.db
