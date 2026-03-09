@@ -26,6 +26,15 @@ global net_gateway_ip
 global net_bar0
 global ip_send
 global icmp_send_echo
+global udp_send
+global udp_register_listener
+global dns_resolve
+global dns_result_ip
+global dns_resolved_flag
+global dns_pending
+global tcp_connect
+global tcp_state
+global tcp_established
 
 ; ============================================================
 ; EXTERNS
@@ -34,6 +43,7 @@ extern hw_pci_read          ; herb_hw.asm: (bus=CL, slot=DL, func=R8B, offset=R9
 extern serial_print         ; herb_hw.asm: (RCX=str)
 extern herb_snprintf        ; herb_freestanding.asm
 extern herb_memset          ; herb_freestanding.asm
+extern herb_strcmp           ; herb_freestanding.asm
 extern ping_pending         ; herb_kernel.asm: cleared when reply received
 extern ping_tick            ; herb_kernel.asm: tick when ping was sent
 extern timer_count          ; herb_kernel.asm: current tick count
@@ -559,6 +569,11 @@ net_init:
     mov dword [rel net_our_ip], 0x0F02000A      ; 10.0.2.15
     mov dword [rel net_gateway_ip], 0x0202000A   ; 10.0.2.2
     mov dword [rel net_subnet_mask], 0x00FFFFFF  ; 255.255.255.0
+
+    ; Register DNS UDP listener on port DNS_SRC_PORT
+    mov ecx, DNS_SRC_PORT           ; 4444
+    lea rdx, [rel dns_handle_response]
+    call udp_register_listener
 
     ; Return IRQ number in EAX for IDT setup
     mov eax, [rel net_irq]
@@ -1678,13 +1693,32 @@ ip_handle_packet:
 
     ; Dispatch by protocol
     cmp esi, 1                      ; ICMP?
-    jne .ip_handle_done
+    jne .not_icmp
 
     ; icmp_handle(RSI=frame_ptr, ECX=frame_len, EDX=src_ip)
     mov rsi, r12
     mov ecx, r13d
     mov edx, [rsp+48]              ; src_ip from stack slot
     call icmp_handle
+    jmp .ip_handle_done
+
+.not_icmp:
+    cmp esi, 6                      ; TCP?
+    jne .not_tcp
+    mov rsi, r12
+    mov ecx, r13d
+    mov edx, [rsp+48]              ; src_ip from stack slot
+    call tcp_handle_packet
+    jmp .ip_handle_done
+.not_tcp:
+    cmp esi, 17                     ; UDP?
+    jne .ip_handle_done
+
+    ; udp_handle_packet(RSI=frame_ptr, ECX=frame_len, EDX=src_ip)
+    mov rsi, r12
+    mov ecx, r13d
+    mov edx, [rsp+48]              ; src_ip from stack slot
+    call udp_handle_packet
 
 .ip_handle_done:
     add rsp, 56
@@ -1972,6 +2006,1265 @@ icmp_send_reply:
     ret
 
 ; ============================================================
+; udp_handle_packet(RSI=frame_ptr, ECX=frame_len, EDX=src_ip)
+; Parse UDP header and dispatch by destination port
+; ============================================================
+udp_handle_packet:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    sub rsp, 48                     ; shadow(32) + 16(locals)
+    ; 8(ret)+8(rbp)+48(push)+48(sub)=112, 112%16=0 ✓
+
+    mov r12, rsi                    ; frame_ptr
+    mov r13d, ecx                   ; frame_len
+    mov [rsp+44], edx               ; src_ip at [rsp+44]
+
+    ; UDP header starts at 14 (eth) + IHL*4 (typically 20) = 34
+    movzx eax, byte [r12 + 14]     ; version_ihl
+    and eax, 0x0F                   ; IHL
+    shl eax, 2                      ; IHL * 4
+    add eax, 14                     ; + ethernet header
+    mov ebx, eax                    ; ebx = udp_offset
+
+    ; Bounds check: need at least 8 bytes for UDP header
+    lea ecx, [ebx + 8]
+    cmp ecx, r13d
+    ja .udp_rx_done
+
+    ; Parse UDP header (big-endian)
+    ; src_port at [frame + udp_offset + 0..1]
+    movzx r14d, byte [r12 + rbx]
+    shl r14d, 8
+    movzx eax, byte [r12 + rbx + 1]
+    or r14d, eax                    ; r14d = src_port
+
+    ; dst_port at [frame + udp_offset + 2..3]
+    movzx edi, byte [r12 + rbx + 2]
+    shl edi, 8
+    movzx eax, byte [r12 + rbx + 3]
+    or edi, eax                     ; edi = dst_port
+
+    ; length at [frame + udp_offset + 4..5]
+    movzx eax, byte [r12 + rbx + 4]
+    shl eax, 8
+    movzx ecx, byte [r12 + rbx + 5]
+    or eax, ecx                     ; eax = udp_length (header + payload)
+
+    ; payload_len = udp_length - 8
+    mov ecx, eax
+    sub ecx, 8
+    jb .udp_rx_done                 ; malformed if length < 8
+
+    ; Serial log: [UDP] from X.X.X.X:N -> port N
+    ; NOTE: net_format_ip clobbers rdi, so dst_port in edi is lost.
+    ; We re-parse dst_port from the packet below for both logging and dispatch.
+
+    lea rdi, [rel net_fmt_scratch]
+    mov ecx, [rsp+44]              ; src_ip
+    call net_format_ip
+
+    ; Re-parse dst_port from packet for snprintf (edi was clobbered)
+    movzx eax, byte [r12 + rbx + 2]
+    shl eax, 8
+    movzx ecx, byte [r12 + rbx + 3]
+    or eax, ecx                     ; eax = dst_port
+
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_udp_rx_fmt]
+    lea r9, [rel net_fmt_scratch]   ; IP string
+    mov esi, eax                    ; save dst_port in esi (callee-saved, free here)
+    mov eax, r14d                   ; src_port
+    mov [rsp+32], rax
+    movzx eax, si                   ; dst_port
+    mov [rsp+40], rax
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
+    call serial_print
+
+    ; esi = dst_port (preserved across calls)
+    mov edi, esi                    ; restore for dispatch
+
+    ; Dispatch: recalculate payload_ptr and payload_len from preserved regs
+    ; r12=frame, ebx=udp_offset, r14d=src_port, edi=dst_port
+    lea r9, [r12 + rbx + 8]        ; payload_ptr
+
+    ; Recalculate payload_len from UDP length field
+    movzx eax, byte [r12 + rbx + 4]
+    shl eax, 8
+    movzx ecx, byte [r12 + rbx + 5]
+    or eax, ecx
+    sub eax, 8                      ; payload_len
+    mov [rsp+32], rax               ; 5th arg = payload_len
+
+    mov ecx, edi                    ; dst_port
+    mov edx, [rsp+44]              ; src_ip
+    mov r8d, r14d                   ; src_port
+    ; r9 = payload_ptr (set above)
+    call udp_dispatch
+
+.udp_rx_done:
+    add rsp, 48
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; udp_dispatch(ECX=dst_port, EDX=src_ip, R8D=src_port, R9=payload_ptr,
+;              [rsp+32]=payload_len)
+; Scan listener table, call matching handler
+; Handler signature: handler(RCX=src_ip, EDX=src_port, R8=payload_ptr, R9D=payload_len)
+; ============================================================
+udp_dispatch:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    sub rsp, 56                     ; shadow(32) + 24(locals)
+    ; 8(ret)+8(rbp)+24(push)+56(sub)=96, 96%16=0 ✓
+
+    ; Save args — NO overlapping slots (Discovery 68)
+    mov ebx, ecx                    ; dst_port
+    mov esi, edx                    ; src_ip
+    mov edi, r8d                    ; src_port
+    mov [rsp+32], r9                ; payload_ptr (8 bytes at [32..39])
+    mov rax, [rbp+48]              ; 5th arg = payload_len (caller's [rsp+32])
+    mov [rsp+48], eax               ; payload_len (4 bytes at [48..51]) — no overlap
+
+    ; Scan listener table
+    lea rcx, [rel udp_listener_ports]
+    xor edx, edx                    ; i = 0
+.udp_scan:
+    cmp edx, UDP_MAX_LISTENERS
+    jge .udp_no_listener
+
+    movzx eax, word [rcx + rdx*2]
+    cmp eax, ebx                    ; match dst_port?
+    je .udp_found
+    inc edx
+    jmp .udp_scan
+
+.udp_found:
+    ; Call handler(RCX=src_ip, EDX=src_port, R8=payload_ptr, R9D=payload_len)
+    lea rax, [rel udp_listener_funcs]
+    mov rax, [rax + rdx*8]
+    test rax, rax
+    jz .udp_no_listener
+
+    mov ecx, esi                    ; src_ip
+    mov edx, edi                    ; src_port
+    mov r8, [rsp+32]               ; payload_ptr
+    mov r9d, [rsp+48]              ; payload_len
+    call rax
+    jmp .udp_dispatch_done
+
+.udp_no_listener:
+    ; Serial: [UDP] no listener on port N
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_udp_no_listener]
+    mov r9d, ebx                    ; dst_port
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
+    call serial_print
+
+.udp_dispatch_done:
+    add rsp, 56
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; udp_register_listener(ECX=port, RDX=handler_fn)
+; Register a UDP port listener. Returns 0=ok, -1=full.
+; ============================================================
+udp_register_listener:
+    push rbx
+    lea r8, [rel udp_listener_ports]
+    lea r9, [rel udp_listener_funcs]
+    xor eax, eax                    ; i = 0
+.url_scan:
+    cmp eax, UDP_MAX_LISTENERS
+    jge .url_full
+
+    movzx ebx, word [r8 + rax*2]
+    test ebx, ebx                   ; port == 0 means empty
+    jz .url_store
+    inc eax
+    jmp .url_scan
+
+.url_store:
+    mov [r8 + rax*2], cx            ; store port
+    mov [r9 + rax*8], rdx           ; store handler
+    xor eax, eax                    ; return 0
+    pop rbx
+    ret
+
+.url_full:
+    mov eax, -1
+    pop rbx
+    ret
+
+; ============================================================
+; udp_send(RCX=dst_ip, EDX=dst_port, R8D=src_port, R9=payload_ptr,
+;          [rsp+40]=payload_len)
+; Build UDP header + payload, send via ip_send
+; ============================================================
+udp_send:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    sub rsp, 48                     ; shadow(32) + 16(locals)
+    ; 8(ret)+8(rbp)+40(push)+48(sub)=104, 104%16=0 ✓
+
+    mov [rsp+40], ecx               ; dst_ip at [rsp+40]
+    mov r12d, edx                   ; dst_port
+    mov r13d, r8d                   ; src_port
+    mov rsi, r9                     ; payload_ptr
+    mov edi, [rbp+48]              ; payload_len (caller's 5th arg)
+    ; Caller's 5th arg at [rsp+32] before call. After call: ret pushed,
+    ; then push rbp, mov rbp,rsp. So caller's [rsp+32] = [rbp+16+32] = [rbp+48]
+
+    ; Build UDP header in udp_send_buf
+    lea rbx, [rel udp_send_buf]
+
+    ; src_port (big-endian)
+    mov eax, r13d
+    mov [rbx], ah                   ; high byte
+    mov [rbx+1], al                 ; low byte
+
+    ; dst_port (big-endian)
+    mov eax, r12d
+    mov [rbx+2], ah
+    mov [rbx+3], al
+
+    ; length = 8 + payload_len (big-endian)
+    lea eax, [edi + 8]
+    mov [rbx+4], ah
+    mov [rbx+5], al
+
+    ; checksum = 0 (legal per RFC 768 for IPv4)
+    mov word [rbx+6], 0
+
+    ; Copy payload after UDP header
+    test edi, edi
+    jz .udp_send_no_payload
+    xor ecx, ecx
+.udp_copy:
+    cmp ecx, edi
+    jge .udp_send_no_payload
+    movzx eax, byte [rsi + rcx]
+    mov [rbx + rcx + 8], al
+    inc ecx
+    jmp .udp_copy
+.udp_send_no_payload:
+
+    ; ip_send(RCX=dst_ip, EDX=protocol=17, R8=udp_send_buf, R9D=8+payload_len)
+    mov ecx, [rsp+40]              ; dst_ip
+    mov edx, 17                     ; UDP protocol
+    mov r8, rbx                     ; udp_send_buf
+    lea r9d, [edi + 8]             ; total UDP length
+    call ip_send
+
+    ; Serial log: [UDP] sent to X.X.X.X:N len=N
+    ; Save payload_len before net_format_ip clobbers rdi
+    mov r13d, edi                   ; r13d = payload_len (r13 is callee-saved)
+    lea rdi, [rel net_fmt_scratch]
+    mov ecx, [rsp+40]              ; dst_ip
+    call net_format_ip
+
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_udp_sent_fmt]
+    lea r9, [rel net_fmt_scratch]   ; IP string
+    mov eax, r12d                   ; dst_port
+    mov [rsp+32], rax
+    mov eax, r13d                   ; payload_len (saved)
+    mov [rsp+40], rax               ; clobbers saved dst_ip, but we're done with it
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
+    call serial_print
+
+    add rsp, 48
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; dns_encode_name(RCX=domain_str, RDX=output_ptr) -> EAX=bytes_written
+; Converts "example.com" to DNS label format: \x07example\x03com\x00
+; ============================================================
+dns_encode_name:
+    push rbx
+    push rsi
+    push rdi
+    mov rsi, rcx                    ; domain string
+    mov rdi, rdx                    ; output buffer
+    xor ebx, ebx                    ; total bytes written
+
+.den_segment:
+    ; Write placeholder length byte
+    lea rax, [rdi + rbx]            ; length byte position
+    push rax                        ; save it
+    inc ebx                         ; advance past length byte
+    xor ecx, ecx                    ; segment char count
+
+.den_char:
+    movzx eax, byte [rsi]
+    test al, al
+    jz .den_end_segment
+    cmp al, '.'
+    je .den_dot
+
+    ; Copy character
+    mov [rdi + rbx], al
+    inc ebx
+    inc ecx
+    inc rsi
+    jmp .den_char
+
+.den_dot:
+    ; Fill in length byte for this segment
+    pop rax                         ; length byte position
+    mov [rax], cl
+    inc rsi                         ; skip the dot
+    jmp .den_segment
+
+.den_end_segment:
+    ; Fill in length byte for last segment
+    pop rax
+    mov [rax], cl
+    ; Write null terminator
+    mov byte [rdi + rbx], 0
+    inc ebx
+    mov eax, ebx                    ; return total bytes
+
+    pop rdi
+    pop rsi
+    pop rbx
+    ret
+
+; ============================================================
+; dns_build_query(RCX=domain_str, RDX=buffer) -> EAX=query_length
+; Builds a complete DNS query packet
+; ============================================================
+dns_build_query:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    sub rsp, 40                     ; shadow(32) + 8(align)
+    ; 8(ret)+8(rbp)+24(push)+40(sub)=80, 80%16=0 ✓
+
+    mov rsi, rcx                    ; domain string
+    mov rdi, rdx                    ; buffer
+
+    ; Zero the first 12 bytes (DNS header)
+    xor eax, eax
+    mov [rdi], rax                  ; bytes 0-7
+    mov [rdi+8], eax                ; bytes 8-11
+
+    ; Transaction ID: increment counter, store big-endian
+    movzx eax, word [rel dns_txid_counter]
+    inc eax
+    mov [rel dns_txid_counter], ax
+    mov [rel dns_txid], ax          ; save for matching response
+    xchg al, ah                     ; big-endian
+    mov [rdi], ax                   ; txid at [0..1]
+
+    ; Flags: 0x0100 (standard query, RD=1)
+    mov byte [rdi+2], 0x01
+    mov byte [rdi+3], 0x00
+
+    ; QDCOUNT = 1
+    mov byte [rdi+4], 0x00
+    mov byte [rdi+5], 0x01
+
+    ; Encode domain name starting at offset 12
+    mov rcx, rsi                    ; domain string
+    lea rdx, [rdi + 12]            ; output = buf+12
+    call dns_encode_name
+    mov ebx, eax                    ; name_len
+
+    ; After encoded name: QTYPE=1 (A record), QCLASS=1 (IN)
+    lea eax, [ebx + 12]            ; offset after name
+    mov byte [rdi + rax], 0x00
+    mov byte [rdi + rax + 1], 0x01  ; QTYPE=1
+    mov byte [rdi + rax + 2], 0x00
+    mov byte [rdi + rax + 3], 0x01  ; QCLASS=1
+
+    ; Total length = 12 + name_len + 4
+    lea eax, [ebx + 16]
+
+    add rsp, 40
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; dns_cache_lookup(RCX=domain_str) -> EAX=ip (0 if not found)
+; Linear scan of DNS cache
+; ============================================================
+dns_cache_lookup:
+    push rbx
+    push rsi
+    push rdi
+    sub rsp, 32                     ; shadow
+    ; 8(ret)+24(push)+32(sub)=64, 64%16=0 ✓
+
+    mov rsi, rcx                    ; domain to look up
+    lea rdi, [rel dns_cache_names]
+    xor ebx, ebx                    ; i = 0
+
+.dcl_loop:
+    cmp ebx, DNS_CACHE_SIZE
+    jge .dcl_not_found
+
+    ; Compare domain with cache entry
+    mov rcx, rsi                    ; domain string
+    mov eax, ebx
+    shl eax, 6                      ; i * 64
+    lea rdx, [rdi + rax]           ; cache entry
+
+    ; Check if entry is non-empty
+    cmp byte [rdx], 0
+    je .dcl_next
+
+    call herb_strcmp
+    test eax, eax
+    jz .dcl_found
+
+.dcl_next:
+    inc ebx
+    jmp .dcl_loop
+
+.dcl_found:
+    lea rax, [rel dns_cache_ips]
+    mov eax, [rax + rbx*4]
+
+    add rsp, 32
+    pop rdi
+    pop rsi
+    pop rbx
+    ret
+
+.dcl_not_found:
+    xor eax, eax
+
+    add rsp, 32
+    pop rdi
+    pop rsi
+    pop rbx
+    ret
+
+; ============================================================
+; dns_cache_insert(RCX=domain_str, EDX=ip)
+; Insert into circular DNS cache
+; ============================================================
+dns_cache_insert:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    sub rsp, 32                     ; shadow
+    ; 8(ret)+8(rbp)+32(push)+32(sub)=80, 80%16=0 ✓
+
+    mov rsi, rcx                    ; domain string
+    mov r12d, edx                   ; IP (saved in callee-saved r12)
+
+    ; Compute slot = dns_cache_count % DNS_CACHE_SIZE
+    mov eax, [rel dns_cache_count]
+    and eax, (DNS_CACHE_SIZE - 1)   ; mod 8
+    mov ebx, eax                    ; slot index
+
+    ; Compute dest pointer: dns_cache_names + slot*64
+    lea rdi, [rel dns_cache_names]
+    mov eax, ebx
+    shl eax, 6                      ; slot * 64
+    add rdi, rax                    ; rdi = dest (callee-saved, safe across calls)
+
+    ; Copy string byte by byte (up to 63 chars)
+    xor ecx, ecx
+.dci_copy:
+    cmp ecx, 63
+    jge .dci_copy_done
+    movzx eax, byte [rsi + rcx]
+    mov [rdi + rcx], al
+    test al, al
+    jz .dci_copy_done
+    inc ecx
+    jmp .dci_copy
+.dci_copy_done:
+    mov byte [rdi + rcx], 0         ; ensure null-terminated
+
+    ; Store IP
+    lea rax, [rel dns_cache_ips]
+    mov [rax + rbx*4], r12d
+
+    ; Increment cache count
+    inc dword [rel dns_cache_count]
+
+    add rsp, 32
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; dns_resolve(RCX=domain_str) -> void
+; Send DNS query (non-blocking). Response arrives via UDP listener.
+; ============================================================
+dns_resolve:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    sub rsp, 40                     ; shadow(32) + 8(align)
+    ; 8(ret)+8(rbp)+24(push)+40(sub)=80, 80%16=0 ✓
+
+    mov rsi, rcx                    ; domain string
+
+    ; Check DNS cache first
+    ; rcx already = domain_str
+    call dns_cache_lookup
+    test eax, eax
+    jz .dns_cache_miss
+
+    ; Cache hit — store result and log
+    mov [rel dns_result_ip], eax
+    mov dword [rel dns_resolved_flag], 1
+    mov ebx, eax                    ; save IP
+
+    ; Format IP for log
+    lea rdi, [rel net_fmt_scratch]
+    mov ecx, ebx
+    call net_format_ip
+
+    ; Serial: [DNS] cached: <domain> -> X.X.X.X
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_dns_cached_fmt]
+    mov r9, rsi                     ; domain name
+    lea rax, [rel net_fmt_scratch]
+    mov [rsp+32], rax               ; 5th arg = IP string
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
+    call serial_print
+    jmp .dns_resolve_done
+
+.dns_cache_miss:
+    ; Copy domain name for response handler logging
+    lea rdi, [rel dns_query_name]
+    xor ecx, ecx
+.dns_copy_name:
+    cmp ecx, 63
+    jge .dns_copy_name_done
+    movzx eax, byte [rsi + rcx]
+    mov [rdi + rcx], al
+    test al, al
+    jz .dns_copy_name_done
+    inc ecx
+    jmp .dns_copy_name
+.dns_copy_name_done:
+    mov byte [rdi + rcx], 0
+
+    ; Build DNS query
+    mov rcx, rsi                    ; domain string
+    lea rdx, [rel dns_query_buf]
+    call dns_build_query
+    mov ebx, eax                    ; query_len
+
+    ; Set pending state
+    mov dword [rel dns_pending], 1
+    mov dword [rel dns_resolved_flag], 0
+
+    ; Send via UDP: udp_send(dst_ip, dst_port=53, src_port=DNS_SRC_PORT, payload, len)
+    mov ecx, [rel dns_server_ip]    ; 10.0.2.3
+    mov edx, 53                     ; DNS port
+    mov r8d, DNS_SRC_PORT           ; 4444
+    lea r9, [rel dns_query_buf]
+    mov [rsp+32], ebx               ; payload_len (on stack as 5th arg)
+    call udp_send
+
+    ; Serial: [DNS] query: <domain>
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_dns_query_fmt]
+    lea r9, [rel dns_query_name]
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
+    call serial_print
+
+.dns_resolve_done:
+    add rsp, 40
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; dns_handle_response(RCX=src_ip, EDX=src_port, R8=payload_ptr, R9D=payload_len)
+; UDP listener callback for DNS responses (port DNS_SRC_PORT)
+; ============================================================
+dns_handle_response:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    sub rsp, 48                     ; shadow(32) + 16(locals)
+    ; 8(ret)+8(rbp)+48(push)+48(sub)=112, 112%16=0 ✓
+
+    mov r12, r8                     ; payload_ptr
+    mov r13d, r9d                   ; payload_len
+
+    ; Verify we're waiting for a response
+    cmp dword [rel dns_pending], 0
+    je .dns_resp_done
+
+    ; Need at least 12 bytes for DNS header
+    cmp r13d, 12
+    jb .dns_resp_done
+
+    ; Check transaction ID
+    movzx eax, byte [r12]
+    shl eax, 8
+    movzx ecx, byte [r12+1]
+    or eax, ecx                     ; txid from response (big-endian)
+    movzx ecx, word [rel dns_txid]
+    cmp eax, ecx
+    jne .dns_resp_done              ; txid mismatch
+
+    ; Check QR bit (byte[2] bit 7 must be 1 = response)
+    test byte [r12+2], 0x80
+    jz .dns_resp_done
+
+    ; Check RCODE (byte[3] low nibble must be 0 = no error)
+    movzx eax, byte [r12+3]
+    and eax, 0x0F
+    test eax, eax
+    jnz .dns_resp_rcode_error
+
+    ; Read ANCOUNT at [6..7] (big-endian)
+    movzx eax, byte [r12+6]
+    shl eax, 8
+    movzx ecx, byte [r12+7]
+    or eax, ecx
+    test eax, eax
+    jz .dns_resp_no_answer          ; ancount == 0
+
+    mov r14d, eax                   ; r14d = ancount
+
+    ; Skip question section (starts at offset 12)
+    mov ebx, 12                     ; ebx = current offset
+
+    ; Skip QNAME labels
+.dns_skip_qname:
+    cmp ebx, r13d
+    jge .dns_resp_done              ; bounds
+    movzx eax, byte [r12 + rbx]
+    test al, al
+    jz .dns_skip_qname_done         ; null terminator
+    ; Check compression pointer (top 2 bits = 11)
+    cmp al, 0xC0
+    jae .dns_skip_qname_ptr
+    ; Regular label: skip length + that many bytes
+    movzx ecx, al
+    inc ecx                         ; length byte + chars
+    add ebx, ecx
+    jmp .dns_skip_qname
+.dns_skip_qname_ptr:
+    add ebx, 2                     ; compression pointer = 2 bytes
+    jmp .dns_skip_qtype
+.dns_skip_qname_done:
+    inc ebx                         ; skip null byte
+
+.dns_skip_qtype:
+    ; Skip QTYPE (2) + QCLASS (2)
+    add ebx, 4
+
+    ; Now parse answer RRs
+    ; ebx = offset to first answer
+.dns_parse_answer:
+    cmp r14d, 0
+    jle .dns_resp_no_answer         ; no more answers
+    dec r14d
+
+    ; Bounds check
+    lea eax, [ebx + 12]            ; need at least name(2) + type(2) + class(2) + ttl(4) + rdlen(2)
+    cmp eax, r13d
+    jg .dns_resp_done
+
+    ; Skip answer NAME
+    movzx eax, byte [r12 + rbx]
+    cmp al, 0xC0
+    jae .dns_ans_name_ptr
+    ; Regular labels — skip until null
+.dns_ans_name_labels:
+    cmp ebx, r13d
+    jge .dns_resp_done
+    movzx eax, byte [r12 + rbx]
+    test al, al
+    jz .dns_ans_name_null
+    cmp al, 0xC0
+    jae .dns_ans_name_ptr
+    movzx ecx, al
+    inc ecx
+    add ebx, ecx
+    jmp .dns_ans_name_labels
+.dns_ans_name_null:
+    inc ebx                         ; skip null
+    jmp .dns_ans_parse_rr
+.dns_ans_name_ptr:
+    add ebx, 2                     ; compression pointer
+    ; fall through
+
+.dns_ans_parse_rr:
+    ; Bounds check for TYPE(2)+CLASS(2)+TTL(4)+RDLENGTH(2) = 10 bytes
+    lea eax, [ebx + 10]
+    cmp eax, r13d
+    jg .dns_resp_done
+
+    ; TYPE at [ebx+0..1]
+    movzx eax, byte [r12 + rbx]
+    shl eax, 8
+    movzx ecx, byte [r12 + rbx + 1]
+    or eax, ecx                     ; type
+    mov esi, eax                    ; save type
+
+    ; RDLENGTH at [ebx+8..9]
+    movzx eax, byte [r12 + rbx + 8]
+    shl eax, 8
+    movzx ecx, byte [r12 + rbx + 9]
+    or eax, ecx                     ; rdlength
+    mov edi, eax                    ; save rdlength
+
+    ; Check if TYPE == 1 (A record) and RDLENGTH == 4
+    cmp esi, 1
+    jne .dns_ans_skip_rr
+    cmp edi, 4
+    jne .dns_ans_skip_rr
+
+    ; RDATA at [ebx+10..13] = IPv4 address (network byte order = direct copy)
+    lea eax, [ebx + 14]            ; need ebx+10+4
+    cmp eax, r13d
+    jg .dns_resp_done
+    mov eax, [r12 + rbx + 10]      ; 4-byte IP address
+
+    ; Store result
+    mov [rel dns_result_ip], eax
+    mov dword [rel dns_resolved_flag], 1
+    mov dword [rel dns_pending], 0
+    mov ebx, eax                    ; save IP for logging
+
+    ; Cache the result
+    lea rcx, [rel dns_query_name]
+    mov edx, ebx
+    call dns_cache_insert
+
+    ; Format IP for log
+    lea rdi, [rel net_fmt_scratch]
+    mov ecx, ebx
+    call net_format_ip
+
+    ; Serial: [DNS] resolved: <domain> -> X.X.X.X
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_dns_resolved_fmt]
+    lea r9, [rel dns_query_name]
+    lea rax, [rel net_fmt_scratch]
+    mov [rsp+32], rax
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
+    call serial_print
+    jmp .dns_resp_done
+
+.dns_ans_skip_rr:
+    ; Skip this RR: advance by 10 + rdlength
+    add ebx, 10
+    add ebx, edi
+    jmp .dns_parse_answer
+
+.dns_resp_rcode_error:
+    ; Serial: [DNS] error: RCODE=N
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_dns_error]
+    movzx r9d, byte [r12+3]
+    and r9d, 0x0F
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
+    call serial_print
+    mov dword [rel dns_pending], 0
+    jmp .dns_resp_done
+
+.dns_resp_no_answer:
+    lea rcx, [rel str_dns_no_answer]
+    call serial_print
+    mov dword [rel dns_pending], 0
+
+.dns_resp_done:
+    add rsp, 48
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; tcp_checksum(ECX=src_ip_dword, EDX=dst_ip_dword, R8=tcp_ptr, R9D=tcp_len)
+; Build pseudo-header + TCP segment, compute checksum -> AX
+; ============================================================
+tcp_checksum:
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    sub rsp, 40                     ; shadow(32) + 8(align)
+    ; 8(ret)+32(push)+40(sub)=80, 80%16=0 ✓
+
+    mov r12d, r9d                   ; tcp_len
+
+    ; Build 12-byte pseudo-header in tcp_cksum_buf
+    lea rdi, [rel tcp_cksum_buf]
+    ; src_ip (4 bytes, raw memory order = network order)
+    mov [rdi+0], ecx
+    ; dst_ip (4 bytes)
+    mov [rdi+4], edx
+    ; zero + protocol(6) + tcp_len(big-endian)
+    mov byte [rdi+8], 0
+    mov byte [rdi+9], 6
+    mov eax, r12d
+    mov [rdi+10], ah                ; tcp_len high byte
+    mov [rdi+11], al                ; tcp_len low byte
+
+    ; Copy TCP header+payload after pseudo-header
+    xor ecx, ecx
+.tcp_cksum_copy:
+    cmp ecx, r12d
+    jge .tcp_cksum_compute
+    mov al, [r8 + rcx]
+    mov [rdi + 12 + rcx], al
+    inc ecx
+    jmp .tcp_cksum_copy
+.tcp_cksum_compute:
+    ; ip_checksum(tcp_cksum_buf, 12 + tcp_len)
+    lea rcx, [rel tcp_cksum_buf]
+    lea edx, [r12d + 12]
+    call ip_checksum
+    ; result in AX
+
+    add rsp, 40
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    ret
+
+; ============================================================
+; tcp_send_segment(CL=flags, RDX=payload_ptr, R8D=payload_len)
+; Build TCP header + payload, checksum, send via ip_send
+; ============================================================
+tcp_send_segment:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    sub rsp, 48                     ; shadow(32) + 16(locals)
+    ; 8(ret)+8(rbp)+48(push)+48(sub)=112, 112%16=0 ✓
+
+    movzx r12d, cl                  ; flags
+    mov r13, rdx                    ; payload_ptr
+    mov r14d, r8d                   ; payload_len
+
+    ; Build TCP header (20 bytes) in tcp_send_buf
+    lea rbx, [rel tcp_send_buf]
+
+    ; Offset 0-1: local port (big-endian)
+    movzx eax, word [rel tcp_local_port]
+    mov [rbx], ah
+    mov [rbx+1], al
+
+    ; Offset 2-3: remote port (big-endian)
+    movzx eax, word [rel tcp_remote_port]
+    mov [rbx+2], ah
+    mov [rbx+3], al
+
+    ; Offset 4-7: seq_num (big-endian)
+    mov eax, [rel tcp_seq_num]
+    bswap eax
+    mov [rbx+4], eax
+
+    ; Offset 8-11: ack_num (big-endian)
+    mov eax, [rel tcp_ack_num]
+    bswap eax
+    mov [rbx+8], eax
+
+    ; Offset 12: data offset = 5 words (20 bytes), upper 4 bits = 0101
+    mov byte [rbx+12], 0x50
+
+    ; Offset 13: flags
+    mov [rbx+13], r12b
+
+    ; Offset 14-15: window = 8192 (big-endian = 0x20 0x00)
+    mov byte [rbx+14], 0x20
+    mov byte [rbx+15], 0x00
+
+    ; Offset 16-17: checksum = 0 (placeholder)
+    mov word [rbx+16], 0
+
+    ; Offset 18-19: urgent = 0
+    mov word [rbx+18], 0
+
+    ; Copy payload after header if payload_len > 0
+    test r14d, r14d
+    jz .tcp_seg_no_payload
+    xor ecx, ecx
+.tcp_seg_copy:
+    cmp ecx, r14d
+    jge .tcp_seg_no_payload
+    mov al, [r13 + rcx]
+    mov [rbx + 20 + rcx], al
+    inc ecx
+    jmp .tcp_seg_copy
+.tcp_seg_no_payload:
+
+    ; tcp_checksum(src_ip, dst_ip, tcp_send_buf, 20 + payload_len)
+    mov ecx, [rel net_our_ip]
+    mov edx, [rel tcp_remote_ip]
+    mov r8, rbx                     ; tcp_send_buf
+    lea r9d, [r14d + 20]           ; total TCP length
+    call tcp_checksum
+
+    ; Store checksum at offset 16-17
+    lea rbx, [rel tcp_send_buf]
+    mov [rbx+16], ax
+
+    ; ip_send(dst_ip, protocol=6, tcp_send_buf, 20 + payload_len)
+    mov ecx, [rel tcp_remote_ip]
+    mov edx, 6                      ; TCP
+    lea r8, [rel tcp_send_buf]
+    lea r9d, [r14d + 20]
+    call ip_send
+
+    add rsp, 48
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; tcp_connect(ECX=remote_ip, EDX=remote_port)
+; Initiate TCP three-way handshake (send SYN)
+; ============================================================
+tcp_connect:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    sub rsp, 48                     ; shadow(32) + 16(locals)
+    ; 8(ret)+8(rbp)+40(push)+48(sub)=104, 104%16=0 ✓
+
+    ; Store connection params
+    mov [rel tcp_remote_ip], ecx
+    mov [rel tcp_remote_port], dx
+    mov r12d, edx                   ; save remote_port
+
+    ; Pick ephemeral local port: 49152 + (counter++ & 0x3FF)
+    movzx eax, word [rel tcp_local_port_counter]
+    inc word [rel tcp_local_port_counter]
+    and eax, 0x3FF
+    add eax, 49152
+    mov [rel tcp_local_port], ax
+
+    ; Initial sequence number = timer_count
+    mov eax, [rel timer_count]
+    mov [rel tcp_seq_num], eax
+    mov r13d, eax                   ; save ISN for logging
+
+    ; ack_num = 0
+    mov dword [rel tcp_ack_num], 0
+
+    ; Set state
+    mov dword [rel tcp_state], TCP_STATE_SYN_SENT
+    mov dword [rel tcp_established], 0
+
+    ; Send SYN segment
+    mov cl, TCP_SYN                 ; flags
+    xor edx, edx                    ; no payload
+    xor r8d, r8d                    ; payload_len = 0
+    call tcp_send_segment
+
+    ; SYN consumes 1 sequence number
+    inc dword [rel tcp_seq_num]
+
+    ; Serial: [TCP] SYN sent to X.X.X.X:port seq=N
+    mov ebx, [rel tcp_remote_ip]    ; save IP before format call clobbers
+    lea rdi, [rel net_fmt_scratch]
+    mov ecx, ebx
+    call net_format_ip
+
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_tcp_syn_fmt]
+    lea r9, [rel net_fmt_scratch]
+    movzx eax, r12w                 ; remote_port
+    mov [rsp+32], rax
+    mov eax, r13d                   ; ISN
+    mov [rsp+40], rax
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
+    call serial_print
+
+    add rsp, 48
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; tcp_handle_packet(RSI=frame_ptr, ECX=frame_len, EDX=src_ip)
+; Parse TCP header and run state machine
+; ============================================================
+tcp_handle_packet:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    sub rsp, 64                     ; shadow(32) + 32(locals)
+    ; 8(ret)+8(rbp)+48(push)+64(sub)=128, 128%16=0 ✓
+
+    mov r12, rsi                    ; frame_ptr
+    mov r13d, ecx                   ; frame_len
+    mov [rsp+56], edx               ; src_ip at [rsp+56]
+
+    ; TCP header starts at 14 (eth) + IHL*4
+    movzx eax, byte [r12 + 14]     ; version_ihl
+    and eax, 0x0F                   ; IHL
+    shl eax, 2                      ; IHL * 4
+    add eax, 14                     ; + ethernet header
+    mov ebx, eax                    ; ebx = tcp_offset
+
+    ; Bounds check: need at least 20 bytes for TCP header
+    lea ecx, [ebx + 20]
+    cmp ecx, r13d
+    ja .tcp_rx_done
+
+    ; Parse TCP header fields (big-endian)
+    ; src_port at [frame + tcp_offset + 0..1]
+    movzx r14d, byte [r12 + rbx]
+    shl r14d, 8
+    movzx eax, byte [r12 + rbx + 1]
+    or r14d, eax                    ; r14d = src_port
+
+    ; dst_port at [frame + tcp_offset + 2..3]
+    movzx edi, byte [r12 + rbx + 2]
+    shl edi, 8
+    movzx eax, byte [r12 + rbx + 3]
+    or edi, eax                     ; edi = dst_port
+
+    ; seq_num at [frame + tcp_offset + 4..7]
+    mov eax, [r12 + rbx + 4]
+    bswap eax
+    mov [rsp+48], eax               ; peer_seq at [rsp+48]
+
+    ; ack_num at [frame + tcp_offset + 8..11]
+    mov eax, [r12 + rbx + 8]
+    bswap eax
+    mov [rsp+52], eax               ; peer_ack at [rsp+52]
+
+    ; flags at [frame + tcp_offset + 13]
+    movzx esi, byte [r12 + rbx + 13]  ; esi = flags
+
+    ; window at [frame + tcp_offset + 14..15]
+    movzx eax, byte [r12 + rbx + 14]
+    shl eax, 8
+    movzx ecx, byte [r12 + rbx + 15]
+    or eax, ecx                     ; eax = window
+    mov [rsp+44], ax                ; peer_window at [rsp+44]
+
+    ; data_offset (upper 4 bits of byte 12) * 4
+    movzx eax, byte [r12 + rbx + 12]
+    shr eax, 4
+    shl eax, 2                      ; TCP header len
+    ; payload_len = frame_len - tcp_offset - tcp_header_len
+    mov ecx, r13d
+    sub ecx, ebx
+    sub ecx, eax                    ; ecx = TCP payload len
+    jb .tcp_rx_done                 ; negative = malformed
+    mov [rsp+40], ecx               ; payload_len at [rsp+40]
+
+    ; Save dst_port before net_format_ip clobbers edi (Discovery 69)
+    mov r13d, edi                   ; r13d = dst_port (done with frame_len)
+
+    ; Serial log: [TCP] from X.X.X.X:port flags=N
+    ; esi = flags (callee-saved, preserved across calls)
+    mov ecx, [rsp+56]              ; src_ip
+    lea rdi, [rel net_fmt_scratch]
+    call net_format_ip
+
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_tcp_rx_fmt]
+    lea r9, [rel net_fmt_scratch]
+    movzx eax, r14w                 ; src_port
+    mov [rsp+32], rax
+    movzx eax, si                   ; flags
+    mov [rsp+40], rax
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
+    call serial_print
+
+    ; Check dst_port matches our local port
+    movzx eax, word [rel tcp_local_port]
+    cmp r13d, eax
+    jne .tcp_rx_done                ; not for us
+
+    ; State machine dispatch
+    mov eax, [rel tcp_state]
+
+    cmp eax, TCP_STATE_SYN_SENT
+    je .tcp_state_syn_sent
+
+    cmp eax, TCP_STATE_ESTABLISHED
+    je .tcp_state_established
+
+    ; Default: ignore
+    jmp .tcp_rx_done
+
+.tcp_state_syn_sent:
+    ; Check for RST
+    test esi, TCP_RST
+    jnz .tcp_got_rst
+
+    ; Check flags == SYN|ACK (0x12)
+    mov eax, esi
+    and eax, (TCP_SYN | TCP_ACK)
+    cmp eax, (TCP_SYN | TCP_ACK)
+    jne .tcp_rx_done                ; not SYN-ACK, ignore
+
+    ; Verify ack_num == our tcp_seq_num
+    mov eax, [rsp+52]              ; peer_ack
+    cmp eax, [rel tcp_seq_num]
+    jne .tcp_rx_done                ; wrong ack
+
+    ; Store server's seq+1 as our tcp_ack_num
+    mov eax, [rsp+48]              ; peer_seq
+    inc eax
+    mov [rel tcp_ack_num], eax
+
+    ; Store server's window
+    mov ax, [rsp+44]
+    mov [rel tcp_remote_win], ax
+
+    ; Update state
+    mov dword [rel tcp_state], TCP_STATE_ESTABLISHED
+    mov dword [rel tcp_established], 1
+
+    ; Serial: [TCP] SYN-ACK from X.X.X.X seq=N ack=N
+    ; net_fmt_scratch already has formatted IP from above
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_tcp_synack_fmt]
+    lea r9, [rel net_fmt_scratch]
+    mov eax, [rsp+48]              ; peer_seq
+    mov [rsp+32], rax
+    mov eax, [rsp+52]              ; peer_ack
+    mov [rsp+40], rax
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
+    call serial_print
+
+    ; Send ACK to complete handshake
+    mov cl, TCP_ACK
+    xor edx, edx
+    xor r8d, r8d
+    call tcp_send_segment
+
+    ; Serial: [TCP] ACK sent, connection ESTABLISHED
+    lea rcx, [rel str_tcp_ack_fmt]
+    call serial_print
+
+    jmp .tcp_rx_done
+
+.tcp_got_rst:
+    mov dword [rel tcp_state], TCP_STATE_CLOSED
+    mov dword [rel tcp_established], 0
+    lea rcx, [rel str_tcp_rst_fmt]
+    call serial_print
+    jmp .tcp_rx_done
+
+.tcp_state_established:
+    ; For now (Session 87): just log. Data handling in Session 88.
+    jmp .tcp_rx_done
+
+.tcp_rx_done:
+    add rsp, 64
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
 ; DATA — strings
 ; ============================================================
 section .data
@@ -2024,6 +3317,30 @@ str_ping_time_fmt:
     db "[PING] time=%dms", 10, 0
 str_ping_respond_fmt:
     db "[PING] responding to %s", 10, 0
+str_udp_rx_fmt:
+    db "[UDP] from %s:%d -> port %d", 10, 0
+str_udp_sent_fmt:
+    db "[UDP] sent to %s:%d len=%d", 10, 0
+str_udp_no_listener:
+    db "[UDP] no listener on port %d", 10, 0
+str_dns_query_fmt:
+    db "[DNS] query: %s", 10, 0
+str_dns_resolved_fmt:
+    db "[DNS] resolved: %s -> %s", 10, 0
+str_dns_error:
+    db "[DNS] error: RCODE=%d", 10, 0
+str_dns_no_answer:
+    db "[DNS] no answer", 10, 0
+str_dns_cached_fmt:
+    db "[DNS] cached: %s -> %s", 10, 0
+str_tcp_syn_fmt:    db "[TCP] SYN sent to %s:%d seq=%d", 10, 0
+str_tcp_synack_fmt: db "[TCP] SYN-ACK from %s seq=%d ack=%d", 10, 0
+str_tcp_ack_fmt:    db "[TCP] ACK sent, connection ESTABLISHED", 10, 0
+str_tcp_rst_fmt:    db "[TCP] connection refused (RST)", 10, 0
+str_tcp_rx_fmt:     db "[TCP] from %s:%d flags=%d", 10, 0
+
+dns_server_ip:
+    dd 0x0302000A               ; 10.0.2.3 in little-endian
 
 ; ============================================================
 ; BSS
@@ -2068,3 +3385,48 @@ icmp_reply_buf: resb 128                    ; ICMP echo reply build buffer
 
 ; Scratch buffer for formatting
 net_fmt_scratch: resb 64
+
+; UDP
+UDP_MAX_LISTENERS equ 8
+udp_send_buf:       resb 1480           ; max UDP in single Ethernet frame
+udp_listener_ports: resw UDP_MAX_LISTENERS ; port numbers (0=empty)
+udp_listener_funcs: resq UDP_MAX_LISTENERS ; handler function pointers
+
+; DNS
+DNS_CACHE_SIZE equ 8
+DNS_SRC_PORT   equ 4444
+
+dns_query_buf:      resb 256        ; outgoing DNS query buffer
+dns_pending:        resd 1          ; 1 = waiting for response
+dns_txid:           resw 1          ; current transaction ID
+dns_txid_counter:   resw 1          ; incrementing counter
+dns_result_ip:      resd 1          ; resolved IP (filled by response handler)
+dns_resolved_flag:  resd 1          ; 1 = resolution complete
+dns_query_name:     resb 64         ; copy of queried domain name (for logging)
+
+; DNS cache (8 entries)
+dns_cache_names:    resb 512        ; 8 * 64 bytes — domain name strings
+dns_cache_ips:      resd 8          ; 8 * 4 bytes — resolved IP addresses
+dns_cache_count:    resd 1          ; number of valid entries (circular insert)
+
+; TCP (single connection)
+TCP_STATE_CLOSED      equ 0
+TCP_STATE_SYN_SENT    equ 1
+TCP_STATE_ESTABLISHED equ 2
+
+TCP_FIN equ 0x01
+TCP_SYN equ 0x02
+TCP_RST equ 0x04
+TCP_ACK equ 0x10
+
+tcp_state:              resd 1      ; current state (TCP_STATE_*)
+tcp_local_port:         resw 1      ; our ephemeral port
+tcp_remote_port:        resw 1      ; server port (e.g. 80)
+tcp_remote_ip:          resd 1      ; server IP
+tcp_seq_num:            resd 1      ; our next sequence number
+tcp_ack_num:            resd 1      ; next expected byte from server
+tcp_remote_win:         resw 1      ; server's advertised window
+tcp_local_port_counter: resw 1      ; incrementing ephemeral port counter
+tcp_established:        resd 1      ; 1 = connection established (for kernel to check)
+tcp_send_buf:           resb 1500   ; TCP segment build buffer
+tcp_cksum_buf:          resb 1540   ; pseudo-header + segment for checksum

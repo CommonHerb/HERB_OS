@@ -1492,6 +1492,15 @@ entity tcmd_eload input.TextCmd in input.TEXTCMD
 entity tcmd_ping input.TextCmd in input.TEXTCMD
   prop text_key 28777
   prop cmd_id 17
+entity tcmd_udp input.TextCmd in input.TEXTCMD
+  prop text_key 30052
+  prop cmd_id 18
+entity tcmd_dns input.TextCmd in input.TEXTCMD
+  prop text_key 25710
+  prop cmd_id 19
+entity tcmd_connect input.TextCmd in input.TEXTCMD
+  prop text_key 25455
+  prop cmd_id 20
 entity help_edit display.HelpCmd in display.HELP_TEXT
   prop order 11
   prop cmd_text "edit"
@@ -1501,6 +1510,18 @@ entity help_esave display.HelpCmd in display.HELP_TEXT
 entity help_eload display.HelpCmd in display.HELP_TEXT
   prop order 13
   prop cmd_text "eload <name>"
+entity help_ping display.HelpCmd in display.HELP_TEXT
+  prop order 14
+  prop cmd_text "ping"
+entity help_udp display.HelpCmd in display.HELP_TEXT
+  prop order 15
+  prop cmd_text "udp"
+entity help_dns display.HelpCmd in display.HELP_TEXT
+  prop order 16
+  prop cmd_text "dns <domain>"
+entity help_connect display.HelpCmd in display.HELP_TEXT
+  prop order 17
+  prop cmd_text "connect"
 entity editor_ctl editor.EditorCtl in editor.CTL
   prop mode 0
   prop cursor_pos 0

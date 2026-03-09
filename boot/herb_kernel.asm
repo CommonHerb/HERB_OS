@@ -95,6 +95,14 @@ extern net_resolve_gateway
 extern icmp_send_echo
 extern net_gateway_ip
 extern arp_cache_lookup
+extern udp_send
+extern dns_resolve
+extern dns_result_ip
+extern dns_resolved_flag
+extern dns_pending
+extern tcp_connect
+extern tcp_state
+extern tcp_established
 
 ; Disk + filesystem (from herb_disk.asm)
 extern disk_identify
@@ -389,6 +397,9 @@ ping_pending:       dd 0
 ping_seq:           dd 0
 ping_tick:          dd 0
 ping_auto_sent:     dd 0
+udp_auto_sent:      dd 0
+dns_auto_sent:      dd 0
+tcp_auto_sent:      dd 0
 total_ops:          dd 0
 signal_counter:     dd 0
 process_counter:    dd 0
@@ -946,6 +957,11 @@ str_la_unknown_key: db "Unknown key (scan=0x%d)", 0
 str_la_move:        db "Move %s -> (%d,%d)", 0
 str_la_move_block:  db "Blocked %s at (%d,%d)", 0
 str_la_ping:        db "Ping seq=%d", 0
+str_la_udp:         db "UDP sent to gw:7777", 0
+str_udp_payload:    db "HERB", 0
+str_la_dns:         db "dns %s", 0
+str_dns_domain:     db "example.com", 0
+str_la_connect:     db "TCP connect %s:80", 0
 str_la_gather_yes:  db "Gathered! wood=%d", 0
 str_la_gather_no:   db "Nothing here (wood=%d)", 0
 str_la_timer:       db "Timer signal %s -> %d ops", 0
@@ -2929,6 +2945,63 @@ kernel_main:
     mov edx, 1                      ; seq=1
     call icmp_send_echo
 .no_auto_ping:
+
+    ; ---- Auto-UDP test after auto-ping (tick >= 20) ----
+    cmp dword [rel net_present], 0
+    je .no_auto_udp
+    cmp dword [rel udp_auto_sent], 0
+    jne .no_auto_udp
+    mov eax, [rel timer_count]
+    cmp eax, 20
+    jb .no_auto_udp
+    ; Verify gateway MAC is cached
+    mov ecx, [rel net_gateway_ip]
+    call arp_cache_lookup
+    test rax, rax
+    jz .no_auto_udp
+    mov dword [rel udp_auto_sent], 1
+    ; udp_send(RCX=dst_ip, EDX=dst_port, R8D=src_port, R9=payload, [rsp+32]=len)
+    mov ecx, [rel net_gateway_ip]
+    mov edx, 7777
+    mov r8d, 4444
+    lea r9, [rel str_udp_payload]
+    mov dword [rsp+32], 4
+    call udp_send
+.no_auto_udp:
+
+    ; ---- Auto-DNS resolve (tick >= 25) ----
+    cmp dword [rel net_present], 0
+    je .no_auto_dns
+    cmp dword [rel dns_auto_sent], 0
+    jne .no_auto_dns
+    mov eax, [rel timer_count]
+    cmp eax, 25
+    jb .no_auto_dns
+    mov ecx, [rel net_gateway_ip]
+    call arp_cache_lookup
+    test rax, rax
+    jz .no_auto_dns
+    mov dword [rel dns_auto_sent], 1
+    lea rcx, [rel str_dns_domain]   ; "example.com"
+    call dns_resolve
+.no_auto_dns:
+
+    ; ---- Auto-TCP connect (tick >= 30) ----
+    cmp dword [rel net_present], 0
+    je .no_auto_tcp
+    cmp dword [rel tcp_auto_sent], 0
+    jne .no_auto_tcp
+    mov eax, [rel timer_count]
+    cmp eax, 30
+    jb .no_auto_tcp
+    ; Need DNS resolved first
+    cmp dword [rel dns_resolved_flag], 0
+    je .no_auto_tcp
+    mov dword [rel tcp_auto_sent], 1
+    mov ecx, [rel dns_result_ip]
+    mov edx, 80
+    call tcp_connect
+.no_auto_tcp:
 
     jmp .mainloop
 
@@ -5437,6 +5510,12 @@ post_dispatch:
     je .pd_eload
     cmp r12d, 17
     je .pd_ping
+    cmp r12d, 18
+    je .pd_udp
+    cmp r12d, 19
+    je .pd_dns
+    cmp r12d, 20
+    je .pd_connect
     jmp .pd_report
 
 .pd_kill:
@@ -6217,6 +6296,74 @@ post_dispatch:
     mov edx, 80
     lea r8, [rel str_la_ping]
     mov r9d, [rel ping_seq]
+    call herb_snprintf
+    jmp .pd_report
+
+.pd_udp:
+    ; Send UDP test packet to gateway:7777 with "HERB" payload
+    ; udp_send(RCX=dst_ip, EDX=dst_port, R8D=src_port, R9=payload_ptr, [rsp+32]=payload_len)
+    mov ecx, [rel net_gateway_ip]
+    mov edx, 7777                   ; dst_port
+    mov r8d, 4444                   ; src_port
+    lea r9, [rel str_udp_payload]   ; "HERB"
+    mov dword [rsp+32], 4           ; payload_len = 4 bytes
+    call udp_send
+    ; Update last_action
+    lea rcx, [rel last_action]
+    mov edx, 80
+    lea r8, [rel str_la_udp]
+    call herb_snprintf
+    jmp .pd_report
+
+.pd_dns:
+    ; r13 = buf = "dns example.com"
+    test r13, r13
+    jz .pd_report
+    ; Skip to first space to get domain argument
+    lea rax, [r13]
+    xor ecx, ecx
+.pd_dns_skip:
+    cmp byte [rax + rcx], 0
+    je .pd_dns_default              ; no space found → use default domain
+    cmp byte [rax + rcx], ' '
+    je .pd_dns_found_space
+    inc ecx
+    jmp .pd_dns_skip
+.pd_dns_found_space:
+    inc ecx                         ; skip the space
+    lea rcx, [r13 + rcx]           ; RCX = domain string (e.g., "example.com")
+    cmp byte [rcx], 0
+    je .pd_dns_default              ; empty arg → default
+    jmp .pd_dns_do
+.pd_dns_default:
+    lea rcx, [rel str_dns_domain]  ; "example.com"
+.pd_dns_do:
+    mov [rsp+80], rcx               ; save domain ptr in local slot
+    call dns_resolve
+    ; Update last_action
+    lea rcx, [rel last_action]
+    mov edx, 80
+    lea r8, [rel str_la_dns]
+    mov r9, [rsp+80]               ; domain string
+    call herb_snprintf
+    jmp .pd_report
+
+.pd_connect:
+    ; Use DNS-resolved IP if available, else gateway
+    cmp dword [rel dns_resolved_flag], 0
+    je .pd_connect_gw
+    mov ecx, [rel dns_result_ip]
+    jmp .pd_connect_do
+.pd_connect_gw:
+    mov ecx, [rel net_gateway_ip]
+.pd_connect_do:
+    mov edx, 80                     ; port 80
+    call tcp_connect
+    ; Update last_action
+    lea rcx, [rel last_action]
+    mov edx, 80
+    lea r8, [rel str_la_connect]
+    lea r9, [rel str_dns_domain]    ; "example.com"
     call herb_snprintf
     jmp .pd_report
 
