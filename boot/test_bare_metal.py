@@ -1826,14 +1826,14 @@ def run_tests(image_path, net=False):
             t.check("DNS response received and parsed", m is not None)
 
             # ============================================================
-            # TCP Tests (Session 87)
+            # TCP + HTTP Tests (Session 88)
             # ============================================================
             print("\n" + "=" * 60)
-            print("TCP Tests (Session 87)")
+            print("TCP + HTTP Tests (Session 88)")
             print("=" * 60)
 
-            # Wait for auto-TCP (tick 30, needs DNS resolved first)
-            time.sleep(4)
+            # Wait for auto-HTTP (tick 30 + DNS + connect + transfer)
+            time.sleep(8)
             serial = t.get_serial()
 
             # ---- TEST: TCP SYN Sent ----
@@ -1845,6 +1845,26 @@ def run_tests(image_path, net=False):
             print("\n--- Test: TCP Handshake ---")
             m = re.search(r"\[TCP\] ACK sent, connection ESTABLISHED", serial)
             t.check("TCP handshake completed", m is not None)
+
+            # ---- TEST: TCP Data Sent ----
+            print("\n--- Test: TCP Data Sent ---")
+            m = re.search(r"\[TCP\] sent \d+ bytes", serial)
+            t.check("TCP data sent (HTTP request)", m is not None)
+
+            # ---- TEST: TCP Data Received ----
+            print("\n--- Test: TCP Data Received ---")
+            m = re.search(r"\[TCP\] received \d+ bytes, ACKed", serial)
+            t.check("TCP data received", m is not None)
+
+            # ---- TEST: HTTP Status ----
+            print("\n--- Test: HTTP Status ---")
+            m = re.search(r"\[HTTP\] status=(\d+) body=(\d+) bytes", serial)
+            t.check("HTTP response parsed", m is not None)
+
+            # ---- TEST: TCP Connection Closed ----
+            print("\n--- Test: TCP Connection Closed ---")
+            m = re.search(r"\[TCP\] (FIN received|connection closed)", serial)
+            t.check("TCP teardown (FIN/close)", m is not None)
 
         else:
             print("\n(NIC tests skipped — use --net flag)")
