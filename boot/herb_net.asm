@@ -35,6 +35,13 @@ global dns_pending
 global tcp_connect
 global tcp_state
 global tcp_established
+global tcp_send_data
+global tcp_recv_buf
+global tcp_recv_len
+global tcp_recv_done
+global http_get
+global http_poll_state
+global http_state
 
 ; ============================================================
 ; EXTERNS
@@ -44,6 +51,7 @@ extern serial_print         ; herb_hw.asm: (RCX=str)
 extern herb_snprintf        ; herb_freestanding.asm
 extern herb_memset          ; herb_freestanding.asm
 extern herb_strcmp           ; herb_freestanding.asm
+extern herb_strlen          ; herb_freestanding.asm
 extern ping_pending         ; herb_kernel.asm: cleared when reply received
 extern ping_tick            ; herb_kernel.asm: tick when ping was sent
 extern timer_count          ; herb_kernel.asm: current tick count
@@ -3074,6 +3082,360 @@ tcp_connect:
     ret
 
 ; ============================================================
+; tcp_send_data(RCX=data_ptr, EDX=data_len) -> void
+; Send data over established TCP connection
+; ============================================================
+tcp_send_data:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    sub rsp, 32                     ; shadow only
+    ; 8(ret)+8(rbp)+16(push)+32(sub)=64, 64%16=0 ✓
+
+    mov rsi, rcx                    ; data_ptr
+    mov ebx, edx                    ; data_len
+
+    cmp dword [rel tcp_state], TCP_STATE_ESTABLISHED
+    jne .tsd_done
+
+    ; tcp_send_segment(CL=flags, RDX=payload_ptr, R8D=payload_len)
+    mov cl, (TCP_ACK | TCP_PSH)
+    mov rdx, rsi                    ; payload_ptr
+    mov r8d, ebx                    ; payload_len
+    call tcp_send_segment
+
+    ; Advance sequence number
+    add [rel tcp_seq_num], ebx
+
+    ; Serial: [TCP] sent N bytes
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_tcp_sent_fmt]
+    mov r9d, ebx
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
+    call serial_print
+
+.tsd_done:
+    add rsp, 32
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; http_build_request() -> sets http_req_len
+; Build HTTP/1.0 GET request in http_req_buf
+; ============================================================
+http_build_request:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    sub rsp, 40                     ; shadow(32) + 8(align)
+    ; 8(ret)+8(rbp)+8(push)+40(sub)=64, 64%16=0 ✓
+
+    lea rcx, [rel http_req_buf]
+    mov edx, 256
+    lea r8, [rel str_http_req_fmt]  ; "GET %s HTTP/1.0\r\nHost: %s\r\n\r\n"
+    lea r9, [rel http_path]         ; 1st %s = path
+    lea rax, [rel http_host]
+    mov [rsp+32], rax               ; 2nd %s = host
+    call herb_snprintf
+
+    ; Measure length with herb_strlen
+    lea rcx, [rel http_req_buf]
+    call herb_strlen
+    mov [rel http_req_len], eax
+
+    add rsp, 40
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; http_parse_response() -> sets http_status, prints body to serial
+; ============================================================
+http_parse_response:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    sub rsp, 48                     ; shadow(32) + 16(locals)
+    ; 8(ret)+8(rbp)+32(push)+48(sub)=96, 96%16=0 ✓
+
+    ; Null-terminate recv buffer
+    lea rbx, [rel tcp_recv_buf]
+    mov ecx, [rel tcp_recv_len]
+    mov byte [rbx + rcx], 0
+
+    ; Parse status code: skip "HTTP/1.x " (9 bytes), read 3 digits
+    ; Verify we have at least 12 bytes
+    cmp ecx, 12
+    jb .hpr_no_status
+    ; Status code at offset 9: e.g., "200"
+    movzx eax, byte [rbx+9]
+    sub eax, '0'
+    imul eax, 100
+    mov r12d, eax
+    movzx eax, byte [rbx+10]
+    sub eax, '0'
+    imul eax, 10
+    add r12d, eax
+    movzx eax, byte [rbx+11]
+    sub eax, '0'
+    add r12d, eax
+    mov [rel http_status], r12d
+
+    ; Find "\r\n\r\n" (0x0D 0x0A 0x0D 0x0A) — end of headers
+    xor esi, esi                    ; scan index
+    mov edi, [rel tcp_recv_len]
+    sub edi, 3                      ; need 4 bytes to match
+.hpr_scan:
+    cmp esi, edi
+    jge .hpr_no_body
+    cmp byte [rbx + rsi], 0x0D
+    jne .hpr_scan_next
+    cmp byte [rbx + rsi + 1], 0x0A
+    jne .hpr_scan_next
+    cmp byte [rbx + rsi + 2], 0x0D
+    jne .hpr_scan_next
+    cmp byte [rbx + rsi + 3], 0x0A
+    jne .hpr_scan_next
+    ; Found! Body starts at rsi + 4
+    add esi, 4
+    jmp .hpr_found_body
+.hpr_scan_next:
+    inc esi
+    jmp .hpr_scan
+
+.hpr_found_body:
+    ; body_len = recv_len - body_offset
+    mov eax, [rel tcp_recv_len]
+    sub eax, esi                    ; body_len
+    mov r12d, eax                   ; save body_len (repurpose r12d, status already stored)
+
+    ; Serial: [HTTP] status=N body=N bytes
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_http_status_fmt]
+    mov r9d, [rel http_status]
+    mov eax, r12d
+    mov [rsp+32], rax
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
+    call serial_print
+
+    ; Print "[HTTP] body:" header
+    lea rcx, [rel str_http_body_hdr]
+    call serial_print
+
+    ; Print body (first 500 chars max) — temporarily null-terminate
+    lea rcx, [rbx + rsi]           ; body start
+    mov eax, r12d
+    cmp eax, 500
+    jbe .hpr_print_body
+    mov eax, 500                    ; cap at 500
+.hpr_print_body:
+    ; Save byte at cap position, null-terminate, print, restore
+    mov edi, eax                    ; cap length
+    movzx r8d, byte [rcx + rdi]    ; save original byte
+    mov byte [rcx + rdi], 0         ; null-terminate
+    call serial_print               ; print body
+    lea rcx, [rbx + rsi]           ; re-derive body start (rcx clobbered)
+    mov [rcx + rdi], r8b            ; restore byte
+    jmp .hpr_done
+
+.hpr_no_status:
+.hpr_no_body:
+    ; Minimal log if parsing failed
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_http_status_fmt]
+    xor r9d, r9d                    ; status=0
+    xor eax, eax
+    mov [rsp+32], rax               ; body=0
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
+    call serial_print
+
+.hpr_done:
+    add rsp, 48
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; http_get(RCX=host_ptr, RDX=path_ptr)
+; Start HTTP GET state machine
+; ============================================================
+http_get:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    sub rsp, 40                     ; shadow(32) + 8(align)
+    ; 8(ret)+8(rbp)+24(push)+40(sub)=80, 80%16=0 ✓
+
+    mov rsi, rcx                    ; host_ptr
+    mov rdi, rdx                    ; path_ptr
+
+    ; Copy host → http_host (up to 63 chars)
+    lea rbx, [rel http_host]
+    xor ecx, ecx
+.hg_copy_host:
+    cmp ecx, 63
+    jge .hg_host_done
+    mov al, [rsi + rcx]
+    mov [rbx + rcx], al
+    test al, al
+    jz .hg_host_null
+    inc ecx
+    jmp .hg_copy_host
+.hg_host_null:
+.hg_host_done:
+    mov byte [rbx + rcx], 0
+
+    ; Copy path → http_path (up to 127 chars)
+    lea rbx, [rel http_path]
+    xor ecx, ecx
+.hg_copy_path:
+    cmp ecx, 127
+    jge .hg_path_done
+    mov al, [rdi + rcx]
+    mov [rbx + rcx], al
+    test al, al
+    jz .hg_path_null
+    inc ecx
+    jmp .hg_copy_path
+.hg_path_null:
+.hg_path_done:
+    mov byte [rbx + rcx], 0
+
+    ; Reset receive state
+    mov dword [rel tcp_recv_len], 0
+    mov dword [rel tcp_recv_done], 0
+    mov dword [rel tcp_state], TCP_STATE_CLOSED
+    mov dword [rel tcp_established], 0
+
+    ; Check if DNS already resolved
+    cmp dword [rel dns_resolved_flag], 0
+    je .hg_need_dns
+
+    ; DNS resolved → connect immediately
+    mov ecx, [rel dns_result_ip]
+    mov edx, 80
+    call tcp_connect
+    mov dword [rel http_state], HTTP_STATE_CONNECT
+
+    ; Serial: [HTTP] GET host/path
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_http_get_fmt]
+    lea r9, [rel http_host]
+    lea rax, [rel http_path]
+    mov [rsp+32], rax
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
+    call serial_print
+    jmp .hg_done
+
+.hg_need_dns:
+    lea rcx, [rel http_host]
+    call dns_resolve
+    mov dword [rel http_state], HTTP_STATE_DNS
+
+.hg_done:
+    add rsp, 40
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
+; http_poll_state()
+; Called every tick from kernel — advances HTTP state machine
+; ============================================================
+http_poll_state:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    sub rsp, 40                     ; shadow(32) + 8(align)
+    ; 8(ret)+8(rbp)+8(push)+40(sub)=64, 64%16=0 ✓
+
+    mov eax, [rel http_state]
+    test eax, eax
+    jz .hps_ret                     ; IDLE — fast exit (most ticks)
+
+    cmp eax, HTTP_STATE_DNS
+    je .hps_dns
+    cmp eax, HTTP_STATE_CONNECT
+    je .hps_connect
+    cmp eax, HTTP_STATE_RECV
+    je .hps_recv
+    cmp eax, HTTP_STATE_DONE
+    je .hps_done
+    jmp .hps_ret
+
+.hps_dns:
+    ; Waiting for DNS resolution
+    cmp dword [rel dns_resolved_flag], 0
+    je .hps_ret
+    ; DNS resolved → connect
+    mov ecx, [rel dns_result_ip]
+    mov edx, 80
+    call tcp_connect
+    mov dword [rel http_state], HTTP_STATE_CONNECT
+    ; Serial: [HTTP] GET host/path
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_http_get_fmt]
+    lea r9, [rel http_host]
+    lea rax, [rel http_path]
+    mov [rsp+32], rax
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
+    call serial_print
+    jmp .hps_ret
+
+.hps_connect:
+    ; Waiting for TCP handshake
+    cmp dword [rel tcp_established], 0
+    je .hps_ret
+    ; Connected → build and send HTTP request
+    call http_build_request
+    lea rcx, [rel http_req_buf]
+    mov edx, [rel http_req_len]
+    call tcp_send_data
+    mov dword [rel http_state], HTTP_STATE_RECV
+    jmp .hps_ret
+
+.hps_recv:
+    ; Waiting for server response (FIN sets tcp_recv_done)
+    cmp dword [rel tcp_recv_done], 0
+    je .hps_ret
+    ; Response complete → parse and display
+    call http_parse_response
+    mov dword [rel http_state], HTTP_STATE_IDLE
+    jmp .hps_ret
+
+.hps_done:
+    mov dword [rel http_state], HTTP_STATE_IDLE
+
+.hps_ret:
+    add rsp, 40
+    pop rbx
+    pop rbp
+    ret
+
+; ============================================================
 ; tcp_handle_packet(RSI=frame_ptr, ECX=frame_len, EDX=src_ip)
 ; Parse TCP header and run state machine
 ; ============================================================
@@ -3148,6 +3510,7 @@ tcp_handle_packet:
     sub ecx, eax                    ; ecx = TCP payload len
     jb .tcp_rx_done                 ; negative = malformed
     mov [rsp+40], ecx               ; payload_len at [rsp+40]
+    mov [rsp+60], ecx               ; BACKUP at [rsp+60] (safe from snprintf clobber)
 
     ; Save dst_port before net_format_ip clobbers edi (Discovery 69)
     mov r13d, edi                   ; r13d = dst_port (done with frame_len)
@@ -3183,6 +3546,9 @@ tcp_handle_packet:
 
     cmp eax, TCP_STATE_ESTABLISHED
     je .tcp_state_established
+
+    cmp eax, TCP_STATE_LAST_ACK
+    je .tcp_state_last_ack
 
     ; Default: ignore
     jmp .tcp_rx_done
@@ -3250,7 +3616,118 @@ tcp_handle_packet:
     jmp .tcp_rx_done
 
 .tcp_state_established:
-    ; For now (Session 87): just log. Data handling in Session 88.
+    ; Check RST first
+    test esi, TCP_RST
+    jnz .tcp_got_rst
+
+    ; Get payload_len from backup slot (safe from serial log clobber)
+    mov ecx, [rsp+60]              ; payload_len
+
+    ; --- Handle incoming data ---
+    test ecx, ecx
+    jz .tcp_est_check_fin           ; no payload, check FIN
+
+    ; Verify in-order delivery: peer_seq == tcp_ack_num
+    mov eax, [rsp+48]              ; peer_seq
+    cmp eax, [rel tcp_ack_num]
+    jne .tcp_est_ooo                ; out-of-order → drop
+
+    ; Bounds check: don't overflow recv buffer
+    mov eax, [rel tcp_recv_len]
+    add eax, ecx                    ; new total
+    cmp eax, TCP_RECV_BUF_SIZE
+    ja .tcp_est_overflow
+
+    ; Compute payload pointer: frame_ptr + tcp_offset + tcp_header_len
+    ; ebx = tcp_offset (callee-saved, still valid)
+    ; re-derive tcp_header_len from data_offset byte
+    ; Use r14 for payload pointer to preserve esi=flags for FIN check
+    movzx eax, byte [r12 + rbx + 12]
+    shr eax, 4
+    shl eax, 2                      ; TCP header len in eax
+    lea r14, [r12 + rbx]           ; TCP header start
+    add r14, rax                    ; r14 = payload pointer
+
+    ; Copy payload to tcp_recv_buf + tcp_recv_len
+    lea rdi, [rel tcp_recv_buf]
+    mov eax, [rel tcp_recv_len]
+    add rdi, rax                    ; rdi = dest
+    ; ecx = payload_len, r14 = src
+    xor edx, edx
+.tcp_copy_payload:
+    cmp edx, ecx
+    jge .tcp_copy_done
+    mov al, [r14 + rdx]
+    mov [rdi + rdx], al
+    inc edx
+    jmp .tcp_copy_payload
+.tcp_copy_done:
+
+    ; Update recv_len and ack_num
+    add [rel tcp_recv_len], ecx
+    add [rel tcp_ack_num], ecx
+
+    ; Save payload_len in ebx (tcp_offset no longer needed)
+    mov ebx, ecx                    ; save payload_len in ebx
+    mov cl, TCP_ACK
+    xor edx, edx
+    xor r8d, r8d
+    call tcp_send_segment
+
+    ; Serial: [TCP] received N bytes, ACKed
+    lea rcx, [rel net_msg_buf]
+    mov edx, 128
+    lea r8, [rel str_tcp_recv_fmt]
+    mov r9d, ebx                    ; payload_len
+    call herb_snprintf
+    lea rcx, [rel net_msg_buf]
+    call serial_print
+    jmp .tcp_est_check_fin          ; also check FIN (may be combined with data)
+
+.tcp_est_ooo:
+    lea rcx, [rel str_tcp_ooo_fmt]
+    call serial_print
+    jmp .tcp_rx_done
+
+.tcp_est_overflow:
+    lea rcx, [rel str_tcp_overflow]
+    call serial_print
+    jmp .tcp_est_check_fin          ; still check FIN
+
+.tcp_est_check_fin:
+    ; Check if server sent FIN
+    test esi, TCP_FIN
+    jz .tcp_rx_done                 ; no FIN, done
+
+    ; FIN received — ACK it and send our own FIN
+    inc dword [rel tcp_ack_num]     ; FIN consumes 1 seq number
+
+    ; Send FIN+ACK combined
+    mov cl, (TCP_FIN | TCP_ACK)
+    xor edx, edx
+    xor r8d, r8d
+    call tcp_send_segment
+    inc dword [rel tcp_seq_num]     ; our FIN consumes 1 seq number
+
+    ; Mark recv as done, transition to LAST_ACK
+    mov dword [rel tcp_recv_done], 1
+    mov dword [rel tcp_state], TCP_STATE_LAST_ACK
+
+    lea rcx, [rel str_tcp_fin_fmt]
+    call serial_print
+    jmp .tcp_rx_done
+
+.tcp_state_last_ack:
+    ; Waiting for server's ACK of our FIN
+    test esi, TCP_RST
+    jnz .tcp_got_rst
+    test esi, TCP_ACK
+    jz .tcp_rx_done
+    ; Connection fully closed
+    mov dword [rel tcp_state], TCP_STATE_CLOSED
+    mov dword [rel tcp_established], 0
+    lea rcx, [rel str_tcp_closed_fmt]
+    call serial_print
     jmp .tcp_rx_done
 
 .tcp_rx_done:
@@ -3338,6 +3815,17 @@ str_tcp_synack_fmt: db "[TCP] SYN-ACK from %s seq=%d ack=%d", 10, 0
 str_tcp_ack_fmt:    db "[TCP] ACK sent, connection ESTABLISHED", 10, 0
 str_tcp_rst_fmt:    db "[TCP] connection refused (RST)", 10, 0
 str_tcp_rx_fmt:     db "[TCP] from %s:%d flags=%d", 10, 0
+str_tcp_sent_fmt:    db "[TCP] sent %d bytes", 10, 0
+str_tcp_recv_fmt:    db "[TCP] received %d bytes, ACKed", 10, 0
+str_tcp_fin_fmt:     db "[TCP] FIN received, closing", 10, 0
+str_tcp_closed_fmt:  db "[TCP] connection closed", 10, 0
+str_tcp_ooo_fmt:     db "[TCP] seq mismatch, dropped", 10, 0
+str_tcp_overflow:    db "[TCP] recv buffer full", 10, 0
+str_http_get_fmt:    db "[HTTP] GET %s%s", 10, 0
+str_http_status_fmt: db "[HTTP] status=%d body=%d bytes", 10, 0
+str_http_body_hdr:   db "[HTTP] body:", 10, 0
+str_http_req_fmt:    db "GET %s HTTP/1.0", 13, 10, "Host: %s", 13, 10, 13, 10, 0
+str_http_slash:      db "/", 0
 
 dns_server_ip:
     dd 0x0302000A               ; 10.0.2.3 in little-endian
@@ -3418,6 +3906,10 @@ TCP_FIN equ 0x01
 TCP_SYN equ 0x02
 TCP_RST equ 0x04
 TCP_ACK equ 0x10
+TCP_PSH equ 0x08
+
+TCP_STATE_CLOSE_WAIT  equ 3
+TCP_STATE_LAST_ACK    equ 4
 
 tcp_state:              resd 1      ; current state (TCP_STATE_*)
 tcp_local_port:         resw 1      ; our ephemeral port
@@ -3430,3 +3922,24 @@ tcp_local_port_counter: resw 1      ; incrementing ephemeral port counter
 tcp_established:        resd 1      ; 1 = connection established (for kernel to check)
 tcp_send_buf:           resb 1500   ; TCP segment build buffer
 tcp_cksum_buf:          resb 1540   ; pseudo-header + segment for checksum
+
+; TCP receive buffer (16KB)
+TCP_RECV_BUF_SIZE equ 16384
+tcp_recv_buf:       resb 16384
+tcp_recv_len:       resd 1          ; bytes received so far
+tcp_recv_done:      resd 1          ; 1 = server closed (FIN received)
+
+; HTTP state machine
+HTTP_STATE_IDLE     equ 0
+HTTP_STATE_DNS      equ 1
+HTTP_STATE_CONNECT  equ 2
+HTTP_STATE_SEND     equ 3
+HTTP_STATE_RECV     equ 4
+HTTP_STATE_DONE     equ 5
+
+http_state:         resd 1          ; current HTTP state
+http_host:          resb 64         ; host string copy
+http_path:          resb 128        ; path string copy
+http_req_buf:       resb 256        ; built HTTP request
+http_req_len:       resd 1          ; request length
+http_status:        resd 1          ; parsed HTTP status code

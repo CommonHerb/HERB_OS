@@ -103,6 +103,13 @@ extern dns_pending
 extern tcp_connect
 extern tcp_state
 extern tcp_established
+extern tcp_send_data
+extern tcp_recv_buf
+extern tcp_recv_len
+extern tcp_recv_done
+extern http_get
+extern http_poll_state
+extern http_state
 
 ; Disk + filesystem (from herb_disk.asm)
 extern disk_identify
@@ -399,7 +406,7 @@ ping_tick:          dd 0
 ping_auto_sent:     dd 0
 udp_auto_sent:      dd 0
 dns_auto_sent:      dd 0
-tcp_auto_sent:      dd 0
+http_auto_sent:     dd 0
 total_ops:          dd 0
 signal_counter:     dd 0
 process_counter:    dd 0
@@ -962,6 +969,8 @@ str_udp_payload:    db "HERB", 0
 str_la_dns:         db "dns %s", 0
 str_dns_domain:     db "example.com", 0
 str_la_connect:     db "TCP connect %s:80", 0
+str_http_slash:     db "/", 0
+str_la_http:        db "HTTP GET %s", 0
 str_la_gather_yes:  db "Gathered! wood=%d", 0
 str_la_gather_no:   db "Nothing here (wood=%d)", 0
 str_la_timer:       db "Timer signal %s -> %d ops", 0
@@ -2986,22 +2995,24 @@ kernel_main:
     call dns_resolve
 .no_auto_dns:
 
-    ; ---- Auto-TCP connect (tick >= 30) ----
+    ; ---- HTTP state machine poll ----
+    call http_poll_state
+
+    ; ---- Auto-HTTP (tick >= 30, after DNS resolves) ----
     cmp dword [rel net_present], 0
-    je .no_auto_tcp
-    cmp dword [rel tcp_auto_sent], 0
-    jne .no_auto_tcp
+    je .no_auto_http
+    cmp dword [rel http_auto_sent], 0
+    jne .no_auto_http
     mov eax, [rel timer_count]
     cmp eax, 30
-    jb .no_auto_tcp
-    ; Need DNS resolved first
+    jb .no_auto_http
     cmp dword [rel dns_resolved_flag], 0
-    je .no_auto_tcp
-    mov dword [rel tcp_auto_sent], 1
-    mov ecx, [rel dns_result_ip]
-    mov edx, 80
-    call tcp_connect
-.no_auto_tcp:
+    je .no_auto_http
+    mov dword [rel http_auto_sent], 1
+    lea rcx, [rel str_dns_domain]
+    lea rdx, [rel str_http_slash]
+    call http_get
+.no_auto_http:
 
     jmp .mainloop
 
@@ -5516,6 +5527,8 @@ post_dispatch:
     je .pd_dns
     cmp r12d, 20
     je .pd_connect
+    cmp r12d, 21
+    je .pd_http
     jmp .pd_report
 
 .pd_kill:
@@ -6364,6 +6377,17 @@ post_dispatch:
     mov edx, 80
     lea r8, [rel str_la_connect]
     lea r9, [rel str_dns_domain]    ; "example.com"
+    call herb_snprintf
+    jmp .pd_report
+
+.pd_http:
+    lea rcx, [rel str_dns_domain]   ; default "example.com"
+    lea rdx, [rel str_http_slash]   ; "/"
+    call http_get
+    lea rcx, [rel last_action]
+    mov edx, 80
+    lea r8, [rel str_la_http]
+    lea r9, [rel str_dns_domain]
     call herb_snprintf
     jmp .pd_report
 

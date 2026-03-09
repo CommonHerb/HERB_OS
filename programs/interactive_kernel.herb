@@ -1501,6 +1501,9 @@ entity tcmd_dns input.TextCmd in input.TEXTCMD
 entity tcmd_connect input.TextCmd in input.TEXTCMD
   prop text_key 25455
   prop cmd_id 20
+entity tcmd_http input.TextCmd in input.TEXTCMD
+  prop text_key 26740
+  prop cmd_id 21
 entity help_edit display.HelpCmd in display.HELP_TEXT
   prop order 11
   prop cmd_text "edit"
@@ -1522,6 +1525,9 @@ entity help_dns display.HelpCmd in display.HELP_TEXT
 entity help_connect display.HelpCmd in display.HELP_TEXT
   prop order 17
   prop cmd_text "connect"
+entity help_http display.HelpCmd in display.HELP_TEXT
+  prop order 18
+  prop cmd_text "http"
 entity editor_ctl editor.EditorCtl in editor.CTL
   prop mode 0
   prop cursor_pos 0
