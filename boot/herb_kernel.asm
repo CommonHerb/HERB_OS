@@ -85,6 +85,7 @@ extern graph_find_container_by_name
 extern intern
 extern container_add
 extern container_remove
+extern ham_dirty_mark
 
 ; Network (from herb_net.asm)
 extern net_init
@@ -780,6 +781,7 @@ str_cn_key_sig:     db "proc.KEY_SIG", 0
 str_cn_sig_done:    db "proc.SIG_DONE", 0
 str_cn_cmd_sig:     db "proc.CMD_SIG", 0
 str_cn_spawn_sig:   db "proc.SPAWN_SIG", 0
+str_cn_game_sig_done: db "world.GAME_SIG_DONE", 0
 str_cn_cmdline:     db "input.CMDLINE", 0
 str_cn_keybind:     db "input.KEYBIND", 0
 str_cn_textcmd:     db "input.TEXTCMD", 0
@@ -3386,11 +3388,12 @@ cmd_boost:
     lea r8, [rel str_pfx_bst]
     call make_sig_name
 
-    ; herb_create(name, ET_SIGNAL, CN_BOOST_SIG)
+    ; recycle_or_create_entity(name, ET_SIGNAL, CN_BOOST_SIG, CN_SIG_DONE)
     lea rcx, [rsp + 48]
     lea rdx, [rel str_et_signal]
     lea r8, [rel str_cn_boost_sig]
-    call herb_create
+    lea r9, [rel str_cn_sig_done]
+    call recycle_or_create_entity
 
     ; ops = ham_run_ham(100)
     mov ecx, 100
@@ -3492,11 +3495,12 @@ cmd_timer:
     lea rbx, [rel str_empty_name]   ; "EMPTY"
 
 .ctm_create_sig:
-    ; herb_create(name, ET_SIGNAL, CN_TIMER_SIG)
+    ; recycle_or_create_entity(name, ET_SIGNAL, CN_TIMER_SIG, CN_SIG_DONE)
     lea rcx, [rsp+48]
     lea rdx, [rel str_et_signal]
     lea r8, [rel str_cn_timer_sig]
-    call herb_create
+    lea r9, [rel str_cn_sig_done]
+    call recycle_or_create_entity
 
     ; ops = ham_run_ham(100)
     mov ecx, 100
@@ -4602,11 +4606,12 @@ cmd_ham_test:
     ; Force recompile
     call ham_mark_dirty
 
-    ; Create TIMER_SIG: herb_create("ham_timer", ET_SIGNAL, CN_TIMER_SIG)
+    ; Create TIMER_SIG via signal recycle path when possible.
     lea rcx, [rel str_ham_timer]
     lea rdx, [rel str_et_signal]
     lea r8, [rel str_cn_timer_sig]
-    call herb_create
+    lea r9, [rel str_cn_sig_done]
+    call recycle_or_create_entity
 
     ; Record pre-state
     lea rcx, [rel str_cn_ready]
@@ -4807,11 +4812,12 @@ cmd_click:
     lea r8, [rel str_pfx_clk]
     call make_sig_name
 
-    ; herb_create(name, ET_SIGNAL, CN_CLICK_SIG)
+    ; recycle_or_create_entity(name, ET_SIGNAL, CN_CLICK_SIG, CN_SIG_DONE)
     lea rcx, [rsp+48]
     lea rdx, [rel str_et_signal]
     lea r8, [rel str_cn_click_sig]
-    call herb_create
+    lea r9, [rel str_cn_sig_done]
+    call recycle_or_create_entity
     test eax, eax
     js .ccl_fail
     mov r12d, eax                   ; r12 = click_eid
@@ -4997,6 +5003,117 @@ cmd_click:
 ; Phase C Step 7: Signal Factories + Dispatch
 ; ============================================================
 
+; ---- recycle_or_create_entity(name, type, target_container, recycle_container) ----
+; Reuse the first entity from recycle_container when available; otherwise
+; fallback to herb_create(name, type, target_container).
+; Args: RCX = name, RDX = type, R8 = target_container, R9 = recycle_container
+; Returns: EAX = entity index, or -1
+recycle_or_create_entity:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 40
+
+    mov rsi, rcx                    ; name
+    mov rdi, rdx                    ; type
+    mov r12, r8                     ; target_container
+    mov r13, r9                     ; recycle_container
+
+    ; Resolve recycle container and ensure it has an entity to reuse.
+    mov rcx, r13
+    call intern
+    mov ecx, eax
+    call graph_find_container_by_name
+    mov r14d, eax                   ; recycle_cidx
+    test eax, eax
+    js .rce_fallback
+
+    mov rcx, r13
+    call herb_container_count
+    test eax, eax
+    jle .rce_fallback
+
+    ; Resolve target container.
+    mov rcx, r12
+    call intern
+    mov ecx, eax
+    call graph_find_container_by_name
+    mov r15d, eax                   ; target_cidx
+    test eax, eax
+    js .rce_fallback
+
+    ; Reuse the first completed signal.
+    mov rcx, r13
+    xor edx, edx
+    call herb_container_entity
+    test eax, eax
+    js .rce_fallback
+    mov ebx, eax                    ; entity_idx
+
+    mov ecx, r14d
+    mov edx, ebx
+    call container_remove
+    mov ecx, r14d
+    call ham_dirty_mark
+
+    mov ecx, r15d
+    mov edx, ebx
+    call container_add
+    mov ecx, r15d
+    call ham_dirty_mark
+
+    ; Update entity location.
+    mov ecx, r15d
+    lea rdx, [rel g_graph]
+    add rdx, GRAPH_ENTITY_LOCATION
+    movsxd rax, ebx
+    mov [rdx + rax*4], ecx
+
+    ; Reset name/type and discard stale properties from the prior signal use.
+    mov rcx, rsi
+    call intern
+    mov [rsp+32], eax               ; name_id
+    mov rcx, rdi
+    call intern
+    mov [rsp+36], eax               ; type_id
+
+    movsxd rax, ebx
+    imul rax, SIZEOF_ENTITY
+    lea rdx, [rel g_graph]
+    add rdx, rax
+    mov eax, [rsp+36]
+    mov [rdx + ENT_TYPE_ID], eax
+    mov eax, [rsp+32]
+    mov [rdx + ENT_NAME_ID], eax
+    mov dword [rdx + ENT_PROP_COUNT], 0
+
+    mov eax, ebx
+    jmp .rce_done
+
+.rce_fallback:
+    mov rcx, rsi
+    mov rdx, rdi
+    mov r8, r12
+    call herb_create
+
+.rce_done:
+    add rsp, 40
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
 ; ---- create_key_signal(int ascii_code) ----
 ; Create a KEY_SIG signal with an "ascii" property.
 ; Args: ECX = ascii_code
@@ -5016,11 +5133,12 @@ create_key_signal:
     lea r8, [rel str_pfx_key]
     call make_sig_name
 
-    ; herb_create(name, ET_SIGNAL, CN_KEY_SIG)
+    ; recycle_or_create_entity(name, ET_SIGNAL, CN_KEY_SIG, CN_SIG_DONE)
     lea rcx, [rsp+48]
     lea rdx, [rel str_et_signal]
     lea r8, [rel str_cn_key_sig]
-    call herb_create
+    lea r9, [rel str_cn_sig_done]
+    call recycle_or_create_entity
 
     ; if (eid >= 0) herb_set_prop_int(eid, "ascii", ascii_code)
     test eax, eax
@@ -5054,11 +5172,12 @@ create_move_signal:
     lea r8, [rel str_pfx_mv]
     call make_sig_name
 
-    ; herb_create(name, ET_GAME_SIGNAL, CN_GAME_MOVE_SIG)
+    ; recycle_or_create_entity(name, ET_GAME_SIGNAL, CN_GAME_MOVE_SIG, CN_GAME_SIG_DONE)
     lea rcx, [rsp+48]
     lea rdx, [rel str_et_game_signal]
     lea r8, [rel str_cn_game_move_sig]
-    call herb_create
+    lea r9, [rel str_cn_game_sig_done]
+    call recycle_or_create_entity
 
     ; if (eid >= 0) herb_set_prop_int(eid, "direction", direction)
     test eax, eax
@@ -5089,11 +5208,12 @@ create_gather_signal:
     lea r8, [rel str_pfx_ga]
     call make_sig_name
 
-    ; herb_create(name, ET_GAME_SIGNAL, CN_GAME_GATHER_SIG)
+    ; recycle_or_create_entity(name, ET_GAME_SIGNAL, CN_GAME_GATHER_SIG, CN_GAME_SIG_DONE)
     lea rcx, [rsp+48]
     lea rdx, [rel str_et_game_signal]
     lea r8, [rel str_cn_game_gather_sig]
-    call herb_create
+    lea r9, [rel str_cn_game_sig_done]
+    call recycle_or_create_entity
 
     add rsp, 80
     pop rbp
@@ -5202,11 +5322,12 @@ dispatch_cmd_from_route:
     lea r8, [rel str_pfx_cmd]
     call make_sig_name
 
-    ; sig_eid = herb_create(sig_name, ET_SIGNAL, CN_CMD_SIG)
+    ; sig_eid = recycle_or_create_entity(sig_name, ET_SIGNAL, CN_CMD_SIG, CN_SIG_DONE)
     lea rcx, [rsp+48]
     lea rdx, [rel str_et_signal]
     lea r8, [rel str_cn_cmd_sig]
-    call herb_create
+    lea r9, [rel str_cn_sig_done]
+    call recycle_or_create_entity
     mov r15d, eax                   ; r15 = sig_eid
 
     ; Serial: "[SHELL DISPATCH] cmd_id=" cmd_id " arg_id=" arg_id " sig_eid=" sig_eid
@@ -5326,11 +5447,12 @@ dispatch_text_command:
     lea r8, [rel str_pfx_cmd]
     call make_sig_name
 
-    ; sig_eid = herb_create(sig_name, ET_SIGNAL, CN_CMD_SIG)
+    ; sig_eid = recycle_or_create_entity(sig_name, ET_SIGNAL, CN_CMD_SIG, CN_SIG_DONE)
     lea rcx, [rsp+48]
     lea rdx, [rel str_et_signal]
     lea r8, [rel str_cn_cmd_sig]
-    call herb_create
+    lea r9, [rel str_cn_sig_done]
+    call recycle_or_create_entity
     mov r15d, eax                   ; r15 = sig_eid
 
     ; Serial: "[SHELL DISPATCH] text_key=" text_key " arg_key=" arg_key " sig_eid=" sig_eid
@@ -7034,7 +7156,7 @@ handle_submission:
     mov r8d, 2
     call herb_set_prop_int
 
-    ; ops = ham_run_ham(100)
+    ; Let HAM clear submitted/CMDLINE reactively.
     mov ecx, 100
     call ham_run_ham
     add [rel total_ops], eax
@@ -7251,11 +7373,12 @@ cmd_spawn:
     lea r8, [rel str_pfx_spawn]
     call make_sig_name
 
-    ; herb_create(sig_name, ET_SIGNAL, CN_SPAWN_SIG)
+    ; recycle_or_create_entity(sig_name, ET_SIGNAL, CN_SPAWN_SIG, CN_SIG_DONE)
     lea rcx, [rsp+48]
     lea rdx, [rel str_et_signal]
     lea r8, [rel str_cn_spawn_sig]
-    call herb_create
+    lea r9, [rel str_cn_sig_done]
+    call recycle_or_create_entity
     test eax, eax
     js .cspn_skip_prop
     ; herb_set_prop_int(sig, "requested_type", requested_type)
@@ -8185,10 +8308,10 @@ handle_key:
     call herb_entity_prop_int
     mov esi, eax                        ; esi = prev_mode
 
-    ; Turing machine step: intercept 'u' in command mode (mode==0)
+    ; Turing machine step: intercept 'j' in command mode (mode==0)
     test esi, esi                       ; prev_mode == 0 (command mode)?
     jnz .hk_not_turing_early
-    cmp r13b, 'u'
+    cmp r13b, 'j'
     jne .hk_not_turing_early
     call cmd_turing_step
     jmp .hk_input_draw
