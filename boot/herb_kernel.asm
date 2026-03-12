@@ -131,11 +131,12 @@ extern e1000_isr_stub
 
 ; Volatile flags set by ISRs (from kernel_entry.asm)
 extern volatile_timer_fired
-extern volatile_key_scancode
-extern volatile_key_pressed
 extern mouse_ring
 extern mouse_ring_head
 extern mouse_ring_tail
+extern kb_ring
+extern kb_ring_head
+extern kb_ring_tail
 
 ; ============================================================
 ; EXTERNS — C functions remaining in kernel_main.c
@@ -343,6 +344,9 @@ global gfx_draw_tension_panel
 global gfx_draw_game
 global wm_draw_region_adapter
 global wm_draw_tension_adapter
+global wm_sync_from_herb
+global wm_write_window_geometry_to_herb
+global wm_write_all_z_order_to_herb
 %endif
 %endif
 
@@ -437,6 +441,10 @@ flow_editor_win_id: dd -1
 
 ; Game WM window ID (-1 = not created)
 game_win_id:        dd -1
+
+; Boot-time WM role -> live WM window ID map (-1 = not created)
+wm_role_to_win_id:
+    times 16 dd -1
 
 ; ============================================================
 ; RDATA — String literals + const data
@@ -707,6 +715,11 @@ str_buf_created:    db "  Buffer created (capacity=", 0
 str_timer_intv:     db "  timer_interval=", 0
 str_buf_cap:        db " buffer_capacity=", 0
 str_newline:        db 10, 0
+str_comma:          db ",", 0
+str_wm_boot_count:  db "[WM] wm.VISIBLE=", 0
+str_wm_boot_role:   db "[WM] role=", 0
+str_wm_boot_geom:   db " geom=", 0
+str_wm_boot_z:      db " z=", 0
 
 ; Property name strings
 str_kind:           db "kind", 0
@@ -728,6 +741,8 @@ str_display_mode:   db "display_mode", 0
 str_panel_click:    db "panel_click", 0
 str_x:              db "x", 0
 str_y:              db "y", 0
+str_role:           db "role", 0
+str_z_order:        db "z_order", 0
 
 ; Entity/container name strings
 str_shared_buffer:  db "shared_buffer", 0
@@ -741,6 +756,7 @@ str_shell_surface:  db "shell::SURFACE", 0
 
 ; Container name macros are string literals — replicate them here
 str_cn_visible:     db "display.VISIBLE", 0
+str_cn_wm_visible:  db "wm.VISIBLE", 0
 str_cn_input_state: db "input.INPUT_STATE", 0
 str_cn_buffer:      db "BUFFER", 0
 str_cn_ready:       db "proc.READY", 0
@@ -1039,6 +1055,8 @@ str_ser_edpool:     db " pool=", 0
 str_ser_edsig:      db " sig=", 0
 str_ser_edmode:     db " mode=", 0
 str_ser_edpre:      db "[EDPRE] sig=", 0
+str_ser_edmech:     db " mech=", 0
+str_ser_edcur:      db " cur=", 0
 %endif  ; KERNEL_MODE
 
 ; ---- Non-KERNEL_MODE container/type names ----
@@ -2517,20 +2535,31 @@ kernel_main:
 
 .no_timer:
 
-    ; ---- Keyboard interrupt ----
-    lea rax, [rel volatile_key_pressed]
+    ; ---- Keyboard ring buffer: drain all accumulated scancodes ----
+.kb_drain_loop:
+    lea rax, [rel kb_ring_tail]
     movzx ecx, byte [rax]
-    test ecx, ecx
-    jz .no_keyboard
+    lea rax, [rel kb_ring_head]
+    movzx edx, byte [rax]
+    cmp ecx, edx
+    je .kb_drain_done
 
-    mov byte [rax], 0
+    ; scancode = kb_ring[tail]
+    lea rax, [rel kb_ring]
+    movzx ecx, byte [rax + rcx]   ; ecx = scancode byte
 
-    ; handle_key(volatile_key_scancode)
-    lea rax, [rel volatile_key_scancode]
-    movzx ecx, byte [rax]
+    ; tail = (tail + 1) & 0x3F
+    lea rax, [rel kb_ring_tail]
+    movzx edx, byte [rax]
+    inc edx
+    and edx, 0x3F
+    mov byte [rax], dl
+
+    ; handle_key(scancode) — ecx already has the scancode
     call handle_key
 
-.no_keyboard:
+    jmp .kb_drain_loop
+.kb_drain_done:
 
     ; ---- Mouse ring buffer: drain all accumulated bytes ----
     xor r12d, r12d                  ; r12 = mouse_packets_processed
@@ -8350,6 +8379,40 @@ handle_key:
     call herb_container_count
     mov ecx, eax
     call serial_print_int
+    ; mech_action (did mechbind_match fire?)
+    lea rcx, [rel str_ser_edmech]
+    call serial_print
+    mov ecx, [rel input_ctl_eid]
+    lea rdx, [rel str_mech_action]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov ecx, eax
+    call serial_print_int
+    ; KEY_SIG count (was signal consumed?)
+    lea rcx, [rel str_ser_edsig]
+    call serial_print
+    lea rcx, [rel str_cn_key_sig]
+    call herb_container_count
+    mov ecx, eax
+    call serial_print_int
+    ; cursor_pos (did type_char advance cursor?)
+    lea rcx, [rel str_ser_edcur]
+    call serial_print
+    lea rcx, [rel str_cn_ed_ctl]
+    xor edx, edx
+    call herb_container_entity
+    test eax, eax
+    js .hk_edkey_no_ctl
+    mov ecx, eax
+    lea rdx, [rel str_prop_cursor_pos]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov ecx, eax
+    jmp .hk_edkey_ctl_done
+.hk_edkey_no_ctl:
+    mov ecx, -1
+.hk_edkey_ctl_done:
+    call serial_print_int
     lea rcx, [rel str_newline]
     call serial_print
     add rsp, 32
@@ -8406,10 +8469,15 @@ handle_key:
     ; Phase 2b: Mechanism dispatch
     cmp dword [rsp+120], 0              ; mech_action > 0?
     jle .hk_no_mech
+    ; Always clear mech_action (prevent stale value across mode transitions)
     mov ecx, [rel input_ctl_eid]
     lea rdx, [rel str_mech_action]
     xor r8d, r8d
     call herb_set_prop_int
+    ; Defense-in-depth: only dispatch in command mode (mode 0)
+    ; HERB guard (where ctl.mode == 0) may not compile correctly (Discovery 60)
+    cmp dword [rsp+128], 0              ; cur_mode == 0?
+    jne .hk_no_mech
     mov ecx, [rsp+120]
     call dispatch_mech_action
 .hk_no_mech:
@@ -12027,6 +12095,393 @@ flow_editor_draw_fn:
 %endif  ; KERNEL_MODE (flow_editor_draw_fn)
 
 ; ============================================================
+; Window/HERB bridge helpers (Session 90)
+; ============================================================
+%ifdef KERNEL_MODE
+%define KWIN_FLAGS         4
+%define KWIN_X             8
+%define KWIN_Y             12
+%define KWIN_W             16
+%define KWIN_H             20
+%define KWIN_BORDER_COLOR  40
+%define KWIN_FILL_COLOR    44
+%define KWIN_TITLE_BG      48
+%define KWIN_ENTITY_ID     52
+%define KWIN_DRAW_FN       80
+%define KWF_VISIBLE        0
+
+%define WM_ROLE_CPU0       0
+%define WM_ROLE_READY      1
+%define WM_ROLE_BLOCKED    2
+%define WM_ROLE_TERM       3
+%define WM_ROLE_TENSIONS   4
+%define WM_ROLE_EDITOR     5
+%define WM_ROLE_GAME       6
+%define WM_ROLE_LIMIT      16
+
+; void wm_apply_boot_window_style(int role, int win_id, int entity_id)
+; MS x64: ECX=role, EDX=win_id, R8D=HERB wm.Window eid
+wm_apply_boot_window_style:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    sub rsp, 48
+    ; 3 pushes + sub 48 = 80 (aligned)
+
+    mov ebx, ecx
+    mov esi, r8d
+    mov edi, edx
+    mov ecx, edx
+    call wm_window_ptr
+    test rax, rax
+    jz .wabws_done
+
+    mov dword [rax + KWIN_ENTITY_ID], esi
+
+    cmp ebx, WM_ROLE_CPU0
+    je .wabws_cpu0
+    cmp ebx, WM_ROLE_READY
+    je .wabws_ready
+    cmp ebx, WM_ROLE_BLOCKED
+    je .wabws_blocked
+    cmp ebx, WM_ROLE_TERM
+    je .wabws_term
+    cmp ebx, WM_ROLE_TENSIONS
+    je .wabws_tensions
+    cmp ebx, WM_ROLE_EDITOR
+    je .wabws_editor
+    cmp ebx, WM_ROLE_GAME
+    je .wabws_game
+    jmp .wabws_done
+
+.wabws_cpu0:
+    mov dword [rax + KWIN_BORDER_COLOR], COL_RUNNING
+    mov dword [rax + KWIN_FILL_COLOR], COL_RUNNING_BG
+    mov dword [rax + KWIN_TITLE_BG], COL_RUNNING
+    lea rdx, [rel wm_draw_region_adapter]
+    mov [rax + KWIN_DRAW_FN], rdx
+    jmp .wabws_done
+
+.wabws_ready:
+    mov dword [rax + KWIN_BORDER_COLOR], COL_READY_COL
+    mov dword [rax + KWIN_FILL_COLOR], COL_READY_BG
+    mov dword [rax + KWIN_TITLE_BG], COL_READY_COL
+    lea rdx, [rel wm_draw_region_adapter]
+    mov [rax + KWIN_DRAW_FN], rdx
+    jmp .wabws_done
+
+.wabws_blocked:
+    mov dword [rax + KWIN_BORDER_COLOR], COL_BLOCKED_COL
+    mov dword [rax + KWIN_FILL_COLOR], COL_BLOCKED_BG
+    mov dword [rax + KWIN_TITLE_BG], COL_BLOCKED_COL
+    lea rdx, [rel wm_draw_region_adapter]
+    mov [rax + KWIN_DRAW_FN], rdx
+    jmp .wabws_done
+
+.wabws_term:
+    mov dword [rax + KWIN_BORDER_COLOR], COL_TERM_COL
+    mov dword [rax + KWIN_FILL_COLOR], COL_TERM_BG
+    mov dword [rax + KWIN_TITLE_BG], COL_TERM_COL
+    lea rdx, [rel wm_draw_region_adapter]
+    mov [rax + KWIN_DRAW_FN], rdx
+    jmp .wabws_done
+
+.wabws_tensions:
+    mov dword [rax + KWIN_BORDER_COLOR], 0x00336688
+    mov dword [rax + KWIN_FILL_COLOR], 0x000C1018
+    mov dword [rax + KWIN_TITLE_BG], 0x00336688
+    lea rdx, [rel wm_draw_tension_adapter]
+    mov [rax + KWIN_DRAW_FN], rdx
+    jmp .wabws_done
+
+.wabws_editor:
+    mov dword [rax + KWIN_BORDER_COLOR], 0x002A2A4E
+    mov dword [rax + KWIN_FILL_COLOR], 0x001A1A2E
+    mov dword [rax + KWIN_TITLE_BG], 0x002A2A4E
+    lea rdx, [rel flow_editor_draw_fn]
+    mov [rax + KWIN_DRAW_FN], rdx
+    mov dword [rel flow_editor_win_id], edi
+    jmp .wabws_done
+
+.wabws_game:
+    mov dword [rax + KWIN_BORDER_COLOR], 0x00204030
+    mov dword [rax + KWIN_FILL_COLOR], COL_GAME_BG
+    mov dword [rax + KWIN_TITLE_BG], 0x00204030
+    lea rdx, [rel game_draw_fn]
+    mov [rax + KWIN_DRAW_FN], rdx
+    mov dword [rel game_win_id], edi
+
+.wabws_done:
+    add rsp, 48
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; void wm_write_window_geometry_to_herb(int win_id)
+; Writes x/y/width/height back to the owning wm.Window entity.
+wm_write_window_geometry_to_herb:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    sub rsp, 40
+    ; 4 pushes + sub 40 = 8+32+40 = 80. 80%16=0 ✓
+
+    mov ebx, ecx
+    call wm_window_ptr
+    test rax, rax
+    jz .wwg_done
+    mov rsi, rax
+
+    mov edi, dword [rsi + KWIN_ENTITY_ID]
+    test edi, edi
+    js .wwg_done
+
+    mov ecx, edi
+    lea rdx, [rel str_x]
+    mov r8d, dword [rsi + KWIN_X]
+    movsxd r8, r8d
+    call herb_set_prop_int
+
+    mov ecx, edi
+    lea rdx, [rel str_y]
+    mov r8d, dword [rsi + KWIN_Y]
+    movsxd r8, r8d
+    call herb_set_prop_int
+
+    mov ecx, edi
+    lea rdx, [rel str_gfx_width]
+    mov r8d, dword [rsi + KWIN_W]
+    movsxd r8, r8d
+    call herb_set_prop_int
+
+    mov ecx, edi
+    lea rdx, [rel str_gfx_height]
+    mov r8d, dword [rsi + KWIN_H]
+    movsxd r8, r8d
+    call herb_set_prop_int
+
+.wwg_done:
+    add rsp, 40
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; void wm_write_all_z_order_to_herb(void)
+; Mirrors the current wm_z_order array into each wm.Window entity's z_order prop.
+wm_write_all_z_order_to_herb:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    sub rsp, 32
+    ; 5 pushes + sub 32 = 80 (aligned)
+
+    xor r12d, r12d
+.wz_loop:
+    cmp r12d, dword [rel wm_window_count]
+    jge .wz_done
+
+    lea rax, [rel wm_z_order]
+    movzx ebx, byte [rax + r12]
+    mov ecx, ebx
+    call wm_window_ptr
+    test rax, rax
+    jz .wz_next
+
+    mov edi, dword [rax + KWIN_ENTITY_ID]
+    test edi, edi
+    js .wz_next
+
+    mov ecx, edi
+    lea rdx, [rel str_z_order]
+    mov r8d, r12d
+    movsxd r8, r8d
+    call herb_set_prop_int
+
+.wz_next:
+    inc r12d
+    jmp .wz_loop
+
+.wz_done:
+    add rsp, 32
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; void wm_sync_from_herb(void)
+; Reads wm.Window entities and refreshes the WM cache (geometry + visibility + z order).
+; Focus remains assembly-managed in Session 90.
+%define WMSH_EID   32
+%define WMSH_ROLE  36
+%define WMSH_Z     40
+%define WMSH_VI    44
+%define WMSH_NV    48
+%define WMSH_RX    52
+%define WMSH_RY    56
+%define WMSH_RW    60
+%define WMSH_RH    64
+%define WMSH_WID   68
+
+wm_sync_from_herb:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    sub rsp, 88
+    ; 6 pushes + sub 88 = 8+48+88 = 144. 144%16=0 ✓
+
+    lea rcx, [rel wm_z_order]
+    mov edx, 0xFF
+    mov r8d, 16
+    call herb_memset
+
+    xor r12d, r12d
+.wsh_clear_loop:
+    cmp r12d, WM_ROLE_LIMIT
+    jge .wsh_count
+    lea r13, [rel wm_role_to_win_id]
+    mov eax, dword [r13 + r12*4]
+    test eax, eax
+    js .wsh_clear_next
+    mov ecx, eax
+    call wm_window_ptr
+    test rax, rax
+    jz .wsh_clear_next
+    and dword [rax + KWIN_FLAGS], ~(1 << KWF_VISIBLE)
+.wsh_clear_next:
+    inc r12d
+    jmp .wsh_clear_loop
+
+.wsh_count:
+    lea rcx, [rel str_cn_wm_visible]
+    call herb_container_count
+    test eax, eax
+    jns .wsh_count_ok
+    xor eax, eax
+.wsh_count_ok:
+    cmp eax, 16
+    jle .wsh_count_clamped
+    mov eax, 16
+.wsh_count_clamped:
+    mov dword [rel wm_window_count], eax
+    mov dword [rsp + WMSH_NV], eax
+    mov dword [rsp + WMSH_VI], 0
+
+.wsh_loop:
+    mov eax, dword [rsp + WMSH_VI]
+    cmp eax, dword [rsp + WMSH_NV]
+    jge .wsh_done
+
+    lea rcx, [rel str_cn_wm_visible]
+    mov edx, eax
+    call herb_container_entity
+    test eax, eax
+    js .wsh_next
+    mov dword [rsp + WMSH_EID], eax
+
+    mov ecx, eax
+    lea rdx, [rel str_role]
+    mov r8d, -1
+    call herb_entity_prop_int
+    mov dword [rsp + WMSH_ROLE], eax
+    cmp eax, 0
+    jl .wsh_next
+    cmp eax, WM_ROLE_GAME
+    jg .wsh_next
+
+    mov ecx, dword [rsp + WMSH_EID]
+    lea rdx, [rel str_x]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + WMSH_RX], eax
+
+    mov ecx, dword [rsp + WMSH_EID]
+    lea rdx, [rel str_y]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov dword [rsp + WMSH_RY], eax
+
+    mov ecx, dword [rsp + WMSH_EID]
+    lea rdx, [rel str_gfx_width]
+    mov r8d, 100
+    call herb_entity_prop_int
+    mov dword [rsp + WMSH_RW], eax
+
+    mov ecx, dword [rsp + WMSH_EID]
+    lea rdx, [rel str_gfx_height]
+    mov r8d, 100
+    call herb_entity_prop_int
+    mov dword [rsp + WMSH_RH], eax
+
+    mov ecx, dword [rsp + WMSH_EID]
+    lea rdx, [rel str_z_order]
+    mov r8d, dword [rsp + WMSH_VI]
+    call herb_entity_prop_int
+    mov dword [rsp + WMSH_Z], eax
+
+    mov eax, dword [rsp + WMSH_ROLE]
+    lea r13, [rel wm_role_to_win_id]
+    mov eax, dword [r13 + rax*4]
+    mov dword [rsp + WMSH_WID], eax
+    test eax, eax
+    js .wsh_next
+
+    mov ecx, eax
+    call wm_window_ptr
+    test rax, rax
+    jz .wsh_next
+
+    mov ebx, dword [rsp + WMSH_RX]
+    mov dword [rax + KWIN_X], ebx
+    mov ebx, dword [rsp + WMSH_RY]
+    mov dword [rax + KWIN_Y], ebx
+    mov ebx, dword [rsp + WMSH_RW]
+    mov dword [rax + KWIN_W], ebx
+    mov ebx, dword [rsp + WMSH_RH]
+    mov dword [rax + KWIN_H], ebx
+    mov ebx, dword [rsp + WMSH_EID]
+    mov dword [rax + KWIN_ENTITY_ID], ebx
+    or dword [rax + KWIN_FLAGS], (1 << KWF_VISIBLE)
+
+    mov edx, dword [rsp + WMSH_Z]
+    cmp edx, 0
+    jl .wsh_next
+    cmp edx, 16
+    jge .wsh_next
+    mov eax, dword [rsp + WMSH_WID]
+    lea rcx, [rel wm_z_order]
+    mov byte [rcx + rdx], al
+
+.wsh_next:
+    inc dword [rsp + WMSH_VI]
+    jmp .wsh_loop
+
+.wsh_done:
+    add rsp, 88
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+%endif
+
+; ============================================================
 ; WINDOW MANAGER ADAPTERS — Bridge between WM draw_fn and kernel content renderers
 ; ============================================================
 
@@ -12127,19 +12582,17 @@ wm_draw_tension_adapter:
 ; panel (kind==4).
 ; ============================================================
 ; Locals start at 64 to leave room for call args at [rsp+32..63]
-%define WMIW_SID   64
-%define WMIW_RID   68
-%define WMIW_WID   72
-%define WMIW_KIND  76
+%define WMIW_EID   64
+%define WMIW_ROLE  68
+%define WMIW_Z     72
+%define WMIW_WID   76
 %define WMIW_VI    80
 %define WMIW_NV    84
 %define WMIW_RX    88
 %define WMIW_RY    92
 %define WMIW_RW    96
 %define WMIW_RH    100
-%define WMIW_BC    104
-%define WMIW_FC    108
-%define WMIW_EID   112
+%define WMIW_SPARE 104
 
 wm_init_default_windows:
     push rbp
@@ -12153,244 +12606,192 @@ wm_init_default_windows:
     ; 6 pushes + sub 136 = 8 + 48 + 136 = 192. 192 % 16 = 0. ✓
 
 %ifdef KERNEL_MODE
-    ; Count entities in display.VISIBLE
-    lea rcx, [rel str_cn_visible]
+    lea rcx, [rel wm_role_to_win_id]
+    mov edx, 0xFF
+    mov r8d, 64
+    call herb_memset
+    mov dword [rel flow_editor_win_id], -1
+    mov dword [rel game_win_id], -1
+
+    ; Count entities in wm.VISIBLE
+    lea rcx, [rel str_cn_wm_visible]
     call herb_container_count
+    test eax, eax
+    jns .wmiw_count_ok
+    xor eax, eax
+.wmiw_count_ok:
     mov dword [rsp + WMIW_NV], eax
     mov dword [rsp + WMIW_VI], 0
+    lea rcx, [rel str_wm_boot_count]
+    call serial_print
+    mov ecx, dword [rsp + WMIW_NV]
+    call serial_print_int
+    lea rcx, [rel str_newline]
+    call serial_print
 
 .wmiw_loop:
     mov eax, dword [rsp + WMIW_VI]
     cmp eax, dword [rsp + WMIW_NV]
     jge .wmiw_done
 
-    ; Get entity ID
-    lea rcx, [rel str_cn_visible]
+    lea rcx, [rel str_cn_wm_visible]
     mov edx, eax
     call herb_container_entity
     test eax, eax
     js .wmiw_next
-    mov dword [rsp + WMIW_SID], eax
     mov dword [rsp + WMIW_EID], eax
 
-    ; Get kind
     mov ecx, eax
-    lea rdx, [rel str_kind]
+    lea rdx, [rel str_role]
     mov r8d, -1
     call herb_entity_prop_int
-    mov dword [rsp + WMIW_KIND], eax
-
-    ; Handle kind == 0 (region surface)
-    cmp eax, 0
-    jne .wmiw_check_panel
-
-    ; Read region_id
-    mov ecx, dword [rsp + WMIW_SID]
-    lea rdx, [rel str_gfx_region_id]
-    mov r8d, -1
-    call herb_entity_prop_int
+    mov dword [rsp + WMIW_ROLE], eax
     cmp eax, 0
     jl .wmiw_next
-    cmp eax, 3
+    cmp eax, WM_ROLE_GAME
     jg .wmiw_next
-    mov dword [rsp + WMIW_RID], eax
 
-    ; Read x, y, width, height, border_color, fill_color
-    mov ecx, dword [rsp + WMIW_SID]
+    mov ecx, dword [rsp + WMIW_EID]
     lea rdx, [rel str_x]
     xor r8d, r8d
     call herb_entity_prop_int
     mov dword [rsp + WMIW_RX], eax
 
-    mov ecx, dword [rsp + WMIW_SID]
+    mov ecx, dword [rsp + WMIW_EID]
     lea rdx, [rel str_y]
     xor r8d, r8d
     call herb_entity_prop_int
     mov dword [rsp + WMIW_RY], eax
 
-    mov ecx, dword [rsp + WMIW_SID]
+    mov ecx, dword [rsp + WMIW_EID]
     lea rdx, [rel str_gfx_width]
     mov r8d, 100
     call herb_entity_prop_int
     mov dword [rsp + WMIW_RW], eax
 
-    mov ecx, dword [rsp + WMIW_SID]
+    mov ecx, dword [rsp + WMIW_EID]
     lea rdx, [rel str_gfx_height]
     mov r8d, 100
     call herb_entity_prop_int
     mov dword [rsp + WMIW_RH], eax
 
-    mov ecx, dword [rsp + WMIW_SID]
-    lea rdx, [rel str_border_color]
-    mov r8d, 0x00888888                 ; COL_TEXT_DIM
+    mov ecx, dword [rsp + WMIW_EID]
+    lea rdx, [rel str_z_order]
+    mov r8d, dword [rsp + WMIW_VI]
     call herb_entity_prop_int
-    mov dword [rsp + WMIW_BC], eax
+    mov dword [rsp + WMIW_Z], eax
 
-    mov ecx, dword [rsp + WMIW_SID]
-    lea rdx, [rel str_fill_color]
-    mov r8d, 0x00101820                 ; COL_BG
-    call herb_entity_prop_int
-    mov dword [rsp + WMIW_FC], eax
+    lea rcx, [rel str_wm_boot_role]
+    call serial_print
+    mov ecx, dword [rsp + WMIW_ROLE]
+    call serial_print_int
+    lea rcx, [rel str_wm_boot_geom]
+    call serial_print
+    mov ecx, dword [rsp + WMIW_RX]
+    call serial_print_int
+    lea rcx, [rel str_comma]
+    call serial_print
+    mov ecx, dword [rsp + WMIW_RY]
+    call serial_print_int
+    lea rcx, [rel str_comma]
+    call serial_print
+    mov ecx, dword [rsp + WMIW_RW]
+    call serial_print_int
+    lea rcx, [rel str_comma]
+    call serial_print
+    mov ecx, dword [rsp + WMIW_RH]
+    call serial_print_int
+    lea rcx, [rel str_wm_boot_z]
+    call serial_print
+    mov ecx, dword [rsp + WMIW_Z]
+    call serial_print_int
+    lea rcx, [rel str_newline]
+    call serial_print
 
-    ; wm_create_window(x, y, w, h, type=0, content_id=rid, title=region_titles[rid], flags)
+    mov eax, dword [rsp + WMIW_ROLE]
+    cmp eax, WM_ROLE_TERM
+    jle .wmiw_region
+    cmp eax, WM_ROLE_TENSIONS
+    je .wmiw_tensions
+    cmp eax, WM_ROLE_EDITOR
+    je .wmiw_editor
+    cmp eax, WM_ROLE_GAME
+    je .wmiw_game
+    jmp .wmiw_next
+
+.wmiw_region:
     mov ecx, dword [rsp + WMIW_RX]
     mov edx, dword [rsp + WMIW_RY]
     mov r8d, dword [rsp + WMIW_RW]
     mov r9d, dword [rsp + WMIW_RH]
-    mov dword [rsp + 32], 0            ; type = WCT_REGION
-    mov eax, dword [rsp + WMIW_RID]
-    mov dword [rsp + 40], eax          ; content_id = region_id
-    ; title = region_titles[rid]
+    mov dword [rsp + 32], 0
+    mov eax, dword [rsp + WMIW_ROLE]
+    mov dword [rsp + 40], eax
     movsxd rax, eax
     lea rdi, [rel region_titles]
     mov rdi, [rdi + rax*8]
-    mov [rsp + 48], rdi                ; title pointer
-    mov dword [rsp + 56], (1 << 5) | (1 << 6) ; WF_CLOSABLE | WF_RESIZABLE
+    mov [rsp + 48], rdi
+    mov dword [rsp + 56], (1 << 5) | (1 << 6)
     call wm_create_window
-    cmp eax, -1
-    je .wmiw_next
-    mov dword [rsp + WMIW_WID], eax
+    jmp .wmiw_created
 
-    ; Set border_color, fill_color, title_bg on the window
-    mov ecx, eax
-    call wm_window_ptr
-    test rax, rax
-    jz .wmiw_next
-    mov rbx, rax
-
-    mov eax, dword [rsp + WMIW_BC]
-    mov dword [rbx + 40], eax          ; WIN_BORDER_COLOR
-    mov eax, dword [rsp + WMIW_FC]
-    mov dword [rbx + 44], eax          ; WIN_FILL_COLOR
-    mov eax, dword [rsp + WMIW_BC]
-    mov dword [rbx + 48], eax          ; WIN_TITLE_BG = border_color (matches old style)
-    mov eax, dword [rsp + WMIW_EID]
-    mov dword [rbx + 52], eax          ; WIN_ENTITY_ID
-
-    ; Set draw_fn = wm_draw_region_adapter
-    lea rax, [rel wm_draw_region_adapter]
-    mov [rbx + 80], rax                ; WIN_DRAW_FN
-
-    jmp .wmiw_next
-
-.wmiw_check_panel:
-    ; Handle kind == 4 (tension panel surface)
-    cmp dword [rsp + WMIW_KIND], 4
-    jne .wmiw_next
-
-    ; Read panel position from Surface entity
-    mov ecx, dword [rsp + WMIW_SID]
-    lea rdx, [rel str_x]
-    mov r8d, 548                        ; default GFX_TENS_X
-    call herb_entity_prop_int
-    mov dword [rsp + WMIW_RX], eax
-
-    mov ecx, dword [rsp + WMIW_SID]
-    lea rdx, [rel str_y]
-    mov r8d, 76                         ; default GFX_TENS_Y
-    call herb_entity_prop_int
-    mov dword [rsp + WMIW_RY], eax
-
-    mov ecx, dword [rsp + WMIW_SID]
-    lea rdx, [rel str_gfx_width]
-    mov r8d, 244                        ; default GFX_TENS_W
-    call herb_entity_prop_int
-    mov dword [rsp + WMIW_RW], eax
-
-    mov ecx, dword [rsp + WMIW_SID]
-    lea rdx, [rel str_gfx_height]
-    mov r8d, 388                        ; default GFX_TENS_H
-    call herb_entity_prop_int
-    mov dword [rsp + WMIW_RH], eax
-
-    ; wm_create_window(x, y, w, h, type=1, content_id=4, title="TENSIONS", flags)
+.wmiw_tensions:
     mov ecx, dword [rsp + WMIW_RX]
     mov edx, dword [rsp + WMIW_RY]
     mov r8d, dword [rsp + WMIW_RW]
     mov r9d, dword [rsp + WMIW_RH]
-    mov dword [rsp + 32], 1            ; type = WCT_TENSIONS
-    mov dword [rsp + 40], 4            ; content_id = 4
+    mov dword [rsp + 32], 1
+    mov dword [rsp + 40], 4
     lea rdi, [rel str_gfx_tensions]
-    mov [rsp + 48], rdi                ; title = "TENSIONS"
-    mov dword [rsp + 56], (1 << 5) | (1 << 6) ; WF_CLOSABLE | WF_RESIZABLE
+    mov [rsp + 48], rdi
+    mov dword [rsp + 56], (1 << 5) | (1 << 6)
     call wm_create_window
+    jmp .wmiw_created
+
+.wmiw_editor:
+    mov ecx, dword [rsp + WMIW_RX]
+    mov edx, dword [rsp + WMIW_RY]
+    mov r8d, dword [rsp + WMIW_RW]
+    mov r9d, dword [rsp + WMIW_RH]
+    mov dword [rsp + 32], 3
+    mov dword [rsp + 40], 0
+    lea rdi, [rel str_editor_title]
+    mov [rsp + 48], rdi
+    mov dword [rsp + 56], (1 << 5) | (1 << 6)
+    call wm_create_window
+    jmp .wmiw_created
+
+.wmiw_game:
+    mov ecx, dword [rsp + WMIW_RX]
+    mov edx, dword [rsp + WMIW_RY]
+    mov r8d, dword [rsp + WMIW_RW]
+    mov r9d, dword [rsp + WMIW_RH]
+    mov dword [rsp + 32], 3
+    mov dword [rsp + 40], 0
+    lea rdi, [rel str_game_title]
+    mov [rsp + 48], rdi
+    mov dword [rsp + 56], (1 << 5) | (1 << 6)
+    call wm_create_window
+
+.wmiw_created:
+    mov dword [rsp + WMIW_WID], eax
     cmp eax, -1
     je .wmiw_next
-
-    ; Set colors and draw_fn
-    mov ecx, eax
-    call wm_window_ptr
-    test rax, rax
-    jz .wmiw_next
-    mov rbx, rax
-
-    mov dword [rbx + 40], 0x00336688   ; WIN_BORDER_COLOR = COL_TENS_BORDER
-    mov dword [rbx + 44], 0x000C1018   ; WIN_FILL_COLOR = COL_TENS_BG
-    mov dword [rbx + 48], 0x00336688   ; WIN_TITLE_BG
-    mov eax, dword [rsp + WMIW_EID]
-    mov dword [rbx + 52], eax          ; WIN_ENTITY_ID
-
-    ; Set draw_fn = wm_draw_tension_adapter
-    lea rax, [rel wm_draw_tension_adapter]
-    mov [rbx + 80], rax                ; WIN_DRAW_FN
+    lea rbx, [rel wm_role_to_win_id]
+    mov eax, dword [rsp + WMIW_ROLE]
+    mov edx, dword [rsp + WMIW_WID]
+    mov dword [rbx + rax*4], edx
+    mov ecx, dword [rsp + WMIW_ROLE]
+    mov edx, dword [rsp + WMIW_WID]
+    mov r8d, dword [rsp + WMIW_EID]
+    call wm_apply_boot_window_style
 
 .wmiw_next:
     inc dword [rsp + WMIW_VI]
     jmp .wmiw_loop
 
 .wmiw_done:
-    ; Create flow editor window
-    mov ecx, 400                        ; x
-    mov edx, 76                         ; y
-    mov r8d, 400                        ; w
-    mov r9d, 500                        ; h
-    mov dword [rsp + 32], 3             ; type = WCT_CUSTOM
-    mov dword [rsp + 40], 0             ; content_id = 0
-    lea rdi, [rel str_editor_title]
-    mov [rsp + 48], rdi                 ; title = "EDITOR"
-    mov dword [rsp + 56], (1 << 5) | (1 << 6) ; WF_CLOSABLE | WF_RESIZABLE
-    call wm_create_window
-    mov [rel flow_editor_win_id], eax
-
-    ; Set colors and draw_fn
-    cmp eax, -1
-    je .wmiw_ed_skip
-    mov ecx, eax
-    call wm_window_ptr
-    test rax, rax
-    jz .wmiw_ed_skip
-    mov dword [rax + 40], 0x002A2A4E   ; WIN_BORDER_COLOR = dark blue
-    mov dword [rax + 44], 0x001A1A2E   ; WIN_FILL_COLOR = editor bg
-    mov dword [rax + 48], 0x002A2A4E   ; WIN_TITLE_BG
-    lea rbx, [rel flow_editor_draw_fn]
-    mov [rax + 80], rbx                ; WIN_DRAW_FN
-.wmiw_ed_skip:
-
-    ; Create game window
-    mov ecx, 10                         ; x
-    mov edx, 76                         ; y
-    mov r8d, 500                        ; w
-    mov r9d, 520                        ; h
-    mov dword [rsp + 32], 3             ; type = WCT_CUSTOM
-    mov dword [rsp + 40], 0             ; content_id
-    lea rdi, [rel str_game_title]
-    mov [rsp + 48], rdi                 ; title
-    mov dword [rsp + 56], (1 << 5) | (1 << 6) ; WF_CLOSABLE | WF_RESIZABLE
-    call wm_create_window
-    mov [rel game_win_id], eax
-
-    cmp eax, -1
-    je .wmiw_game_skip
-    mov ecx, eax
-    call wm_window_ptr
-    test rax, rax
-    jz .wmiw_game_skip
-    mov dword [rax + 40], 0x00204030   ; border: dark green
-    mov dword [rax + 44], COL_GAME_BG  ; fill
-    mov dword [rax + 48], 0x00204030   ; title bg: dark green
-    lea rbx, [rel game_draw_fn]
-    mov [rax + 80], rbx                ; WIN_DRAW_FN
-.wmiw_game_skip:
+    call wm_sync_from_herb
 
 %else
     ; Non-KERNEL_MODE: create windows from hardcoded positions
@@ -13249,6 +13650,9 @@ gfx_draw_full:
     call fb_hline
 
     ; ---- 7+8. Window manager: container regions + tension panel ----
+    ; NOTE: wm_sync_from_herb is called once at boot (wm_init_default_windows).
+    ; Per-frame sync removed — no tensions modify wm.Window entities currently,
+    ; and per-frame reset was clobbering drag/z-order mutations from herb_wm.asm.
     call wm_draw_all
 
     ; ---- 9. Action log ----

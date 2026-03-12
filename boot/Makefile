@@ -75,7 +75,7 @@ herb_compiler.o: herb_compiler.asm herb_graph_layout.inc
 	$(NASM) -f win64 $< -o $@
 
 herb_wm.o: herb_wm.asm
-	$(NASM) -f win64 $< -o $@
+	$(NASM) $(NASMFLAGS_KERNEL) $< -o $@
 
 herb_editor.o: herb_editor.asm
 	$(NASM) -f win64 $< -o $@
