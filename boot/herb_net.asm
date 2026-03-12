@@ -1337,59 +1337,6 @@ net_poll_rx:
     cmp dword [rel net_present], 0
     je .poll_done
 
-    ; DEBUG: Scan RX ring DD bits (only during ESTABLISHED)
-    cmp dword [rel tcp_state], TCP_STATE_ESTABLISHED
-    jne .dbg_rx_skip
-    xor esi, esi                    ; DD count
-    xor ebx, ebx                    ; descriptor index
-    lea rdi, [rel net_rx_descs]
-.dbg_rx_scan:
-    cmp ebx, RX_DESC_COUNT
-    jge .dbg_rx_log
-    mov eax, ebx
-    shl eax, 4                      ; * 16 bytes per descriptor
-    test byte [rdi + rax + 12], DESC_DD
-    jz .dbg_rx_scan_next
-    inc esi
-.dbg_rx_scan_next:
-    inc ebx
-    jmp .dbg_rx_scan
-.dbg_rx_log:
-    mov ebx, [rel net_rx_head]      ; head index
-    lea rcx, [rel net_msg_buf]
-    mov edx, 128
-    lea r8, [rel str_dbg_rx_dd]
-    mov r9d, ebx                    ; head
-    movzx eax, si                   ; DD count
-    mov [rsp+32], rax               ; 5th arg
-    call herb_snprintf
-    lea rcx, [rel net_msg_buf]
-    call serial_print
-
-    ; Read hardware RDH register
-    mov ecx, E1000_RDH
-    call e1000_read
-    mov ebx, eax                    ; save RDH in ebx
-
-    ; Read hardware RDT register
-    mov ecx, E1000_RDT
-    call e1000_read
-    ; eax = RDT, ebx = RDH
-
-    ; Print hardware register values
-    lea rcx, [rel net_msg_buf]
-    mov edx, 128
-    lea r8, [rel str_dbg_rx_ring]
-    mov r9d, ebx                    ; RDH
-    mov [rsp+32], rax               ; RDT (5th arg)
-    call herb_snprintf
-    lea rcx, [rel net_msg_buf]
-    call serial_print
-
-    ; Restore ebx (net_rx_head reloaded below, but keep consistent)
-    mov ebx, [rel net_rx_head]
-.dbg_rx_skip:
-
     ; Check flag from ISR
     cmp dword [rel net_rx_flag], 0
     jne .poll_check
@@ -3677,29 +3624,6 @@ tcp_handle_packet:
     test esi, TCP_RST
     jnz .tcp_got_rst
 
-    ; DEBUG: Log every ESTABLISHED packet
-    lea rcx, [rel net_msg_buf]
-    mov edx, 128
-    lea r8, [rel str_dbg_est1]      ; "[DBG] EST: flags=%d seq=%d ack=%d"
-    movzx r9d, si                   ; flags
-    mov eax, [rsp+48]               ; peer_seq
-    mov [rsp+32], rax
-    mov eax, [rsp+52]               ; peer_ack
-    mov [rsp+40], rax
-    call herb_snprintf
-    lea rcx, [rel net_msg_buf]
-    call serial_print
-
-    lea rcx, [rel net_msg_buf]
-    mov edx, 128
-    lea r8, [rel str_dbg_est2]      ; "[DBG]   paylen=%d our_ack=%d"
-    mov r9d, [rsp+60]               ; payload_len
-    mov eax, [rel tcp_ack_num]
-    mov [rsp+32], rax
-    call herb_snprintf
-    lea rcx, [rel net_msg_buf]
-    call serial_print
-
     ; Get payload_len from backup slot (safe from serial log clobber)
     mov ecx, [rsp+60]              ; payload_len
 
@@ -3794,38 +3718,6 @@ tcp_handle_packet:
     mov dword [rel tcp_state], TCP_STATE_LAST_ACK
 
     lea rcx, [rel str_tcp_fin_fmt]
-    call serial_print
-
-    ; DEBUG: Hex dump first 32 bytes of received data
-    lea rcx, [rel net_msg_buf]
-    mov edx, 128
-    lea r8, [rel str_dbg_hex_hdr]   ; "[DBG] recv hex (%d bytes): "
-    mov r9d, [rel tcp_recv_len]
-    call herb_snprintf
-    lea rcx, [rel net_msg_buf]
-    call serial_print
-
-    ; Print each byte as decimal
-    lea rbx, [rel tcp_recv_buf]
-    xor r14d, r14d                  ; byte index
-    mov r13d, [rel tcp_recv_len]    ; total bytes
-    cmp r13d, 32
-    jbe .dbg_hex_loop
-    mov r13d, 32                    ; cap at 32 bytes
-.dbg_hex_loop:
-    cmp r14d, r13d
-    jge .dbg_hex_done
-    movzx r9d, byte [rbx + r14]    ; byte value
-    lea rcx, [rel net_msg_buf]
-    mov edx, 128
-    lea r8, [rel str_dbg_hex_byte]  ; "%d "
-    call herb_snprintf
-    lea rcx, [rel net_msg_buf]
-    call serial_print
-    inc r14d
-    jmp .dbg_hex_loop
-.dbg_hex_done:
-    lea rcx, [rel str_dbg_newline]
     call serial_print
 
     jmp .tcp_rx_done
@@ -3939,15 +3831,6 @@ str_http_status_fmt: db "[HTTP] status=%d body=%d bytes", 10, 0
 str_http_body_hdr:   db "[HTTP] body:", 10, 0
 str_http_req_fmt:    db "GET %s HTTP/1.0", 13, 10, "Host: %s", 13, 10, 13, 10, 0
 str_http_slash:      db "/", 0
-
-; Debug format strings (TCP investigation)
-str_dbg_rx_dd:      db "[DBG] RX ring: head=%d DD_count=%d", 10, 0
-str_dbg_rx_ring:    db "[DBG] RX hw: RDH=%d RDT=%d", 10, 0
-str_dbg_est1:       db "[DBG] EST: flags=%d seq=%d ack=%d", 10, 0
-str_dbg_est2:       db "[DBG]   paylen=%d our_ack=%d", 10, 0
-str_dbg_hex_hdr:    db "[DBG] recv hex (%d bytes): ", 0
-str_dbg_hex_byte:   db "%d ", 0
-str_dbg_newline:    db 10, 0
 
 dns_server_ip:
     dd 0x0302000A               ; 10.0.2.3 in little-endian

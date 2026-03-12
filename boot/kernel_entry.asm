@@ -26,11 +26,12 @@ global e1000_isr_stub
 
 ; Exported variables for C code to read
 global volatile_timer_fired
-global volatile_key_scancode
-global volatile_key_pressed
 global mouse_ring
 global mouse_ring_head
 global mouse_ring_tail
+global kb_ring
+global kb_ring_head
+global kb_ring_tail
 
 ; NIC flag (from herb_net.asm)
 extern net_rx_flag
@@ -97,23 +98,33 @@ timer_isr_stub:
     iretq
 
 ; ---- Keyboard interrupt (IRQ1 -> IDT entry 33) ----
+; Uses a 64-byte ring buffer to avoid lost scancodes during long main-loop work.
 keyboard_isr_stub:
     push rax
     push rdi
+    push rcx
 
     ; Read scan code from keyboard controller
     in al, 0x60
-    lea rdi, [volatile_key_scancode]
-    mov byte [rdi], al
+    mov cl, al                              ; save scancode in cl
 
-    ; Set key_pressed flag
-    lea rdi, [volatile_key_pressed]
-    mov byte [rdi], 1
+    ; Store in ring buffer: kb_ring[head] = scancode
+    lea rdi, [kb_ring_head]
+    movzx eax, byte [rdi]                  ; eax = current head index
+    lea rdi, [kb_ring]
+    mov byte [rdi + rax], cl               ; ring[head] = scancode
+
+    ; Advance head: head = (head + 1) & 0x3F
+    inc al
+    and al, 0x3F
+    lea rdi, [kb_ring_head]
+    mov byte [rdi], al
 
     ; Send End-Of-Interrupt to PIC (master)
     mov al, 0x20
     out 0x20, al
 
+    pop rcx
     pop rdi
     pop rax
     iretq
@@ -185,11 +196,12 @@ section .bss
 
 ; Volatile flags set by ISRs, read by main loop
 volatile_timer_fired:   resb 1
-volatile_key_scancode:  resb 1
-volatile_key_pressed:   resb 1
 mouse_ring:         resb 64     ; 64-byte circular buffer for mouse bytes
 mouse_ring_head:    resb 1      ; write index (ISR increments)
 mouse_ring_tail:    resb 1      ; read index (main loop increments)
+kb_ring:            resb 64     ; 64-byte circular keyboard scancode buffer
+kb_ring_head:       resb 1      ; write index (ISR increments)
+kb_ring_tail:       resb 1      ; read index (main loop increments)
 
 ; Alignment padding
 alignb 16

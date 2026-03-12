@@ -309,6 +309,29 @@ def run_tests(image_path, net=False):
         mode_str = "KERNEL" if is_kernel else "FLAT"
         print(f"  Mode detected: {mode_str}")
 
+        if is_kernel:
+            serial_so_far = t.get_serial()
+            m_wm = re.search(r"\[WM\] wm\.VISIBLE=(\d+)", serial_so_far)
+            if m_wm:
+                t.check("WM HERB window count logged", True)
+                wm_count = int(m_wm.group(1))
+                t.check("WM HERB window count is 7", wm_count == 7,
+                         f"got {wm_count}")
+
+                expected_windows = [
+                    ("WM CPU0 geometry logged", r"\[WM\] role=0 geom=8,76,262,190 z=0"),
+                    ("WM READY geometry logged", r"\[WM\] role=1 geom=278,76,262,190 z=1"),
+                    ("WM BLOCKED geometry logged", r"\[WM\] role=2 geom=8,274,262,190 z=2"),
+                    ("WM TERMINATED geometry logged", r"\[WM\] role=3 geom=278,274,262,190 z=3"),
+                    ("WM TENSIONS geometry logged", r"\[WM\] role=4 geom=548,98,244,350 z=4"),
+                    ("WM EDITOR geometry logged", r"\[WM\] role=5 geom=400,76,400,500 z=5"),
+                    ("WM GAME geometry logged", r"\[WM\] role=6 geom=10,76,500,520 z=6"),
+                ]
+                for label, pattern in expected_windows:
+                    t.check(label, re.search(pattern, serial_so_far) is not None)
+            else:
+                print("  INFO: Graphics WM logs not present in text-mode run; skipping Session 90 WM checks")
+
         # ============================================================
         # Boot-Time Compilation Tests
         # The in-kernel compiler compiles all .herb source at boot.

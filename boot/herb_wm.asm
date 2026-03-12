@@ -31,6 +31,10 @@ extern fb_draw_container
 ; Utility (from herb_freestanding.asm)
 extern herb_snprintf
 extern herb_memset
+%ifdef GRAPHICS_MODE
+extern wm_write_window_geometry_to_herb
+extern wm_write_all_z_order_to_herb
+%endif
 
 ; ============================================================
 ; CONSTANTS
@@ -54,7 +58,7 @@ WIN_CONTENT_ID      equ 36      ; dd — region_id or future identifier
 WIN_BORDER_COLOR    equ 40      ; dd — 32-bit color
 WIN_FILL_COLOR      equ 44      ; dd — client area background
 WIN_TITLE_BG        equ 48      ; dd — title bar color
-WIN_ENTITY_ID       equ 52      ; dd — HERB Surface entity ID (-1 if none)
+WIN_ENTITY_ID       equ 52      ; dd — HERB wm.Window entity ID (-1 if none)
 WIN_TITLE_PTR       equ 56      ; dq — pointer to title string
 WIN_RESTORE_X       equ 64      ; dd — saved X before maximize
 WIN_RESTORE_Y       equ 68      ; dd — saved Y before maximize
@@ -769,6 +773,9 @@ wm_bring_to_front:
     ; Place win_id at top (index count-1)
     lea eax, [ecx - 1]
     mov byte [rsi + rax], bl
+%ifdef GRAPHICS_MODE
+    call wm_write_all_z_order_to_herb
+%endif
 
 .btf_done:
     add rsp, 32
@@ -1114,6 +1121,10 @@ wm_update_drag:
     mov ecx, 578
 .ud_y_max_ok:
     mov dword [rax + WIN_Y], ecx
+%ifdef GRAPHICS_MODE
+    mov ecx, dword [rel wm_drag_win_id]
+    call wm_write_window_geometry_to_herb
+%endif
     jmp .ud_done
 
 .ud_resize:
@@ -1138,6 +1149,10 @@ wm_update_drag:
     mov ecx, dword [rax + WIN_MIN_H]
 .ud_h_ok:
     mov dword [rax + WIN_H], ecx
+%ifdef GRAPHICS_MODE
+    mov ecx, dword [rel wm_drag_win_id]
+    call wm_write_window_geometry_to_herb
+%endif
 
 .ud_done:
     add rsp, 32
