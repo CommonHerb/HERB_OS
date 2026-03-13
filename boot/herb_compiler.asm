@@ -25,6 +25,7 @@ extern herb_strncpy
 extern herb_memset
 extern herb_atoll
 extern herb_memcpy
+extern serial_print
 
 ; Export
 global herb_compile_source
@@ -36,7 +37,7 @@ global herb_compile_source
 %define COMP_MAX_STRINGS     1024
 %define COMP_MAX_STR_LEN     128
 %define COMP_MAX_EXPRS       1024
-%define COMP_MAX_TENSIONS    64
+%define COMP_MAX_TENSIONS    128
 %define COMP_MAX_MATCHES     8
 %define COMP_MAX_EMITS       8
 %define COMP_LINE_BUF_SIZE   512
@@ -364,6 +365,9 @@ op_and_src:    db "&&", 0
 op_or_src:     db "||", 0
 op_and_bin:    db "and", 0
 op_or_bin:     db "or", 0
+
+; Overflow warning
+comp_ten_overflow_msg: db "[COMP] WARN: tension overflow, increase COMP_MAX_TENSIONS", 10, 0
 
 ; Magic header
 herb_magic:    db "HERB"
@@ -1906,7 +1910,18 @@ comp_parse_tension:
     ; Allocate tension slot
     mov     eax, [comp_ten_count]
     cmp     eax, COMP_MAX_TENSIONS
-    jge     .cpt_done
+    jl      .cpt_slot_ok
+    ; Overflow — print warning to serial
+    push    rcx
+    push    rdx
+    sub     rsp, 32
+    lea     rcx, [rel comp_ten_overflow_msg]
+    call    serial_print
+    add     rsp, 32
+    pop     rdx
+    pop     rcx
+    jmp     .cpt_done
+.cpt_slot_ok:
     mov     r12d, eax           ; r12d = tension index
     inc     dword [comp_ten_count]
 

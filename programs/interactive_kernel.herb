@@ -84,6 +84,7 @@ container proc.CLICK_SIG simple proc.Signal
 container proc.KEY_SIG simple proc.Signal
 container proc.CMD_SIG simple proc.Signal
 container proc.SPAWN_SIG simple proc.Signal
+container proc.FOCUS_SIG simple proc.Signal
 container proc.SIG_DONE simple proc.Signal
 container world.PLAYER slot world.Player
 container world.TILES simple world.TileInfo
@@ -124,7 +125,7 @@ move proc.preempt proc.Process from proc.CPU0 to proc.READY
 move proc.block_proc proc.Process from proc.CPU0 to proc.BLOCKED
 move proc.unblock proc.Process from proc.BLOCKED to proc.READY
 move proc.terminate proc.Process from proc.CPU0 to proc.TERMINATED
-move proc.consume_signal proc.Signal from proc.TIMER_SIG proc.KILL_SIG proc.BLOCK_SIG proc.UNBLOCK_SIG proc.BOOST_SIG proc.ALLOC_SIG proc.FREE_SIG proc.OPEN_SIG proc.CLOSE_SIG proc.SEND_SIG proc.RECV_SIG proc.CLICK_SIG proc.KEY_SIG proc.CMD_SIG proc.SPAWN_SIG to proc.SIG_DONE
+move proc.consume_signal proc.Signal from proc.TIMER_SIG proc.KILL_SIG proc.BLOCK_SIG proc.UNBLOCK_SIG proc.BOOST_SIG proc.ALLOC_SIG proc.FREE_SIG proc.OPEN_SIG proc.CLOSE_SIG proc.SEND_SIG proc.RECV_SIG proc.CLICK_SIG proc.KEY_SIG proc.CMD_SIG proc.SPAWN_SIG proc.FOCUS_SIG to proc.SIG_DONE
 move world.consume_game_sig world.GameSignal from world.MOVE_SIG world.GATHER_SIG to world.GAME_SIG_DONE
 move world.gather_resource world.Tree from world.TREES to world.TREE_GATHERED
 move fs.open_fd fs.FileDescriptor scoped_from FD_FREE scoped_to FD_OPEN
@@ -653,6 +654,34 @@ tension display.click_miss priority 3
   match click in proc.CLICK_SIG select first
   emit move proc.consume_signal click to proc.SIG_DONE
 
+; ---- Window focus (Session 91) ----
+; Priority 24: highest among click handlers — runs first, consumes FOCUS_SIG
+tension wm.focus_on_click priority 24
+  match sig in proc.FOCUS_SIG select first
+  match win in wm.VISIBLE select each
+  guard sig.click_x >= win.x && sig.click_x < win.x + win.width && ( sig.click_y >= win.y && sig.click_y < win.y + win.height )
+  emit set win focused 2
+  emit move proc.consume_signal sig to proc.SIG_DONE
+
+; Priority 23: clear old focus when new focus (focused==2) exists
+tension wm.clear_other_focus priority 23
+  match winner in wm.VISIBLE select first
+    where winner.focused == 2
+  match loser in wm.VISIBLE select each
+    where loser.focused == 1
+  emit set loser focused 0
+
+; Priority 22: normalize focused 2 → 1 (after clearing is done)
+tension wm.normalize_focus priority 22
+  match win in wm.VISIBLE select each
+    where win.focused == 2
+  emit set win focused 1
+
+; Priority 2: catchall — consume unclaimed FOCUS_SIG (clicked empty space)
+tension wm.focus_miss priority 2
+  match sig in proc.FOCUS_SIG select first
+  emit move proc.consume_signal sig to proc.SIG_DONE
+
 tension editor.type_char priority 22
   match key in proc.KEY_SIG select first
     where key.ascii >= 32
@@ -790,6 +819,7 @@ entity win_cpu0 wm.Window in wm.VISIBLE
   prop height 190
   prop z_order 0
   prop role 0
+  prop focused 0
 entity win_ready wm.Window in wm.VISIBLE
   prop x 278
   prop y 76
@@ -797,6 +827,7 @@ entity win_ready wm.Window in wm.VISIBLE
   prop height 190
   prop z_order 1
   prop role 1
+  prop focused 0
 entity win_blocked wm.Window in wm.VISIBLE
   prop x 8
   prop y 274
@@ -804,6 +835,7 @@ entity win_blocked wm.Window in wm.VISIBLE
   prop height 190
   prop z_order 2
   prop role 2
+  prop focused 0
 entity win_term wm.Window in wm.VISIBLE
   prop x 278
   prop y 274
@@ -811,6 +843,7 @@ entity win_term wm.Window in wm.VISIBLE
   prop height 190
   prop z_order 3
   prop role 3
+  prop focused 0
 entity win_tensions wm.Window in wm.VISIBLE
   prop x 548
   prop y 98
@@ -818,6 +851,7 @@ entity win_tensions wm.Window in wm.VISIBLE
   prop height 350
   prop z_order 4
   prop role 4
+  prop focused 0
 entity win_editor wm.Window in wm.VISIBLE
   prop x 400
   prop y 76
@@ -825,6 +859,7 @@ entity win_editor wm.Window in wm.VISIBLE
   prop height 500
   prop z_order 5
   prop role 5
+  prop focused 0
 entity win_game wm.Window in wm.VISIBLE
   prop x 10
   prop y 76
@@ -832,6 +867,7 @@ entity win_game wm.Window in wm.VISIBLE
   prop height 520
   prop z_order 6
   prop role 6
+  prop focused 0
 entity display_ctl display.DisplayCtl in display.DISPLAY_STATE
   prop max_terminated 3
   prop max_procs_per_region 12
