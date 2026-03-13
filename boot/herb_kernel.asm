@@ -73,6 +73,7 @@ extern hw_hlt
 extern herb_snprintf
 extern herb_memset
 extern herb_strlen
+extern herb_strcmp
 
 ; Parallel arrays (from herb_graph.asm)
 extern container_order_keys
@@ -298,6 +299,8 @@ global cmd_timer
 global cmd_click
 ; Phase C Step 7 — signal factories + dispatch
 global create_key_signal
+global create_focus_signal
+global wm_apply_herb_focus
 global create_move_signal
 global create_gather_signal
 global dispatch_mech_action
@@ -449,6 +452,16 @@ wm_role_to_win_id:
 ; ============================================================
 ; RDATA — String literals + const data
 ; ============================================================
+
+; WM role constants (used by wm_herb_set_focus_by_role and wm_apply_boot_window_style)
+%define WM_ROLE_CPU0       0
+%define WM_ROLE_READY      1
+%define WM_ROLE_BLOCKED    2
+%define WM_ROLE_TERM       3
+%define WM_ROLE_TENSIONS   4
+%define WM_ROLE_EDITOR     5
+%define WM_ROLE_GAME       6
+%define WM_ROLE_LIMIT      16
 
 section .rdata
 
@@ -1091,6 +1104,10 @@ str_pfx_mv:         db "mv", 0
 str_pfx_ga:         db "ga", 0
 str_pfx_cmd:        db "cmd", 0
 str_pfx_clk:        db "clk", 0
+str_pfx_foc:        db "foc", 0
+str_cn_focus_sig:   db "proc.FOCUS_SIG", 0
+str_focused:        db "focused", 0
+str_wm_focus_on_click:   db "wm.focus_on_click", 0
 
 ; Format strings
 str_fmt_sd:         db "%s%d", 0
@@ -2690,11 +2707,20 @@ kernel_main:
     cmp r14d, -1
     je .wm_click_passthrough        ; no window hit — fall through
 
-    ; Click-to-focus + bring to front
-    mov ecx, r14d
-    call wm_bring_to_front
-    mov ecx, r14d
-    call wm_set_focus
+    ; Click-to-focus via HERB tension
+    ; Create FOCUS_SIG with click coordinates
+    mov ecx, dword [rel mouse_x]
+    mov edx, dword [rel mouse_y]
+    call create_focus_signal
+
+    ; Run HAM to evaluate focus tensions
+    mov ecx, 100
+    call ham_run_ham
+    add [rel total_ops], eax
+
+    ; Read back focus result from HERB (force=0: skip if unchanged)
+    xor ecx, ecx
+    call wm_apply_herb_focus
 
     ; Deactivate editor if focus moved to a different window
     cmp dword [rel ed_active], 0
@@ -3793,16 +3819,12 @@ cmd_toggle_game:
     lea rcx, [rel str_newline]
     call serial_print
 
-    ; If entering game mode, bring game window to front
+    ; If entering game mode, focus game window via HERB
 %ifdef GRAPHICS_MODE
     test ebx, ebx
     jz .ctg_no_focus
-    mov ecx, [rel game_win_id]
-    test ecx, ecx
-    js .ctg_no_focus
-    call wm_bring_to_front
-    mov ecx, [rel game_win_id]
-    call wm_set_focus
+    mov ecx, WM_ROLE_GAME
+    call wm_herb_set_focus_by_role
 .ctg_no_focus:
 %endif
 
@@ -5183,6 +5205,56 @@ create_key_signal:
     pop rbp
     ret
 
+; ---- create_focus_signal(int cx, int cy) ----
+; Create a FOCUS_SIG with click_x/click_y properties.
+; Args: ECX = cx, EDX = cy
+; Stack: 3 pushes (rbp, rbx, rsi) + sub rsp 80 = 8+24+80 = 112. 112%16=0. ✓
+;   name[32] at [rsp+48]
+create_focus_signal:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    sub rsp, 80
+
+    mov ebx, ecx                    ; save cx
+    mov esi, edx                    ; save cy
+
+    ; make_sig_name(name, 32, "foc")
+    lea rcx, [rsp+48]
+    mov edx, 32
+    lea r8, [rel str_pfx_foc]
+    call make_sig_name
+
+    ; recycle_or_create_entity(name, ET_SIGNAL, CN_FOCUS_SIG, CN_SIG_DONE)
+    lea rcx, [rsp+48]
+    lea rdx, [rel str_et_signal]
+    lea r8, [rel str_cn_focus_sig]
+    lea r9, [rel str_cn_sig_done]
+    call recycle_or_create_entity
+    test eax, eax
+    js .cfs_done
+
+    ; Set click_x
+    mov ecx, eax
+    mov dword [rsp+48], eax         ; save eid in name[0] (done with name)
+    lea rdx, [rel str_click_x]
+    mov r8d, ebx                    ; cx
+    call herb_set_prop_int
+
+    ; Set click_y
+    mov ecx, dword [rsp+48]
+    lea rdx, [rel str_click_y]
+    mov r8d, esi                    ; cy
+    call herb_set_prop_int
+
+.cfs_done:
+    add rsp, 80
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
 ; ---- create_move_signal(int direction) ----
 ; Create a MOVE_SIG game signal with a "direction" property.
 ; Args: ECX = direction
@@ -5966,15 +6038,10 @@ post_dispatch:
     lea rdx, [rel str_mode]
     mov r8d, 2
     call herb_set_prop_int
-    ; Focus editor window
+    ; Focus editor window via HERB
 %ifdef GRAPHICS_MODE
-    mov ecx, [rel flow_editor_win_id]
-    test ecx, ecx
-    js .pd_edit_no_focus
-    call wm_set_focus
-    mov ecx, [rel flow_editor_win_id]
-    call wm_bring_to_front
-.pd_edit_no_focus:
+    mov ecx, WM_ROLE_EDITOR
+    call wm_herb_set_focus_by_role
 %endif
     ; Serial
     lea rcx, [rel str_ser_edit_open]
@@ -6353,15 +6420,10 @@ post_dispatch:
     lea rdx, [rel str_mode]
     mov r8d, 2
     call herb_set_prop_int
-    ; Focus editor window
+    ; Focus editor window via HERB
 %ifdef GRAPHICS_MODE
-    mov ecx, [rel flow_editor_win_id]
-    test ecx, ecx
-    js .pd_eload_no_focus
-    call wm_set_focus
-    mov ecx, [rel flow_editor_win_id]
-    call wm_bring_to_front
-.pd_eload_no_focus:
+    mov ecx, WM_ROLE_EDITOR
+    call wm_herb_set_focus_by_role
 %endif
 
 .pd_eload_action:
@@ -12110,15 +12172,6 @@ flow_editor_draw_fn:
 %define KWIN_DRAW_FN       80
 %define KWF_VISIBLE        0
 
-%define WM_ROLE_CPU0       0
-%define WM_ROLE_READY      1
-%define WM_ROLE_BLOCKED    2
-%define WM_ROLE_TERM       3
-%define WM_ROLE_TENSIONS   4
-%define WM_ROLE_EDITOR     5
-%define WM_ROLE_GAME       6
-%define WM_ROLE_LIMIT      16
-
 ; void wm_apply_boot_window_style(int role, int win_id, int entity_id)
 ; MS x64: ECX=role, EDX=win_id, R8D=HERB wm.Window eid
 wm_apply_boot_window_style:
@@ -12474,6 +12527,215 @@ wm_sync_from_herb:
     add rsp, 88
     pop r13
     pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ---- wm_apply_herb_focus(int force) ----
+; Read "focused" property from wm.VISIBLE entities.
+; The one with focused >= 1 gets wm_set_focus + wm_bring_to_front.
+; If none focused, wm_set_focus(-1).
+; Args: ECX = force (0 = skip if unchanged, 1 = always apply)
+; Stack: 4 pushes (rbp, rbx, rsi, rdi) + sub rsp 56 = 8+32+56 = 96. 96%16=0. ✓
+wm_apply_herb_focus:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    sub rsp, 56
+    ; [rsp+32] = count, [rsp+36] = index, [rsp+40] = best_win_id, [rsp+44] = best_z
+    ; [rsp+48] = force, [rsp+52] = (temp for tension scan)
+    mov dword [rsp+48], ecx
+
+    ; When force=0, check if wm.focus_on_click is enabled.
+    ; If disabled, skip entirely — don't read stale focused properties.
+    cmp ecx, 1
+    je .wahf_scan                   ; force=1: always proceed
+
+    call herb_tension_count
+    mov dword [rsp+52], eax
+    xor ebx, ebx                    ; tension index
+
+.wahf_find_tension:
+    cmp ebx, dword [rsp+52]
+    jge .wahf_done                  ; tension not found — skip (safe default)
+
+    mov ecx, ebx
+    call herb_tension_name
+    test rax, rax
+    jz .wahf_find_next
+
+    mov rcx, rax
+    lea rdx, [rel str_wm_focus_on_click]
+    call herb_strcmp
+    test eax, eax
+    jz .wahf_found_tension
+
+.wahf_find_next:
+    inc ebx
+    jmp .wahf_find_tension
+
+.wahf_found_tension:
+    mov ecx, ebx
+    call herb_tension_enabled
+    test eax, eax
+    jz .wahf_done                   ; tension disabled — skip entirely
+
+.wahf_scan:
+    ; Get entity count in wm.VISIBLE
+    lea rcx, [rel str_cn_wm_visible]
+    call herb_container_count
+    test eax, eax
+    jle .wahf_none
+    mov dword [rsp+32], eax         ; count
+    mov dword [rsp+36], 0           ; index = 0
+    mov dword [rsp+40], -1          ; best_win_id = -1
+    mov dword [rsp+44], -1          ; best_z = -1
+
+.wahf_loop:
+    mov eax, dword [rsp+36]
+    cmp eax, dword [rsp+32]
+    jge .wahf_apply
+
+    ; eid = herb_container_entity("wm.VISIBLE", index)
+    lea rcx, [rel str_cn_wm_visible]
+    mov edx, eax
+    call herb_container_entity
+    test eax, eax
+    js .wahf_next
+    mov ebx, eax                    ; ebx = eid
+
+    ; focused = herb_entity_prop_int(eid, "focused", 0)
+    mov ecx, ebx
+    lea rdx, [rel str_focused]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    cmp eax, 1
+    jl .wahf_next                   ; skip if focused < 1
+
+    ; role = herb_entity_prop_int(eid, "role", -1)
+    mov ecx, ebx
+    lea rdx, [rel str_role]
+    mov r8d, -1
+    call herb_entity_prop_int
+    cmp eax, 0
+    jl .wahf_next
+    cmp eax, WM_ROLE_GAME
+    jg .wahf_next
+
+    ; win_id = wm_role_to_win_id[role]
+    lea rcx, [rel wm_role_to_win_id]
+    mov esi, dword [rcx + rax*4]    ; esi = win_id
+    cmp esi, -1
+    je .wahf_next
+
+    ; z = herb_entity_prop_int(eid, "z_order", -1)
+    mov ecx, ebx
+    lea rdx, [rel str_z_order]
+    mov r8d, -1
+    call herb_entity_prop_int
+    ; Pick window with highest z_order (topmost if overlap)
+    cmp eax, dword [rsp+44]
+    jle .wahf_next
+    mov dword [rsp+44], eax         ; best_z = z
+    mov dword [rsp+40], esi         ; best_win_id = win_id
+
+.wahf_next:
+    inc dword [rsp+36]
+    jmp .wahf_loop
+
+.wahf_apply:
+    mov ecx, dword [rsp+40]        ; best_win_id
+    cmp ecx, -1
+    je .wahf_clear
+    ; Unless force=1, skip if focus hasn't changed
+    cmp dword [rsp+48], 1
+    je .wahf_do_focus
+    cmp ecx, dword [rel wm_focused_id]
+    je .wahf_done
+.wahf_do_focus:
+    ; wm_set_focus(best_win_id)
+    call wm_set_focus
+    ; wm_bring_to_front(best_win_id)
+    mov ecx, dword [rsp+40]
+    call wm_bring_to_front
+    jmp .wahf_done
+
+.wahf_none:
+.wahf_clear:
+    mov ecx, -1
+    call wm_set_focus
+
+.wahf_done:
+    add rsp, 56
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; ---- wm_herb_set_focus_by_role(int role) ----
+; Routes programmatic focus through HERB instead of direct WM calls.
+; Args: ECX = role (0-6)
+; Stack: 4 pushes (rbp, rbx, rsi, rdi) + sub rsp 56 = 96. 96%16=0. ✓
+;   [rsp+32] = count, [rsp+36] = index, [rsp+40] = target_role
+wm_herb_set_focus_by_role:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    sub rsp, 56
+
+    mov dword [rsp+40], ecx         ; target_role
+
+    lea rcx, [rel str_cn_wm_visible]
+    call herb_container_count
+    test eax, eax
+    jle .whsfbr_run_ham
+    mov dword [rsp+32], eax
+    mov dword [rsp+36], 0
+
+.whsfbr_loop:
+    mov eax, dword [rsp+36]
+    cmp eax, dword [rsp+32]
+    jge .whsfbr_run_ham
+
+    lea rcx, [rel str_cn_wm_visible]
+    mov edx, eax
+    call herb_container_entity
+    test eax, eax
+    js .whsfbr_next
+    mov ebx, eax                    ; ebx = eid
+
+    mov ecx, ebx
+    lea rdx, [rel str_role]
+    mov r8d, -1
+    call herb_entity_prop_int
+    cmp eax, dword [rsp+40]
+    jne .whsfbr_next
+
+    ; Found — set focused = 2
+    mov ecx, ebx
+    lea rdx, [rel str_focused]
+    mov r8d, 2
+    call herb_set_prop_int
+    jmp .whsfbr_run_ham
+
+.whsfbr_next:
+    inc dword [rsp+36]
+    jmp .whsfbr_loop
+
+.whsfbr_run_ham:
+    mov ecx, 100
+    call ham_run_ham
+    mov ecx, 1                      ; force=1: always apply
+    call wm_apply_herb_focus
+
+    add rsp, 56
     pop rdi
     pop rsi
     pop rbx
