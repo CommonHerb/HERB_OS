@@ -93,21 +93,21 @@ This branch intentionally archives dead lanes, so the historical `593` count sho
 
 ## What Is Verified To Work
 
-Based on the latest validated state supplied for `main`, HERB OS currently has:
+Based on the latest validated state (Session 93, 2026-03-13), HERB OS currently has:
 
 - boot path on bare metal / QEMU
-- scheduling
-- window manager
-- text editor
-- filesystem
-- NIC driver
-- ARP
-- IP
-- ICMP
-- UDP
-- DNS
-- TCP
-- HTTP page fetch from bare metal
+- scheduling (priority + round-robin, hot-swappable)
+- window manager (7 windows, drag/resize, focus via HERB tensions, tiling layout)
+- shell output window (32-line circular buffer, PgUp/PgDn scroll)
+- text editor (gap-buffer + HERB-flow editor)
+- filesystem (bitmap, 256 entries, 8MB disk)
+- NIC driver (E1000)
+- ARP, IPv4, ICMP, UDP, DNS, TCP, HTTP
+
+Current test counts (Session 93):
+- Python: `374` passing
+- Bare metal: `180/181` (1 pre-existing: HAM schedule_ready)
+- 13 assembly files, 43,283 lines total
 
 This document does not upgrade any claim beyond that evidence.
 

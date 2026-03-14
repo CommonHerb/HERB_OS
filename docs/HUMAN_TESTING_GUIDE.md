@@ -1,6 +1,6 @@
 # HERB OS — Human Testing Guide
 
-**Updated Session 92 — Testing every interaction path**
+**Updated Session 93 — Testing every interaction path**
 
 ## Setup
 
@@ -330,6 +330,32 @@ The `[server]->[client]` and `[client]->[server]` should alternate.
 
 ---
 
+### Test 10d: Shell Output Window (Session 93)
+
+**Action:**
+1. Boot the OS — look for the "OUTPUT" window (was "TERMINATED")
+2. The OUTPUT window should show "Type /help for commands"
+3. Press `/`, type `help`, press Enter
+4. Press `/`, type `files`, press Enter
+5. Press `/`, type `save test hello world`, press Enter
+6. Press `/`, type `files`, press Enter again
+7. Press PgUp to scroll up through the output history
+8. Press PgDn to scroll back down
+
+**Expected visual:**
+- OUTPUT window has blue-gray border and dark blue background
+- Title bar says "OUTPUT"
+- At boot: "Type /help for commands" visible in the window
+- After `/help`: command list appears (one per line: "  /kill", "  /block", etc.)
+- After `/files`: file listing appears ("Files on disk:", "  filename (N bytes)")
+- After `/save`: "Saved test (11 bytes)" appears
+- After second `/files`: the new file "test" appears in listing
+- PgUp/PgDn: text scrolls through the 32-line history buffer
+
+**Pass if:** Shell command output visible in the OUTPUT window, scroll works, serial output still appears in QEMU terminal.
+
+---
+
 ## Color Reference
 
 | State | Border Color | Fill Color |
@@ -337,7 +363,7 @@ The `[server]->[client]` and `[client]->[server]` should alternate.
 | Running (CPU0) | Bright green | Dark green |
 | Ready | Yellow/brown | Dark yellow |
 | Blocked | Red | Dark red |
-| Terminated | Gray | Dark gray |
+| Output (was Terminated) | Blue-gray (#446688) | Dark blue (#1A1A2E) |
 
 ---
 

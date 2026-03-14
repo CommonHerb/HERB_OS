@@ -45,6 +45,7 @@ extern herb_memcpy
 extern herb_strcmp
 extern herb_strlen
 extern outb, inb, io_wait
+extern shell_output_print
 
 ; ============================================================
 ; CONSTANTS
@@ -100,6 +101,7 @@ align 4
 disk_present:       resd 1          ; 1 if ATA slave detected
 disk_total_sectors: resd 1          ; LBA28 sector count from IDENTIFY
 fs_initialized:     resd 1          ; 1 after fs_init succeeds
+fs_output_scratch:  resb 80         ; scratch for shell output formatting
 
 ; ============================================================
 ; READ-ONLY DATA
@@ -133,6 +135,7 @@ str_fs_list_total:  db " files total", 10, 0
 str_fs_err_full:    db "[FS] error: disk full", 10, 0
 str_fs_err_nf:      db "[FS] error: file not found", 10, 0
 str_fs_err_nodisk:  db "[FS] error: no disk", 10, 0
+str_fs_out_fmt:     db "  %s (%d bytes)", 0
 str_fs_err_nodir:   db "[FS] error: directory full", 10, 0
 str_fs_migrate:     db "[FS] migrating v1 -> v2, reformatting", 10, 0
 
@@ -1581,7 +1584,7 @@ fs_list:
     test dword [rbx + DE_FLAGS], 1
     jz .fl_next
 
-    ; Print: "  name (size bytes)"
+    ; Print: "  name (size bytes)" to serial
     lea rcx, [rel str_fs_list_entry]
     call serial_print
     lea rcx, [rbx + DE_NAME]
@@ -1592,6 +1595,17 @@ fs_list:
     call serial_print_int
     lea rcx, [rel str_fs_list_bytes]
     call serial_print
+
+    ; Also format for output window: "  name (N bytes)"
+    lea rcx, [rel fs_output_scratch]
+    mov edx, 80
+    lea r8, [rel str_fs_out_fmt]
+    lea r9, [rbx + DE_NAME]
+    mov eax, [rbx + DE_SIZE]
+    mov [rsp+32], eax              ; 5th arg = size
+    call herb_snprintf
+    lea rcx, [rel fs_output_scratch]
+    call shell_output_print
 
     inc esi
 
