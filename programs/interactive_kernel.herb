@@ -695,6 +695,19 @@ tension editor.type_char priority 22
   emit set ectl cursor_pos ectl.cursor_pos + 1
   emit move proc.consume_signal key to proc.SIG_DONE
 
+tension editor.type_enter priority 23
+  match key in proc.KEY_SIG select first
+    where key.ascii == 10
+  match ctl in input.INPUT_STATE
+    where ctl.mode == 2
+  match ectl in editor.CTL
+  match ch in editor.POOL select first
+  emit set ch ascii 10
+  emit set ch pos ectl.cursor_pos
+  emit move editor.insert ch to editor.BUFFER
+  emit set ectl cursor_pos ectl.cursor_pos + 1
+  emit move proc.consume_signal key to proc.SIG_DONE
+
 tension editor.backspace priority 22
   match key in proc.KEY_SIG select first
     where key.ascii == 8
