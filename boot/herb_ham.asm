@@ -73,6 +73,8 @@ extern serial_print_int
 extern herb_snprintf
 extern g_tiling_active
 extern g_tile_flow_idx
+extern g_editor_flow_idx
+extern g_editor_flow_disabled
 
 ; Export entry point and debug counters
 global ham_run
@@ -100,7 +102,7 @@ global ham_dirty_mark, ham_dbg_eval
 section .bss
 
 expr_stack:      resq 16       ; 16-slot expression stack (128 bytes)
-scan_buf:        resd 256      ; scan results: up to 256 entity indices (1024 bytes)
+scan_buf:        resd 1024     ; scan results: up to 1024 entity indices (4096 bytes)
 scan_count:      resd 1        ; number of entities in scan buffer
 action_buf:      resb 960      ; action buffer: 40 actions × 24 bytes each
 action_count:    resd 1        ; number of buffered actions
@@ -116,7 +118,7 @@ changed_flag:    resd 1        ; fixpoint changed flag (was R15, freed for B3)
 fixpoint_iters:  resd 1        ; safety: count fixpoint iterations
 each_mode:       resd 1        ; 0 = normal, 1 = in each-mode iteration
 each_start:      resq 1        ; PC to jump back to after each iteration
-each_buf:        resd 256      ; copy of scan_buf at SEL_EACH time
+each_buf:        resd 1024     ; copy of scan_buf at SEL_EACH time
 each_total:      resd 1        ; total entities in each_buf
 each_idx:        resd 1        ; current iteration index
 each_bind:       resd 1        ; which binding register (0-3) to update
@@ -156,7 +158,7 @@ flow_body_pc:     resq 1      ; PC to loop back to from FEND
 flow_idx:         resd 1      ; current iteration index
 flow_end_p:       resq 1      ; end of flow (for skip in non-flow passes)
 flow_dst_count:   resd 1      ; existing dest entity count before flow runs
-flow_dst_buf:     resd 256    ; dest entity IDs for reuse
+flow_dst_buf:     resd 1024   ; dest entity IDs for reuse
 flow_dst_name:    resd 1      ; interned "_flow" name ID
 flow_exec_idx:    resd 1      ; current flow index during flow pass
 
@@ -1075,10 +1077,10 @@ ham_op_scan:
     add  rsi, 2
     mov  [scan_last_ctnr], ecx     ; save for sort
 
-    ; Call ham_scan(container_idx, scan_buf, 64)
+    ; Call ham_scan(container_idx, scan_buf, 1024)
     ; RCX = container_idx (already set)
     lea  rdx, [scan_buf]           ; buf
-    mov  r8d, 64                    ; max_count
+    mov  r8d, 1024                  ; max_count
     call ham_scan
 
     ; EAX = count
@@ -1149,11 +1151,11 @@ ham_op_scan_scoped:
     test eax, eax
     js   .ss_empty                  ; negative → no scoped container
 
-    ; Call ham_scan(container_idx, scan_buf, 64)
+    ; Call ham_scan(container_idx, scan_buf, 1024)
     mov  ecx, eax                   ; container_idx
     mov  [scan_last_ctnr], ecx      ; save for sort
     lea  rdx, [scan_buf]
-    mov  r8d, 64
+    mov  r8d, 1024
     call ham_scan
 
     mov  [scan_count], eax
@@ -2360,6 +2362,13 @@ ham_op_fhdr:
     je      .fhdr_skip                ; tiling off → skip this flow
 .fhdr_not_tile:
 
+    ; Session 94: skip render_editor flow when disabled (direct rendering)
+    cmp     eax, [g_editor_flow_idx]
+    jne     .fhdr_not_editor
+    cmp     dword [g_editor_flow_disabled], 1
+    je      .fhdr_skip
+.fhdr_not_editor:
+
     ; Save src_cidx and dst_cidx to BSS (survive function calls)
     mov     [flow_dst_cidx], r9d
     mov     [scan_last_ctnr], r8d   ; save src_cidx for sort
@@ -2367,7 +2376,7 @@ ham_op_fhdr:
     ; Scan source container into scan_buf
     mov     ecx, r8d                ; container_idx
     lea     rdx, [scan_buf]
-    mov     r8d, 256                ; max_count
+    mov     r8d, 1024               ; max_count
     call    ham_scan
     mov     [scan_count], eax
     mov     [flow_src_count], eax
@@ -2379,7 +2388,7 @@ ham_op_fhdr:
     ; Scan dest container into flow_dst_buf
     mov     ecx, [flow_dst_cidx]
     lea     rdx, [flow_dst_buf]
-    mov     r8d, 256
+    mov     r8d, 1024
     call    ham_scan
     mov     [flow_dst_count], eax
 

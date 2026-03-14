@@ -16,7 +16,7 @@
 %define MAX_STRINGS               2048
 %define MAX_STRING_LEN            128
 %define MAX_PROPERTIES            16
-%define MAX_ENTITY_PER_CONTAINER  256
+%define MAX_ENTITY_PER_CONTAINER  1024
 %define MAX_FROM_TO               16
 %define MAX_SCOPE_TEMPLATES       16
 %define MAX_CHANNELS              16

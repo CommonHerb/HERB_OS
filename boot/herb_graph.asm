@@ -153,7 +153,7 @@ g_tension_count:  resd 1                               ; int — number of activ
 
 ; Session 76: Container entity lists extracted from Container struct into standalone BSS
 align 16
-g_container_entities:      resd MAX_CONTAINERS * MAX_ENTITY_PER_CONTAINER  ; 256 × 256 × 4 = 256KB
+g_container_entities:      resd MAX_CONTAINERS * MAX_ENTITY_PER_CONTAINER  ; 256 × 1024 × 4 = 1MB
 g_container_entity_counts: resd MAX_CONTAINERS                             ; 256 × 4 = 1KB
 
 ; ============================================================

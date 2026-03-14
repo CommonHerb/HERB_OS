@@ -84,6 +84,7 @@ extern g_flow_count
 extern g_flows
 extern g_graph
 extern graph_find_container_by_name
+extern create_entity
 extern intern
 extern container_add
 extern container_remove
@@ -365,6 +366,9 @@ global wm_write_all_z_order_to_herb
 global wm_sync_geometry_from_herb
 global g_tiling_active
 global g_tile_flow_idx
+; Session 94: Editor flow guard
+global g_editor_flow_idx
+global g_editor_flow_disabled
 ; Session 93: Shell output window
 global shell_output_print
 %endif
@@ -475,6 +479,11 @@ game_win_id:        dd -1
 ; Session 92: Tiling state
 g_tiling_active:    dd 0        ; 0=free-drag, 1=tiled
 g_tile_flow_idx:    dd -1       ; flow index of wm.tile_horizontal (-1 = unknown)
+
+; Session 94: Editor flow guard + scroll
+g_editor_flow_idx:      dd -1   ; flow index of render_editor (-1 = unknown)
+g_editor_flow_disabled: dd 1    ; 1=disabled (direct rendering), 0=flow-based
+flow_editor_scroll_y:   dd 0    ; scroll offset in lines (0 = top)
 
 ; Boot-time WM role -> live WM window ID map (-1 = not created)
 wm_role_to_win_id:
@@ -1103,8 +1112,15 @@ str_editor_title: db "EDITOR", 0
 str_game_title:   db "COMMON HERB", 0
 str_prop_wood:    db "wood", 0
 str_gfx_ed_chars:   db "Chars:", 0
-str_gfx_ed_status:  db "ESC=exit  /esave <name>  /eload <name>", 0
+str_gfx_ed_status:  db "ESC=exit  arrows=move  PgUp/PgDn=scroll", 0
 str_gfx_screen_x:   db "screen_x", 0
+str_gfx_ed_line:    db "Ln:", 0
+str_render_editor:  db "render_editor", 0
+str_input_char:     db "input.Char", 0
+str_prop_pos:       db "pos", 0
+str_ser_editor_flow: db "[EDITOR] flow idx=", 0
+str_ser_editor_pool: db "[EDITOR] pool expanded to ", 0
+str_ser_editor_pool2: db " entities", 10, 0
 str_gfx_screen_y:   db "screen_y", 0
 ; Debug strings for editor flow diagnosis
 str_ser_ed_glyphs:  db "[EDIT] GLYPHS=", 0
@@ -2505,6 +2521,14 @@ kernel_main:
     je .skip_gateway
     call net_resolve_gateway
 .skip_gateway:
+
+    ; ================================================================
+    ; Session 94: Find editor flow index + expand pool
+    ; ================================================================
+%ifdef KERNEL_MODE
+    call editor_find_flow_idx
+    call editor_expand_pool
+%endif
 
     ; ================================================================
     ; INITIAL DISPLAY
@@ -8355,7 +8379,102 @@ handle_key:
     jmp .hk_done
 .hk_not_editor_input:
 
-    ; ---- PgUp/PgDn: scroll output window ----
+    ; ---- Session 94: Flow editor arrow keys + PgUp/PgDn ----
+%ifdef KERNEL_MODE
+    ; Check if in flow editor mode (InputCtl.mode == 2, gap-buffer editor not active)
+    mov ecx, [rel input_ctl_eid]
+    test ecx, ecx
+    js .hk_not_flow_editor
+    lea rdx, [rel str_mode]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    cmp eax, 2
+    jne .hk_not_flow_editor
+
+    ; Arrow Left (scancode 0x4B): cursor_pos - 1
+    cmp r12d, 0x4B
+    jne .hk_fed_not_left
+    ; Read cursor_pos from editor.CTL entity
+    lea rcx, [rel str_cn_ed_ctl]
+    xor edx, edx
+    call herb_container_entity
+    test eax, eax
+    js .hk_done
+    mov ebx, eax                        ; ebx = ectl entity id
+    mov ecx, eax
+    lea rdx, [rel str_prop_cursor_pos]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    ; eax = cursor_pos; decrement, clamp >= 0
+    test eax, eax
+    jle .hk_done                        ; already at 0
+    dec eax
+    mov ecx, ebx
+    lea rdx, [rel str_prop_cursor_pos]
+    movsxd r8, eax
+    call herb_set_prop_int
+    call draw_full
+    jmp .hk_done
+
+.hk_fed_not_left:
+    ; Arrow Right (scancode 0x4D): cursor_pos + 1
+    cmp r12d, 0x4D
+    jne .hk_fed_not_right
+    ; Read cursor_pos + buffer count
+    lea rcx, [rel str_cn_ed_ctl]
+    xor edx, edx
+    call herb_container_entity
+    test eax, eax
+    js .hk_done
+    mov ebx, eax                        ; ebx = ectl entity id
+    mov ecx, eax
+    lea rdx, [rel str_prop_cursor_pos]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov esi, eax                        ; esi = cursor_pos
+    ; Get buffer count to clamp
+    lea rcx, [rel str_cn_ed_buffer]
+    call herb_container_count
+    ; eax = buffer count; clamp cursor_pos + 1 <= buffer_count
+    cmp esi, eax
+    jge .hk_done                        ; already at end
+    inc esi
+    mov ecx, ebx
+    lea rdx, [rel str_prop_cursor_pos]
+    movsxd r8, esi
+    call herb_set_prop_int
+    call draw_full
+    jmp .hk_done
+
+.hk_fed_not_right:
+    ; PgUp (scancode 0x49): scroll editor up
+    cmp r12d, 0x49
+    jne .hk_not_fed_pgup
+    mov eax, [rel flow_editor_scroll_y]
+    sub eax, 10                         ; page up by 10 lines
+    test eax, eax
+    jns .hk_fed_pgup_ok
+    xor eax, eax                        ; clamp to 0
+.hk_fed_pgup_ok:
+    mov [rel flow_editor_scroll_y], eax
+    call draw_full
+    jmp .hk_done
+
+.hk_not_fed_pgup:
+    ; PgDn (scancode 0x51): scroll editor down
+    cmp r12d, 0x51
+    jne .hk_not_fed_pgdn
+    mov eax, [rel flow_editor_scroll_y]
+    add eax, 10
+    mov [rel flow_editor_scroll_y], eax
+    call draw_full
+    jmp .hk_done
+
+.hk_not_fed_pgdn:
+.hk_not_flow_editor:
+%endif  ; KERNEL_MODE
+
+    ; ---- PgUp/PgDn: scroll output window (when not in flow editor) ----
     cmp r12d, 0x49                       ; PgUp scancode
     je .hk_scroll_up
     cmp r12d, 0x51                       ; PgDn scancode
@@ -12338,16 +12457,17 @@ game_draw_fn:
 ; ============================================================
 %ifdef KERNEL_MODE
 
-; Locals for flow_editor_draw_fn
-%define FED_CX   64
-%define FED_CY   68
-%define FED_CW   72
-%define FED_CH   76
-%define FED_VI   80
-%define FED_NV   84
-%define FED_SID  88
-%define FED_SX   92
-%define FED_SY   96
+; Locals for flow_editor_draw_fn (Session 94: direct rendering from BUFFER)
+%define FED_CX     64
+%define FED_CY     68
+%define FED_CW     72
+%define FED_CH     76
+%define FED_VI     80    ; loop index
+%define FED_NV     84    ; char count in buffer
+%define FED_CURX   88    ; current column (0-based)
+%define FED_CURL   92    ; current line (0-based)
+%define FED_CPL    96    ; chars per line (cw / 8)
+%define FED_VLINES 100   ; visible lines ((ch - 42) / 16)
 
 flow_editor_draw_fn:
     push rbp
@@ -12357,7 +12477,7 @@ flow_editor_draw_fn:
     push rdi
     push r12
     push r13
-    sub rsp, 120                        ; shadow(32) + locals(88)
+    sub rsp, 120                        ; shadow(32) + locals
     ; 6 pushes + sub 120 = 8 + 48 + 120 = 176. 176 % 16 = 0. ✓
 
     ; Save client area params
@@ -12365,6 +12485,21 @@ flow_editor_draw_fn:
     mov dword [rsp + FED_CY], edx
     mov dword [rsp + FED_CW], r8d
     mov dword [rsp + FED_CH], r9d
+
+    ; Compute chars_per_line = cw / 8
+    mov eax, r8d
+    shr eax, 3
+    mov dword [rsp + FED_CPL], eax
+
+    ; Compute visible_lines = (ch - 42) / 16  (22px info bar + 20px status bar)
+    mov eax, r9d
+    sub eax, 42
+    shr eax, 4
+    test eax, eax
+    jg .fed_vis_ok
+    mov eax, 1                          ; minimum 1 visible line
+.fed_vis_ok:
+    mov dword [rsp + FED_VLINES], eax
 
     ; 1. Set clip rect to client area
     call wm_set_clip                    ; ecx/edx/r8d/r9d already set
@@ -12396,7 +12531,7 @@ flow_editor_draw_fn:
     call fb_draw_string
     mov ebx, eax                       ; ebx = end x after title
 
-    ; "Chars:" label
+    ; "Chars:" label + count
     lea ecx, [ebx + 16]
     mov edx, [rsp + FED_CY]
     add edx, 3
@@ -12430,95 +12565,168 @@ flow_editor_draw_fn:
     mov r9d, 0x004A90D9
     call fb_hline
 
-    ; 5. Draw glyphs from editor.GLYPHS
-    lea rcx, [rel str_cn_ed_glyphs]
-    call herb_container_count
-    test eax, eax
-    jle .fed_no_glyphs
-    mov dword [rsp + FED_NV], eax
-    mov dword [rsp + FED_VI], 0
+    ; 5. Render chars directly from editor.BUFFER (Session 94)
+    ;    Compute x/y on-the-fly with newline + wrap support.
+    ;    Apply scroll offset from flow_editor_scroll_y.
+    ;    Track cursor visual position based on cursor_pos from editor.CTL.
+    mov dword [rsp + FED_CURX], 0      ; current column
+    mov dword [rsp + FED_CURL], 0      ; current line
+    mov dword [rsp + FED_VI], 0        ; loop index
 
-.fed_glyph_loop:
-    mov eax, [rsp + FED_VI]
-    cmp eax, [rsp + FED_NV]
-    jge .fed_no_glyphs
-
-    ; eid = herb_container_entity("editor.GLYPHS", i)
-    lea rcx, [rel str_cn_ed_glyphs]
-    mov edx, [rsp + FED_VI]
-    call herb_container_entity
-    test eax, eax
-    js .fed_glyph_next
-    mov [rsp + FED_SID], eax
-
-    ; screen_x (relative, 0-based from flow)
-    mov ecx, eax
-    lea rdx, [rel str_gfx_screen_x]
-    xor r8d, r8d
-    call herb_entity_prop_int
-    mov [rsp + FED_SX], eax
-
-    ; screen_y (relative, 0-based from flow)
-    mov ecx, [rsp + FED_SID]
-    lea rdx, [rel str_gfx_screen_y]
-    xor r8d, r8d
-    call herb_entity_prop_int
-    mov [rsp + FED_SY], eax
-
-    ; ascii
-    mov ecx, [rsp + FED_SID]
-    lea rdx, [rel str_ascii_prop]
-    xor r8d, r8d
-    call herb_entity_prop_int
-    test eax, eax
-    jle .fed_glyph_next
-
-    ; fb_draw_char(cx + screen_x, cy + 22 + screen_y, ascii, fg, bg)
-    mov ecx, [rsp + FED_CX]
-    add ecx, [rsp + FED_SX]
-    mov edx, [rsp + FED_CY]
-    add edx, 22
-    add edx, [rsp + FED_SY]
-    mov r8d, eax                       ; ascii
-    mov r9d, 0x00C0C0C0               ; light gray text
-    mov dword [rsp + 32], 0x001A1A2E  ; editor bg
-    call fb_draw_char
-
-.fed_glyph_next:
-    inc dword [rsp + FED_VI]
-    jmp .fed_glyph_loop
-
-.fed_no_glyphs:
-
-    ; 6. Cursor
+    ; Read cursor_pos from editor.CTL (r13d = cursor_pos, -1 if unavailable)
+    mov r13d, -1
     lea rcx, [rel str_cn_ed_ctl]
     xor edx, edx
     call herb_container_entity
     test eax, eax
-    js .fed_cursor_done
-
+    js .fed_cpos_done
     mov ecx, eax
     lea rdx, [rel str_prop_cursor_pos]
     xor r8d, r8d
     call herb_entity_prop_int
-    ; eax = cursor_pos
-    ; cursor_x = cx + (cursor_pos % 49) * 8
-    ; cursor_y = cy + 22 + (cursor_pos / 49) * 16
-    xor edx, edx
-    mov ebx, 49
-    div ebx                            ; eax = row, edx = col
-    shl edx, 3                         ; col * 8
-    add edx, [rsp + FED_CX]           ; + cx
-    shl eax, 4                         ; row * 16
-    add eax, [rsp + FED_CY]           ; + cy
-    add eax, 22                        ; + info bar height
+    mov r13d, eax                       ; r13d = cursor_pos
+.fed_cpos_done:
 
-    ; Draw cursor block
-    mov ecx, edx                       ; x
-    mov edx, eax                       ; y
-    mov r8d, 8
+    ; r12d = cursor visual col, ebx = cursor visual line (computed during loop)
+    ; Initialize to 0,0 (cursor at start if buffer empty or cursor_pos == 0)
+    xor r12d, r12d
+    xor ebx, ebx
+
+    lea rcx, [rel str_cn_ed_buffer]
+    call herb_container_count
+    test eax, eax
+    jle .fed_no_chars
+    mov dword [rsp + FED_NV], eax
+
+.fed_char_loop:
+    mov eax, [rsp + FED_VI]
+    cmp eax, [rsp + FED_NV]
+    jge .fed_no_chars
+
+    ; Check if this index == cursor_pos → save cursor visual position
+    cmp eax, r13d
+    jne .fed_no_cursor_save
+    mov r12d, [rsp + FED_CURX]          ; cursor col
+    mov ebx, [rsp + FED_CURL]           ; cursor line
+.fed_no_cursor_save:
+
+    ; eid = herb_container_entity("editor.BUFFER", i)
+    lea rcx, [rel str_cn_ed_buffer]
+    mov edx, [rsp + FED_VI]
+    call herb_container_entity
+    test eax, eax
+    js .fed_char_next
+
+    ; ascii = herb_entity_prop_int(eid, "ascii", 0)
+    mov ecx, eax
+    lea rdx, [rel str_ascii_prop]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    test eax, eax
+    jle .fed_char_next
+
+    ; Check newline (ascii == 10)
+    cmp eax, 10
+    jne .fed_not_newline
+    ; Newline: advance line, reset column
+    mov dword [rsp + FED_CURX], 0
+    inc dword [rsp + FED_CURL]
+    jmp .fed_char_next
+
+.fed_not_newline:
+    mov esi, eax                        ; esi = ascii (callee-saved)
+
+    ; Check if visible: screen_line = cur_line - scroll_y
+    mov ecx, [rsp + FED_CURL]
+    sub ecx, [rel flow_editor_scroll_y]
+    js .fed_char_advance                ; above visible area
+    cmp ecx, [rsp + FED_VLINES]
+    jge .fed_char_advance               ; below visible area
+
+    ; Draw character at (cur_x, screen_line)
+    ; pixel_x = cx + cur_x * 8
+    mov eax, [rsp + FED_CURX]
+    shl eax, 3
+    add eax, [rsp + FED_CX]
+    ; pixel_y = cy + 22 + screen_line * 16
+    shl ecx, 4
+    add ecx, [rsp + FED_CY]
+    add ecx, 22
+
+    ; fb_draw_char(pixel_x, pixel_y, ascii, fg, bg)
+    mov edx, ecx                        ; y
+    mov ecx, eax                        ; x
+    mov r8d, esi                        ; ascii
+    mov r9d, 0x00C0C0C0                ; light gray text
+    mov dword [rsp + 32], 0x001A1A2E   ; editor bg
+    call fb_draw_char
+
+.fed_char_advance:
+    ; Advance column, handle wrap
+    inc dword [rsp + FED_CURX]
+    mov eax, [rsp + FED_CURX]
+    cmp eax, [rsp + FED_CPL]
+    jl .fed_char_next
+    mov dword [rsp + FED_CURX], 0
+    inc dword [rsp + FED_CURL]
+
+.fed_char_next:
+    inc dword [rsp + FED_VI]
+    jmp .fed_char_loop
+
+.fed_no_chars:
+    ; If cursor_pos >= buffer_count (at end), use CURX/CURL after loop
+    mov eax, [rsp + FED_VI]             ; FED_VI = final loop count or NV
+    cmp r13d, eax
+    jl .fed_cursor_pos_set              ; cursor_pos was inside buffer → r12/ebx already set
+    ; cursor at end of buffer
+    mov r12d, [rsp + FED_CURX]
+    mov ebx, [rsp + FED_CURL]
+.fed_cursor_pos_set:
+    ; r12d = cursor col, ebx = cursor line
+    ; Save cursor line to FED_CURL for status bar display
+    mov [rsp + FED_CURL], ebx
+
+    ; Auto-scroll: keep cursor visible
+    mov eax, ebx                        ; cursor line
+    mov ecx, [rel flow_editor_scroll_y]
+    cmp eax, ecx
+    jge .fed_scroll_not_above
+    mov [rel flow_editor_scroll_y], eax ; scroll up to cursor
+    jmp .fed_scroll_done
+.fed_scroll_not_above:
+    mov ecx, [rel flow_editor_scroll_y]
+    add ecx, [rsp + FED_VLINES]
+    cmp eax, ecx
+    jl .fed_scroll_done
+    ; cursor_line - visible_lines + 1
+    mov ecx, eax
+    sub ecx, [rsp + FED_VLINES]
+    inc ecx
+    mov [rel flow_editor_scroll_y], ecx ; scroll down to cursor
+.fed_scroll_done:
+
+    ; 6. Cursor — vertical bar at (r12d=col, ebx=line) if visible
+    mov eax, ebx
+    sub eax, [rel flow_editor_scroll_y]
+    js .fed_cursor_done
+    cmp eax, [rsp + FED_VLINES]
+    jge .fed_cursor_done
+    ; eax = cursor screen_line
+    ; pixel_x = cx + cursor_col * 8
+    mov ecx, r12d
+    shl ecx, 3
+    add ecx, [rsp + FED_CX]
+    ; pixel_y = cy + 22 + screen_line * 16
+    shl eax, 4
+    add eax, [rsp + FED_CY]
+    add eax, 22
+    ; fb_fill_rect(pixel_x, pixel_y, 2, 16, white)
+    mov edx, eax                        ; y
+    ; ecx already = pixel_x
+    mov r8d, 2                          ; 2px wide vertical bar cursor
     mov r9d, 16
-    mov dword [rsp + 32], 0x00FFFFFF  ; white cursor
+    mov dword [rsp + 32], 0x00FFFFFF   ; white
     call fb_fill_rect
 
 .fed_cursor_done:
@@ -12534,6 +12742,7 @@ flow_editor_draw_fn:
     mov dword [rsp + 32], 0x00161622
     call fb_fill_rect
 
+    ; Status text
     mov ecx, [rsp + FED_CX]
     add ecx, 8
     mov edx, [rsp + FED_CY]
@@ -12543,6 +12752,27 @@ flow_editor_draw_fn:
     mov r9d, 0x00808090
     mov dword [rsp + 32], 0x00161622
     call fb_draw_string
+    mov ebx, eax                        ; ebx = end x
+
+    ; "Ln:" + line number in status bar
+    lea ecx, [ebx + 16]
+    mov edx, [rsp + FED_CY]
+    add edx, [rsp + FED_CH]
+    sub edx, 17
+    lea r8, [rel str_gfx_ed_line]
+    mov r9d, 0x00808090
+    mov dword [rsp + 32], 0x00161622
+    call fb_draw_string
+
+    mov ecx, eax                        ; x after "Ln:"
+    mov edx, [rsp + FED_CY]
+    add edx, [rsp + FED_CH]
+    sub edx, 17
+    mov r8d, [rsp + FED_CURL]
+    inc r8d                             ; 1-based line number
+    mov r9d, COL_TEXT_VAL
+    mov dword [rsp + 32], 0x00161622
+    call fb_draw_int
 
     ; 8. Clear clip rect
     call wm_clear_clip
@@ -12557,6 +12787,149 @@ flow_editor_draw_fn:
     ret
 
 %endif  ; KERNEL_MODE (flow_editor_draw_fn)
+%endif  ; GRAPHICS_MODE (temporarily close for Session 94 non-graphics functions)
+
+; ============================================================
+; Session 94: Editor flow detection + pool expansion
+; These functions don't use graphics — must be outside GRAPHICS_MODE
+; ============================================================
+%ifdef KERNEL_MODE
+
+; editor_find_flow_idx(void)
+; Scans g_flows[] for render_editor flow, sets g_editor_flow_idx.
+editor_find_flow_idx:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    sub rsp, 32                         ; shadow space
+    ; 3 pushes + sub 32 = 8 + 24 + 32 = 64. 64 % 16 = 0. ✓
+
+    ; Intern "render_editor" to get name_id
+    lea rcx, [rel str_render_editor]
+    call intern
+    mov ebx, eax                        ; ebx = name_id
+
+    xor esi, esi                        ; esi = flow index
+.efi_loop:
+    cmp esi, [rel g_flow_count]
+    jge .efi_notfound
+    movsxd rax, esi
+    imul rax, SIZEOF_FLOW
+    lea rcx, [g_flows + rax]
+    cmp dword [rcx + FLOW_NAME_ID], ebx
+    je .efi_found
+    inc esi
+    jmp .efi_loop
+.efi_found:
+    mov dword [rel g_editor_flow_idx], esi
+    ; Serial: "[EDITOR] flow idx=N\n"
+    lea rcx, [rel str_ser_editor_flow]
+    call serial_print
+    mov ecx, esi
+    call serial_print_int
+    lea rcx, [rel str_newline]
+    call serial_print
+    jmp .efi_done
+.efi_notfound:
+    ; Leave g_editor_flow_idx as -1
+.efi_done:
+    add rsp, 32
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+; editor_expand_pool(void)
+; Creates 500 additional input.Char entities in editor.POOL.
+editor_expand_pool:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    sub rsp, 40                         ; shadow space + 8 align
+    ; 6 pushes + sub 40 = 8 + 48 + 40 = 96. 96 % 16 = 0. ✓
+
+    ; Intern "input.Char" → type_name_id
+    lea rcx, [rel str_input_char]
+    call intern
+    mov r12d, eax                       ; r12 = type_name_id
+
+    ; Find editor.POOL container index
+    lea rcx, [rel str_cn_ed_pool]
+    call intern
+    mov ecx, eax
+    call graph_find_container_by_name
+    test eax, eax
+    js .eep_done                        ; container not found
+    mov r13d, eax                       ; r13 = pool container_idx
+
+    ; Intern "ascii" and "pos" for property setting
+    lea rcx, [rel str_ascii_prop]
+    call intern
+    mov ebx, eax                        ; ebx = ascii prop name_id (unused — set via string)
+
+    ; Create additional pool entities (with MAX_ENTITIES safety check)
+    xor esi, esi                        ; esi = loop counter
+.eep_loop:
+    cmp esi, 200
+    jge .eep_loop_done
+
+    ; Bounds check: stop if entity_count >= MAX_ENTITIES - 10 (leave headroom)
+    mov eax, [g_graph + GRAPH_ENTITY_COUNT]
+    cmp eax, MAX_ENTITIES - 10
+    jge .eep_loop_done
+
+    ; create_entity(type_name_id, type_name_id, pool_cidx)
+    mov ecx, r12d                       ; type_name_id
+    mov edx, r12d                       ; name_id (same — pool entities are anonymous)
+    mov r8d, r13d                       ; container_idx
+    call create_entity
+    mov edi, eax                        ; edi = new entity id
+
+    ; herb_set_prop_int(eid, "ascii", 0)
+    mov ecx, edi
+    lea rdx, [rel str_ascii_prop]
+    xor r8d, r8d                        ; value = 0
+    call herb_set_prop_int
+
+    ; herb_set_prop_int(eid, "pos", 0)
+    mov ecx, edi
+    lea rdx, [rel str_prop_pos]
+    xor r8d, r8d                        ; value = 0
+    call herb_set_prop_int
+
+    inc esi
+    jmp .eep_loop
+.eep_loop_done:
+
+    ; Serial: "[EDITOR] pool expanded to N entities\n"
+    lea rcx, [rel str_ser_editor_pool]
+    call serial_print
+    ; Count = original pool count + added
+    lea rcx, [rel str_cn_ed_pool]
+    call herb_container_count
+    mov ecx, eax
+    call serial_print_int
+    lea rcx, [rel str_ser_editor_pool2]
+    call serial_print
+
+.eep_done:
+    add rsp, 40
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+%endif  ; KERNEL_MODE (Session 94 editor functions)
+
+%ifdef GRAPHICS_MODE  ; reopen GRAPHICS_MODE after Session 94 functions
 
 ; ============================================================
 ; Window/HERB bridge helpers (Session 90)
