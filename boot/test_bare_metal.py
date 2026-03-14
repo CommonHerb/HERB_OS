@@ -1732,6 +1732,27 @@ def run_tests(image_path, net=False):
             m = t.wait_for(r"\[GAME\] mode=0", after=pos, timeout=5)
             t.check("Game mode deactivated", m is not None)
 
+            # ============================================================
+            # TILING LAYOUT TESTS (Session 92)
+            # ============================================================
+            print("\n" + "=" * 60)
+            print("Tiling Layout Tests (Session 92)")
+            print("=" * 60)
+
+            # ---- TEST: Tile Command Enable ----
+            print("\n--- Test: Tile Command Enable ---")
+            pos = t.serial_pos()
+            type_command("tile")
+            m = t.wait_for(r"\[WM\] tiling ENABLED", after=pos, timeout=8)
+            t.check("Tile command enables tiling", m is not None)
+
+            # ---- TEST: Tile Command Disable ----
+            print("\n--- Test: Tile Command Disable ---")
+            pos = t.serial_pos()
+            type_command("tile")
+            m = t.wait_for(r"\[WM\] tiling DISABLED", after=pos, timeout=8)
+            t.check("Tile command disables tiling", m is not None)
+
         else:
             print("\n(Kernel-specific tests skipped — flat scheduler mode)")
 

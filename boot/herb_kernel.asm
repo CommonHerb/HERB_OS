@@ -230,6 +230,13 @@ extern ed_active
 extern ed_win_id
 %endif
 
+; Session 92: wm_window_ptr needed outside GRAPHICS_MODE for tiling sync
+%ifndef GRAPHICS_MODE
+%ifdef KERNEL_MODE
+extern wm_window_ptr
+%endif
+%endif
+
 ; ============================================================
 ; GLOBALS — Kernel state (migrated from kernel_main.c, Phase D Step 7d)
 ; Definitions in DATA/BSS sections below.
@@ -352,6 +359,12 @@ global wm_write_window_geometry_to_herb
 global wm_write_all_z_order_to_herb
 %endif
 %endif
+; Session 92: Tiling — these must be outside GRAPHICS_MODE
+%ifdef KERNEL_MODE
+global wm_sync_geometry_from_herb
+global g_tiling_active
+global g_tile_flow_idx
+%endif
 
 ; ============================================================
 ; BSS — IDT data
@@ -444,6 +457,10 @@ flow_editor_win_id: dd -1
 
 ; Game WM window ID (-1 = not created)
 game_win_id:        dd -1
+
+; Session 92: Tiling state
+g_tiling_active:    dd 0        ; 0=free-drag, 1=tiled
+g_tile_flow_idx:    dd -1       ; flow index of wm.tile_horizontal (-1 = unknown)
 
 ; Boot-time WM role -> live WM window ID map (-1 = not created)
 wm_role_to_win_id:
@@ -756,6 +773,8 @@ str_x:              db "x", 0
 str_y:              db "y", 0
 str_role:           db "role", 0
 str_z_order:        db "z_order", 0
+str_width:          db "width", 0
+str_height:         db "height", 0
 
 ; Entity/container name strings
 str_shared_buffer:  db "shared_buffer", 0
@@ -943,7 +962,7 @@ str_ser_pos:        db " pos=", 0
 str_ser_list:       db "[LIST] ", 0
 str_ser_help_cmds:  db "[HELP] Commands: ", 0
 str_ser_shell:      db "[SHELL] ", 0
-str_ser_help_flat:  db "kill, load <producer|consumer|worker|beacon>, swap, list, help, block, unblock", 0
+str_ser_help_flat:  db "kill, load, swap, list, help, block, unblock, tile", 0
 
 ; Last action format strings — Phase C
 str_la_kill:        db "Kill %s -> %d ops", 0
@@ -1002,6 +1021,11 @@ str_dns_domain:     db "example.com", 0
 str_la_connect:     db "TCP connect %s:80", 0
 str_http_slash:     db "/", 0
 str_la_http:        db "HTTP GET %s", 0
+str_ser_tile_on:    db "[WM] tiling ENABLED", 10, 0
+str_ser_tile_off:   db "[WM] tiling DISABLED", 10, 0
+str_tile_flow_name: db "wm.tile_horizontal", 0
+str_la_tile_on:     db "Tiling: ON", 0
+str_la_tile_off:    db "Tiling: OFF", 0
 str_la_gather_yes:  db "Gathered! wood=%d", 0
 str_la_gather_no:   db "Nothing here (wood=%d)", 0
 str_la_timer:       db "Timer signal %s -> %d ops", 0
@@ -2507,6 +2531,11 @@ kernel_main:
     jnz .no_auto_timer
 
     call cmd_timer
+    ; Session 92: tiling geometry sync on auto-timer
+    cmp dword [rel g_tiling_active], 0
+    je .no_tile_sync
+    call wm_sync_geometry_from_herb
+.no_tile_sync:
     call draw_full
 
 .no_auto_timer:
@@ -5752,6 +5781,8 @@ post_dispatch:
     je .pd_connect
     cmp r12d, 21
     je .pd_http
+    cmp r12d, 22
+    je .pd_tile
     jmp .pd_report
 
 .pd_kill:
@@ -6602,6 +6633,66 @@ post_dispatch:
     lea r8, [rel str_la_http]
     lea r9, [rel str_dns_domain]
     call herb_snprintf
+    jmp .pd_report
+
+.pd_tile:
+    ; Session 92: Toggle tiling layout
+    ; Find tiling flow index (first time only)
+    cmp dword [rel g_tile_flow_idx], -1
+    jne .pd_tile_toggle
+    ; Search g_flows for wm.tile_horizontal
+    lea rcx, [rel str_tile_flow_name]
+    call intern
+    ; eax = interned name_id for "wm.tile_horizontal"
+    mov ebx, eax                        ; save name_id in ebx (callee-saved)
+    xor r13d, r13d                      ; r13d = flow index
+.pd_tile_find:
+    cmp r13d, [rel g_flow_count]
+    jge .pd_tile_notfound
+    movsxd rax, r13d
+    imul rax, SIZEOF_FLOW
+    lea rcx, [g_flows + rax]
+    cmp dword [rcx + FLOW_NAME_ID], ebx
+    je .pd_tile_found
+    inc r13d
+    jmp .pd_tile_find
+.pd_tile_found:
+    mov dword [rel g_tile_flow_idx], r13d
+    jmp .pd_tile_toggle
+.pd_tile_notfound:
+    ; Flow not found — leave g_tile_flow_idx as -1
+    jmp .pd_report
+
+.pd_tile_toggle:
+    ; Toggle g_tiling_active
+    xor dword [rel g_tiling_active], 1
+    cmp dword [rel g_tiling_active], 0
+    je .pd_tile_off
+
+    ; Tiling ON: run HAM to execute tiling flow, then sync geometry
+    mov ecx, 100
+    call ham_run_ham
+    call wm_sync_geometry_from_herb
+    ; Serial output
+    lea rcx, [rel str_ser_tile_on]
+    call serial_print
+    ; last_action
+    lea rcx, [rel last_action]
+    mov edx, 80
+    lea r8, [rel str_la_tile_on]
+    call herb_snprintf
+    call draw_full
+    jmp .pd_report
+
+.pd_tile_off:
+    ; Tiling OFF: positions stay, dragging works
+    lea rcx, [rel str_ser_tile_off]
+    call serial_print
+    lea rcx, [rel last_action]
+    mov edx, 80
+    lea r8, [rel str_la_tile_off]
+    call herb_snprintf
+    call draw_full
     jmp .pd_report
 
 .pd_report:
@@ -10049,6 +10140,130 @@ draw_summary:
     pop rbx
     pop rbp
     ret
+
+; ============================================================
+; Session 92: wm_sync_geometry_from_herb — outside GRAPHICS_MODE
+; ============================================================
+%ifdef KERNEL_MODE
+
+; ---- wm_sync_geometry_from_herb() ----
+; Lightweight sync — reads ONLY x/y/width/height from wm.VISIBLE
+; entities into WM window structs. Does NOT touch z_order, role, focus, flags,
+; or entity_id (preserving Session 90/91 guarantees).
+; Stack: 5 pushes (rbp, rbx, rsi, rdi, r12) + sub rsp 48 = 8+40+48 = 96. 96%16=0. ✓
+%define WMSG_EID   32
+%define WMSG_VI    36
+%define WMSG_NV    40
+%define WMSG_HT    44
+
+wm_sync_geometry_from_herb:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    sub rsp, 48
+
+    ; Get wm.VISIBLE count
+    lea rcx, [rel str_cn_wm_visible]
+    call herb_container_count
+    test eax, eax
+    jns .wmsg_count_ok
+    xor eax, eax
+.wmsg_count_ok:
+    cmp eax, 16
+    jle .wmsg_count_clamped
+    mov eax, 16
+.wmsg_count_clamped:
+    mov dword [rsp + WMSG_NV], eax
+    mov dword [rsp + WMSG_VI], 0
+
+.wmsg_loop:
+    mov eax, dword [rsp + WMSG_VI]
+    cmp eax, dword [rsp + WMSG_NV]
+    jge .wmsg_done
+
+    ; Get entity at index
+    lea rcx, [rel str_cn_wm_visible]
+    mov edx, eax
+    call herb_container_entity
+    test eax, eax
+    js .wmsg_next
+    mov dword [rsp + WMSG_EID], eax
+
+    ; Read role
+    mov ecx, eax
+    lea rdx, [rel str_role]
+    mov r8d, -1
+    call herb_entity_prop_int
+    cmp eax, 0
+    jl .wmsg_next
+    cmp eax, 6                  ; WM_ROLE_GAME (literal, outside GRAPHICS_MODE)
+    jg .wmsg_next
+    mov r12d, eax               ; r12d = role
+
+    ; Look up win_id from role
+    lea rbx, [rel wm_role_to_win_id]
+    mov ebx, dword [rbx + r12*4]
+    test ebx, ebx
+    js .wmsg_next                ; no window for this role
+
+    ; Read x
+    mov ecx, dword [rsp + WMSG_EID]
+    lea rdx, [rel str_x]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov esi, eax                 ; esi = x
+
+    ; Read y
+    mov ecx, dword [rsp + WMSG_EID]
+    lea rdx, [rel str_y]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    mov edi, eax                 ; edi = y
+
+    ; Read width
+    mov ecx, dword [rsp + WMSG_EID]
+    lea rdx, [rel str_width]
+    mov r8d, 100
+    call herb_entity_prop_int
+    mov r12d, eax                ; r12d = width (reuse, role no longer needed)
+
+    ; Read height
+    mov ecx, dword [rsp + WMSG_EID]
+    lea rdx, [rel str_height]
+    mov r8d, 100
+    call herb_entity_prop_int
+    mov dword [rsp + WMSG_HT], eax  ; save height on stack
+
+    ; Get window pointer
+    mov ecx, ebx                 ; win_id (callee-saved ebx)
+    call wm_window_ptr
+    test rax, rax
+    jz .wmsg_next
+
+    ; Write geometry to WM struct (literal offsets: X=8, Y=12, W=16, H=20)
+    mov dword [rax + 8], esi
+    mov dword [rax + 12], edi
+    mov dword [rax + 16], r12d
+    mov ecx, dword [rsp + WMSG_HT]
+    mov dword [rax + 20], ecx
+
+.wmsg_next:
+    inc dword [rsp + WMSG_VI]
+    jmp .wmsg_loop
+
+.wmsg_done:
+    add rsp, 48
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+%endif  ; KERNEL_MODE (wm_sync_geometry_from_herb)
 
 ; ============================================================
 ; Phase D Step 6 — Graphics Draw Functions

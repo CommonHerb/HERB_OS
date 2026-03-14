@@ -71,6 +71,8 @@ extern str_of
 extern serial_print
 extern serial_print_int
 extern herb_snprintf
+extern g_tiling_active
+extern g_tile_flow_idx
 
 ; Export entry point and debug counters
 global ham_run
@@ -156,6 +158,7 @@ flow_end_p:       resq 1      ; end of flow (for skip in non-flow passes)
 flow_dst_count:   resd 1      ; existing dest entity count before flow runs
 flow_dst_buf:     resd 256    ; dest entity IDs for reuse
 flow_dst_name:    resd 1      ; interned "_flow" name ID
+flow_exec_idx:    resd 1      ; current flow index during flow pass
 
 ; Phase D Step 7d — HAM data (migrated from C)
 g_ham_bytecode:  resb 8192     ; uint8_t[8192] — compiled bytecode buffer
@@ -896,6 +899,7 @@ ham_op_tend:
     mov  dword [ham_pass_mode], 2   ; enter flow pass
     mov  rsi, rbx                   ; reset PC to bytecode start
     mov  dword [ham_tension_idx], 0
+    mov  dword [flow_exec_idx], 0   ; reset flow counter
     jmp  .not_end
 
 .not_end:
@@ -2346,6 +2350,15 @@ ham_op_fhdr:
     ; If not flow pass: skip entire flow
     cmp     dword [ham_pass_mode], 2
     jne     .fhdr_skip
+
+    ; Session 92: flow enable guard — skip tiling flow when inactive
+    mov     eax, [flow_exec_idx]
+    inc     dword [flow_exec_idx]
+    cmp     eax, [g_tile_flow_idx]    ; is this the tiling flow?
+    jne     .fhdr_not_tile            ; no → continue normally
+    cmp     dword [g_tiling_active], 0
+    je      .fhdr_skip                ; tiling off → skip this flow
+.fhdr_not_tile:
 
     ; Save src_cidx and dst_cidx to BSS (survive function calls)
     mov     [flow_dst_cidx], r9d
