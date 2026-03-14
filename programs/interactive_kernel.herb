@@ -735,6 +735,23 @@ flow render_editor
     step x if x > 376 then 0 else x + 8
     step y if x > 376 then y + 16 else y
 
+flow wm.tile_horizontal
+  from wm.VISIBLE order_by role
+  into wm.VISIBLE
+  seed x 0
+  seed y 76
+  seed idx 0
+  seed w 200
+  each src -> dst
+    set dst.x x
+    set dst.y y
+    set dst.width w
+    set dst.height 262
+    step x if idx == 3 then 0 else x + w
+    step y if idx == 3 then 338 else y
+    step w if idx == 3 then 266 else w
+    step idx idx + 1
+
 entity server proc.Process in proc.READY
   prop priority 5
   prop time_slice 1
@@ -1593,6 +1610,9 @@ entity tcmd_connect input.TextCmd in input.TEXTCMD
 entity tcmd_http input.TextCmd in input.TEXTCMD
   prop text_key 26740
   prop cmd_id 21
+entity tcmd_tile input.TextCmd in input.TEXTCMD
+  prop text_key 29801
+  prop cmd_id 22
 entity help_edit display.HelpCmd in display.HELP_TEXT
   prop order 11
   prop cmd_text "edit"
@@ -1617,6 +1637,9 @@ entity help_connect display.HelpCmd in display.HELP_TEXT
 entity help_http display.HelpCmd in display.HELP_TEXT
   prop order 18
   prop cmd_text "http"
+entity help_tile display.HelpCmd in display.HELP_TEXT
+  prop order 19
+  prop cmd_text "tile"
 entity editor_ctl editor.EditorCtl in editor.CTL
   prop mode 0
   prop cursor_pos 0
