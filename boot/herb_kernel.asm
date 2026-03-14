@@ -74,6 +74,7 @@ extern herb_snprintf
 extern herb_memset
 extern herb_strlen
 extern herb_strcmp
+extern herb_strncpy
 
 ; Parallel arrays (from herb_graph.asm)
 extern container_order_keys
@@ -364,6 +365,8 @@ global wm_write_all_z_order_to_herb
 global wm_sync_geometry_from_herb
 global g_tiling_active
 global g_tile_flow_idx
+; Session 93: Shell output window
+global shell_output_print
 %endif
 
 ; ============================================================
@@ -402,6 +405,17 @@ bin_turing:            resb 2048
 bin_turing_len:        resd 1
 bin_test_flow:         resb 2048
 bin_test_flow_len:     resd 1
+
+; Session 93: Shell output circular buffer
+SHELL_OUTPUT_MAX_LINES equ 32
+SHELL_OUTPUT_LINE_LEN  equ 80
+
+shell_output_buf:   resb SHELL_OUTPUT_MAX_LINES * SHELL_OUTPUT_LINE_LEN  ; 2560 bytes
+shell_output_head:  resd 1           ; next line to write (wraps at 32)
+shell_output_count: resd 1           ; lines stored (max 32)
+shell_output_scroll: resd 1          ; scroll offset (0 = bottom/newest)
+shell_output_scratch: resb 80        ; temp formatting buffer
+shell_output_win_id: resd 1          ; win_id of the output window
 
 ; ============================================================
 ; DATA — Initialized globals (Phase D Step 7d)
@@ -1026,6 +1040,18 @@ str_ser_tile_off:   db "[WM] tiling DISABLED", 10, 0
 str_tile_flow_name: db "wm.tile_horizontal", 0
 str_la_tile_on:     db "Tiling: ON", 0
 str_la_tile_off:    db "Tiling: OFF", 0
+
+; Session 93: Shell output window strings
+str_output_title:   db "OUTPUT", 0
+str_so_welcome:     db "Type /help for commands", 0
+str_so_help_hdr:    db "Commands:", 0
+str_so_help_fmt:    db "  /%s", 0
+str_so_list_hdr:    db "Processes:", 0
+str_so_proc_fmt:    db "  %s (%s, p=%d)", 0
+str_so_files_hdr:   db "Files on disk:", 0
+str_so_file_fmt:    db "  %s (%d bytes)", 0
+str_so_nodisk:      db "No disk", 0
+
 str_la_gather_yes:  db "Gathered! wood=%d", 0
 str_la_gather_no:   db "Nothing here (wood=%d)", 0
 str_la_timer:       db "Timer signal %s -> %d ops", 0
@@ -2490,6 +2516,10 @@ kernel_main:
     call vga_set_color
 
     call vga_clear
+
+    ; Session 93: Welcome message in output window
+    lea rcx, [rel str_so_welcome]
+    call shell_output_print
 
     call draw_full
 
@@ -5682,6 +5712,66 @@ dispatch_text_command:
     pop rbp
     ret
 
+; ---- shell_output_print(const char* str) ----
+; Session 93: Write line to circular buffer + serial_print (dual output).
+; Args: RCX = null-terminated string
+; Stack: 3 pushes (rbp,rbx,rsi) + sub rsp 48. 8+24+48=80. 80%16=0. Good.
+shell_output_print:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    sub rsp, 48
+
+    mov rsi, rcx                     ; save str
+
+    ; 1. Calculate destination: &shell_output_buf[head * LINE_LEN]
+    mov eax, dword [rel shell_output_head]
+    imul eax, SHELL_OUTPUT_LINE_LEN
+    lea rbx, [rel shell_output_buf]
+    add rbx, rax                     ; rbx = dest pointer
+
+    ; 2. Copy up to LINE_LEN-1 chars via herb_strncpy(dst, src, n)
+    mov rcx, rbx                     ; dest
+    mov rdx, rsi                     ; src
+    mov r8d, SHELL_OUTPUT_LINE_LEN - 1
+    call herb_strncpy
+
+    ; 3. Null-terminate last byte
+    mov byte [rbx + SHELL_OUTPUT_LINE_LEN - 1], 0
+
+    ; 4. Advance head (wraps at SHELL_OUTPUT_MAX_LINES)
+    mov eax, dword [rel shell_output_head]
+    inc eax
+    cmp eax, SHELL_OUTPUT_MAX_LINES
+    jl .sop_no_wrap
+    xor eax, eax
+.sop_no_wrap:
+    mov dword [rel shell_output_head], eax
+
+    ; 5. Increment count (cap at max)
+    mov eax, dword [rel shell_output_count]
+    cmp eax, SHELL_OUTPUT_MAX_LINES
+    jge .sop_count_ok
+    inc eax
+    mov dword [rel shell_output_count], eax
+.sop_count_ok:
+
+    ; 6. Reset scroll to bottom on new output
+    mov dword [rel shell_output_scroll], 0
+
+    ; 7. Serial output: print original string + newline
+    mov rcx, rsi
+    call serial_print
+    lea rcx, [rel str_newline]
+    call serial_print
+
+    add rsp, 48
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
 ; ---- post_dispatch(int sig_eid, int ops, const char* cpu0_name, const char* buf) ----
 ; Read cmd_id from HERB, emit serial, cleanup terminated, handle shell action.
 ; Args: ECX = sig_eid, EDX = ops, R8 = cpu0_name, R9 = buf (command buffer)
@@ -5786,17 +5876,16 @@ post_dispatch:
     jmp .pd_report
 
 .pd_kill:
-    ; Kill serial + last_action
+    ; Kill — format last_action and output to window+serial
     test rsi, rsi
     jz .pd_kill_none
-    ; herb_snprintf(last_action, 80, "Kill %s -> %d ops", cpu0_name, ops)
     lea rcx, [rel last_action]
     mov edx, 80
     lea r8, [rel str_la_kill]
     mov r9, rsi
     mov [rsp+32], ebx               ; ops = 5th arg
     call herb_snprintf
-    ; serial: "[KILL] " cpu0_name
+    ; Serial: "[KILL] name" (for test compatibility)
     lea rcx, [rel str_ser_kill]
     call serial_print
     mov rcx, rsi
@@ -5804,12 +5893,10 @@ post_dispatch:
     jmp .pd_kill_serial_ops
 
 .pd_kill_none:
-    ; herb_snprintf(last_action, 80, "Kill: no running process")
     lea rcx, [rel last_action]
     mov edx, 80
     lea r8, [rel str_la_kill_none]
     call herb_snprintf
-    ; serial: "[KILL] no running process"
     lea rcx, [rel str_ser_kill_none]
     call serial_print
 
@@ -5820,12 +5907,14 @@ post_dispatch:
     call serial_print_int
     lea rcx, [rel str_newline]
     call serial_print
+    ; Output to window
+    lea rcx, [rel last_action]
+    call shell_output_print
     jmp .pd_report
 
 .pd_block:
     test rsi, rsi
     jz .pd_block_none
-    ; herb_snprintf(last_action, 80, "Block %s -> %d ops", cpu0_name, ops)
     lea rcx, [rel last_action]
     mov edx, 80
     lea r8, [rel str_la_block]
@@ -5835,35 +5924,41 @@ post_dispatch:
     jmp .pd_block_serial
 
 .pd_block_none:
-    ; herb_snprintf(last_action, 80, "Block: no running process")
     lea rcx, [rel last_action]
     mov edx, 80
     lea r8, [rel str_la_block_none]
     call herb_snprintf
 
 .pd_block_serial:
+    ; Serial: "[BLOCK] ops=N" (for test compatibility)
     lea rcx, [rel str_ser_block]
     call serial_print
     mov ecx, ebx
     call serial_print_int
     lea rcx, [rel str_newline]
     call serial_print
+    ; Output to window
+    lea rcx, [rel last_action]
+    call shell_output_print
     jmp .pd_report
 
 .pd_unblock:
-    ; herb_snprintf(last_action, 80, "Unblock -> %d ops", ops)
     lea rcx, [rel last_action]
     mov edx, 80
     lea r8, [rel str_la_unblock]
-    mov r9d, ebx                    ; ops as 4th arg (it's an int format)
+    mov r9d, ebx
     call herb_snprintf
-    ; serial
+    ; Serial: "[UNBLOCK] ops=N" (for test compatibility)
     lea rcx, [rel str_ser_unblock]
     call serial_print
     mov ecx, ebx
     call serial_print_int
     lea rcx, [rel str_newline]
     call serial_print
+    ; Output to window
+    lea rcx, [rel last_action]
+    call shell_output_print
+    jmp .pd_report
 
 .pd_save:
     ; Parse: skip "save ", extract filename (until next space), content = rest
@@ -5945,11 +6040,13 @@ post_dispatch:
     lea r9, [rsp+56]                ; name
     mov [rsp+32], r12d              ; size = 5th arg
     call herb_snprintf
+    lea rcx, [rel last_action]
+    call shell_output_print
     jmp .pd_report
 
 .pd_save_no_disk:
-    lea rcx, [rel str_fs_nodisk]
-    call serial_print
+    lea rcx, [rel str_so_nodisk]
+    call shell_output_print
     jmp .pd_report
 
 .pd_read:
@@ -6013,49 +6110,48 @@ post_dispatch:
     lea rcx, [rel fs_data_buf]
     mov byte [rcx + rax], 0
 
-    ; Serial: print file content
-    lea rcx, [rel str_ser_read_prefix]
-    call serial_print
-    lea rcx, [rsp+56]
-    call serial_print
-    lea rcx, [rel str_ser_read_colon]
-    call serial_print
-    lea rcx, [rel fs_data_buf]
-    call serial_print
-    lea rcx, [rel str_newline]
-    call serial_print
-
     ; Update last_action
     lea rcx, [rel last_action]
     mov edx, 80
     lea r8, [rel str_la_read]
     lea r9, [rsp+56]                ; name
     call herb_snprintf
+    lea rcx, [rel last_action]
+    call shell_output_print
+    ; Also print file content to output window (first 79 chars)
+    lea rcx, [rel fs_data_buf]
+    call shell_output_print
     jmp .pd_report
 
 .pd_read_no_disk:
-    lea rcx, [rel str_fs_nodisk]
-    call serial_print
+    lea rcx, [rel str_so_nodisk]
+    call shell_output_print
     jmp .pd_report
 
 .pd_files:
     cmp dword [rel fs_initialized], 0
     je .pd_files_no_disk
 
+    ; Print header to output window
+    lea rcx, [rel str_so_files_hdr]
+    call shell_output_print
+
     call fs_list
     ; eax = file count (already printed to serial by fs_list)
 
-    ; Update last_action
+    ; Summary line to output window
     lea rcx, [rel last_action]
     mov edx, 80
     lea r8, [rel str_la_files]
     mov r9d, eax                    ; count
     call herb_snprintf
+    lea rcx, [rel last_action]
+    call shell_output_print
     jmp .pd_report
 
 .pd_files_no_disk:
-    lea rcx, [rel str_fs_nodisk]
-    call serial_print
+    lea rcx, [rel str_so_nodisk]
+    call shell_output_print
     jmp .pd_report
 
 .pd_edit:
@@ -6074,14 +6170,13 @@ post_dispatch:
     mov ecx, WM_ROLE_EDITOR
     call wm_herb_set_focus_by_role
 %endif
-    ; Serial
-    lea rcx, [rel str_ser_edit_open]
-    call serial_print
-    ; last_action
+    ; last_action + output window
     lea rcx, [rel last_action]
     mov edx, 80
     lea r8, [rel str_la_edit_open]
     call herb_snprintf
+    lea rcx, [rel last_action]
+    call shell_output_print
     jmp .pd_report
 
 .pd_esave:
@@ -6225,11 +6320,13 @@ post_dispatch:
     mov eax, [rsp+32]                   ; saved size
     mov [rsp+32], eax                   ; 5th arg = size
     call herb_snprintf
+    lea rcx, [rel last_action]
+    call shell_output_print
     jmp .pd_report
 
 .pd_esave_no_disk:
-    lea rcx, [rel str_fs_nodisk]
-    call serial_print
+    lea rcx, [rel str_so_nodisk]
+    call shell_output_print
     jmp .pd_report
 
 .pd_eload:
@@ -6528,11 +6625,13 @@ post_dispatch:
     mov eax, [rsp+32]
     mov [rsp+32], eax                   ; 5th arg = size
     call herb_snprintf
+    lea rcx, [rel last_action]
+    call shell_output_print
     jmp .pd_report
 
 .pd_eload_no_disk:
-    lea rcx, [rel str_fs_nodisk]
-    call serial_print
+    lea rcx, [rel str_so_nodisk]
+    call shell_output_print
     jmp .pd_report
 
 .pd_ping:
@@ -6548,65 +6647,63 @@ post_dispatch:
     mov ecx, [rel net_gateway_ip]
     mov edx, eax                    ; sequence
     call icmp_send_echo
-    ; Update last_action
     lea rcx, [rel last_action]
     mov edx, 80
     lea r8, [rel str_la_ping]
     mov r9d, [rel ping_seq]
     call herb_snprintf
+    lea rcx, [rel last_action]
+    call shell_output_print
     jmp .pd_report
 
 .pd_udp:
-    ; Send UDP test packet to gateway:7777 with "HERB" payload
-    ; udp_send(RCX=dst_ip, EDX=dst_port, R8D=src_port, R9=payload_ptr, [rsp+32]=payload_len)
     mov ecx, [rel net_gateway_ip]
-    mov edx, 7777                   ; dst_port
-    mov r8d, 4444                   ; src_port
-    lea r9, [rel str_udp_payload]   ; "HERB"
-    mov dword [rsp+32], 4           ; payload_len = 4 bytes
+    mov edx, 7777
+    mov r8d, 4444
+    lea r9, [rel str_udp_payload]
+    mov dword [rsp+32], 4
     call udp_send
-    ; Update last_action
     lea rcx, [rel last_action]
     mov edx, 80
     lea r8, [rel str_la_udp]
     call herb_snprintf
+    lea rcx, [rel last_action]
+    call shell_output_print
     jmp .pd_report
 
 .pd_dns:
-    ; r13 = buf = "dns example.com"
     test r13, r13
     jz .pd_report
-    ; Skip to first space to get domain argument
     lea rax, [r13]
     xor ecx, ecx
 .pd_dns_skip:
     cmp byte [rax + rcx], 0
-    je .pd_dns_default              ; no space found → use default domain
+    je .pd_dns_default
     cmp byte [rax + rcx], ' '
     je .pd_dns_found_space
     inc ecx
     jmp .pd_dns_skip
 .pd_dns_found_space:
-    inc ecx                         ; skip the space
-    lea rcx, [r13 + rcx]           ; RCX = domain string (e.g., "example.com")
+    inc ecx
+    lea rcx, [r13 + rcx]
     cmp byte [rcx], 0
-    je .pd_dns_default              ; empty arg → default
+    je .pd_dns_default
     jmp .pd_dns_do
 .pd_dns_default:
-    lea rcx, [rel str_dns_domain]  ; "example.com"
+    lea rcx, [rel str_dns_domain]
 .pd_dns_do:
-    mov [rsp+80], rcx               ; save domain ptr in local slot
+    mov [rsp+80], rcx
     call dns_resolve
-    ; Update last_action
     lea rcx, [rel last_action]
     mov edx, 80
     lea r8, [rel str_la_dns]
-    mov r9, [rsp+80]               ; domain string
+    mov r9, [rsp+80]
     call herb_snprintf
+    lea rcx, [rel last_action]
+    call shell_output_print
     jmp .pd_report
 
 .pd_connect:
-    ; Use DNS-resolved IP if available, else gateway
     cmp dword [rel dns_resolved_flag], 0
     je .pd_connect_gw
     mov ecx, [rel dns_result_ip]
@@ -6614,25 +6711,28 @@ post_dispatch:
 .pd_connect_gw:
     mov ecx, [rel net_gateway_ip]
 .pd_connect_do:
-    mov edx, 80                     ; port 80
+    mov edx, 80
     call tcp_connect
-    ; Update last_action
     lea rcx, [rel last_action]
     mov edx, 80
     lea r8, [rel str_la_connect]
-    lea r9, [rel str_dns_domain]    ; "example.com"
+    lea r9, [rel str_dns_domain]
     call herb_snprintf
+    lea rcx, [rel last_action]
+    call shell_output_print
     jmp .pd_report
 
 .pd_http:
-    lea rcx, [rel str_dns_domain]   ; default "example.com"
-    lea rdx, [rel str_http_slash]   ; "/"
+    lea rcx, [rel str_dns_domain]
+    lea rdx, [rel str_http_slash]
     call http_get
     lea rcx, [rel last_action]
     mov edx, 80
     lea r8, [rel str_la_http]
     lea r9, [rel str_dns_domain]
     call herb_snprintf
+    lea rcx, [rel last_action]
+    call shell_output_print
     jmp .pd_report
 
 .pd_tile:
@@ -6673,25 +6773,29 @@ post_dispatch:
     mov ecx, 100
     call ham_run_ham
     call wm_sync_geometry_from_herb
-    ; Serial output
+    ; Serial: "[WM] tiling ENABLED" (for test compatibility)
     lea rcx, [rel str_ser_tile_on]
     call serial_print
-    ; last_action
     lea rcx, [rel last_action]
     mov edx, 80
     lea r8, [rel str_la_tile_on]
     call herb_snprintf
+    lea rcx, [rel last_action]
+    call shell_output_print
     call draw_full
     jmp .pd_report
 
 .pd_tile_off:
     ; Tiling OFF: positions stay, dragging works
+    ; Serial: "[WM] tiling DISABLED" (for test compatibility)
     lea rcx, [rel str_ser_tile_off]
     call serial_print
     lea rcx, [rel last_action]
     mov edx, 80
     lea r8, [rel str_la_tile_off]
     call herb_snprintf
+    lea rcx, [rel last_action]
+    call shell_output_print
     call draw_full
     jmp .pd_report
 
@@ -7013,6 +7117,11 @@ handle_shell_action:
     jne .hsa_check_30
 
     ; ---- action==20: List processes ----
+    ; Print header to output window FIRST (before [LIST] serial line)
+    lea rcx, [rel str_so_list_hdr]
+    call shell_output_print
+
+    ; Serial: "[LIST]" line (test looks for [LIST].*shell on one line)
     lea rcx, [rel str_ser_shell_list]
     call serial_print
     lea rcx, [rel str_ser_list]
@@ -7064,38 +7173,84 @@ handle_shell_action:
     ; eid = herb_container_entity(container, i)
     mov rcx, r13
     mov edx, esi
-    mov [rsp+44], esi               ; save i (below hids buffer)
+    mov [rsp+180], esi              ; save i (above hids/hords buffers)
     call herb_container_entity
     test eax, eax
     js .hsa_list_next
 
     ; Save eid for property lookup
     mov edi, eax
-    ; Print entity name
+    ; Get entity name
     mov ecx, eax
     call herb_entity_name
+    mov [rsp+184], rax              ; save name ptr at [184..191]
+
+    ; Serial: print entity name + (LABEL,p=N) for test compatibility
     mov rcx, rax
     call serial_print
-    ; Print "(LABEL,p="
     lea rcx, [rel str_ser_paren_l]
     call serial_print
     mov rcx, r14
     call serial_print
     lea rcx, [rel str_ser_p_eq]
     call serial_print
-    ; Print priority
+
+    ; Get priority
     mov ecx, edi
     lea rdx, [rel str_priority]
     xor r8d, r8d
     call herb_entity_prop_int
+    mov [rsp+192], eax              ; save priority
+
+    ; Serial: print priority + ") "
     mov ecx, eax
     call serial_print_int
-    ; Print ") "
     lea rcx, [rel str_ser_paren_sp]
     call serial_print
 
+    ; Format: "  name (LABEL, p=N)" into scratch buffer for output window
+    ; Use scratch + direct buffer write (NOT shell_output_print to avoid serial newline
+    ; which would break the [LIST] serial line the tests expect)
+    lea rcx, [rel shell_output_scratch]
+    mov edx, 80
+    lea r8, [rel str_so_proc_fmt]
+    mov r9, [rsp+184]              ; entity name
+    mov [rsp+32], r14              ; label string = 5th arg
+    mov eax, [rsp+192]             ; priority
+    mov dword [rsp+40], eax        ; priority = 6th arg
+    call herb_snprintf
+
+    ; Inline buffer write: copy scratch to shell_output_buf[head], advance head/count
+    mov eax, dword [rel shell_output_head]
+    imul eax, SHELL_OUTPUT_LINE_LEN
+    lea rcx, [rel shell_output_buf]
+    add rcx, rax                    ; dest
+    lea rdx, [rel shell_output_scratch]  ; src
+    mov r8d, SHELL_OUTPUT_LINE_LEN - 1
+    call herb_strncpy
+    ; Null-terminate
+    mov eax, dword [rel shell_output_head]
+    imul eax, SHELL_OUTPUT_LINE_LEN
+    lea rcx, [rel shell_output_buf]
+    mov byte [rcx + rax + SHELL_OUTPUT_LINE_LEN - 1], 0
+    ; Advance head
+    mov eax, dword [rel shell_output_head]
+    inc eax
+    cmp eax, SHELL_OUTPUT_MAX_LINES
+    jl .hsa_list_no_wrap
+    xor eax, eax
+.hsa_list_no_wrap:
+    mov dword [rel shell_output_head], eax
+    ; Increment count (cap at max)
+    mov eax, dword [rel shell_output_count]
+    cmp eax, SHELL_OUTPUT_MAX_LINES
+    jge .hsa_list_count_ok
+    inc eax
+    mov dword [rel shell_output_count], eax
+.hsa_list_count_ok:
+
 .hsa_list_next:
-    mov esi, [rsp+44]              ; restore i
+    mov esi, [rsp+180]             ; restore i
     inc esi
     jmp .hsa_list_ent
 
@@ -7106,7 +7261,6 @@ handle_shell_action:
 .hsa_list_done:
     lea rcx, [rel str_newline]
     call serial_print
-    ; herb_snprintf(last_action, 80, "Shell: list (see serial)")
     lea rcx, [rel last_action]
     mov edx, 80
     lea r8, [rel str_la_shell_list]
@@ -7207,34 +7361,35 @@ handle_shell_action:
     jmp .hsa_sort_outer
 
 .hsa_help_print:
-    ; Print help entries
+    ; Print header to output window
+    lea rcx, [rel str_so_help_hdr]
+    call shell_output_print
+
+    ; Print help entries (one per line to output window)
     xor r13d, r13d                  ; i = 0
 .hsa_help_print_loop:
     cmp r13d, r12d
     jge .hsa_help_print_done
 
-    ; if (i > 0) print ", "
-    test r13d, r13d
-    jz .hsa_help_no_comma
-    lea rcx, [rel str_ser_comma_space]
-    call serial_print
-.hsa_help_no_comma:
-
-    ; Print herb_entity_prop_str(hids[i], "cmd_text", "?")
+    ; Get cmd_text from entity
     mov ecx, [rsp+48+r13*4]
     lea rdx, [rel str_cmd_text]
     lea r8, [rel str_ser_question]
     call herb_entity_prop_str
-    mov rcx, rax
-    call serial_print
+
+    ; Format "  /cmd_text" into scratch buffer
+    lea rcx, [rel shell_output_scratch]
+    mov edx, 80
+    lea r8, [rel str_so_help_fmt]
+    mov r9, rax                     ; cmd_text string
+    call herb_snprintf
+    lea rcx, [rel shell_output_scratch]
+    call shell_output_print
 
     inc r13d
     jmp .hsa_help_print_loop
 
 .hsa_help_print_done:
-    lea rcx, [rel str_newline]
-    call serial_print
-    ; herb_snprintf(last_action, 80, "Shell: help")
     lea rcx, [rel last_action]
     mov edx, 80
     lea r8, [rel str_la_shell_help]
@@ -7254,12 +7409,15 @@ handle_shell_action:
 
 .hsa_check_unknown:
     ; action == -1: unknown command
+    ; Serial: "[SHELL] unknown" (for test compatibility)
     lea rcx, [rel str_ser_shell_unk]
     call serial_print
     lea rcx, [rel last_action]
     mov edx, 80
     lea r8, [rel str_la_shell_cmd_unk]
     call herb_snprintf
+    lea rcx, [rel last_action]
+    call shell_output_print
 
 .hsa_check_policy:
     ; Check if HERB tensions requested a policy swap
@@ -8196,6 +8354,35 @@ handle_key:
     call draw_full
     jmp .hk_done
 .hk_not_editor_input:
+
+    ; ---- PgUp/PgDn: scroll output window ----
+    cmp r12d, 0x49                       ; PgUp scancode
+    je .hk_scroll_up
+    cmp r12d, 0x51                       ; PgDn scancode
+    je .hk_scroll_down
+    jmp .hk_skip_scroll
+
+.hk_scroll_up:
+    mov eax, dword [rel shell_output_scroll]
+    mov ecx, dword [rel shell_output_count]
+    sub ecx, 5                           ; max scroll = count - approx visible
+    cmp ecx, 0
+    jle .hk_done                         ; nothing to scroll
+    inc eax
+    cmp eax, ecx
+    jg .hk_done                          ; already at top
+    mov dword [rel shell_output_scroll], eax
+    jmp .hk_done
+
+.hk_scroll_down:
+    mov eax, dword [rel shell_output_scroll]
+    test eax, eax
+    jz .hk_done                          ; already at bottom
+    dec eax
+    mov dword [rel shell_output_scroll], eax
+    jmp .hk_done
+
+.hk_skip_scroll:
 
     ; ---- 'E' key opens editor (command mode only) ----
     cmp r13b, 'e'
@@ -12448,11 +12635,17 @@ wm_apply_boot_window_style:
     jmp .wabws_done
 
 .wabws_term:
-    mov dword [rax + KWIN_BORDER_COLOR], COL_TERM_COL
-    mov dword [rax + KWIN_FILL_COLOR], COL_TERM_BG
-    mov dword [rax + KWIN_TITLE_BG], COL_TERM_COL
-    lea rdx, [rel wm_draw_region_adapter]
+    ; Session 93: Repurposed as shell OUTPUT window
+    mov dword [rax + KWIN_BORDER_COLOR], 0x00446688    ; blue-gray border
+    mov dword [rax + KWIN_FILL_COLOR], 0x001A1A2E      ; dark blue bg
+    mov dword [rax + KWIN_TITLE_BG], 0x00446688
+    lea rdx, [rel shell_output_draw_fn]
     mov [rax + KWIN_DRAW_FN], rdx
+    ; Override title to "OUTPUT"
+    lea rdx, [rel str_output_title]
+    mov [rax + 56], rdx                                 ; WIN_TITLE_PTR = 56
+    ; Save win_id for scroll routing
+    mov dword [rel shell_output_win_id], edi
     jmp .wabws_done
 
 .wabws_tensions:
@@ -12961,6 +13154,110 @@ wm_herb_set_focus_by_role:
 ; ============================================================
 ; WINDOW MANAGER ADAPTERS — Bridge between WM draw_fn and kernel content renderers
 ; ============================================================
+
+; ============================================================
+; shell_output_draw_fn — Session 93: Render shell output buffer in WM window
+; void shell_output_draw_fn(int cx, int cy, int cw, int ch, void* win_ptr)
+; MS x64: ECX=cx, EDX=cy, R8D=cw, R9D=ch, [rbp+48]=win_ptr
+;
+; Renders circular buffer text lines with scroll offset.
+; Stack: 8 pushes + sub rsp 56 = 8+64+56 = 128. 128%16=0. Good.
+; ============================================================
+shell_output_draw_fn:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 56
+
+    ; Save client rect
+    mov dword [rsp+40], ecx          ; cx
+    mov dword [rsp+44], edx          ; cy
+    mov dword [rsp+48], r8d          ; cw
+    mov dword [rsp+52], r9d          ; ch
+
+    ; Calculate visible lines = ch / 16
+    mov eax, r9d
+    shr eax, 4
+    mov r12d, eax                    ; r12 = visible_lines
+    test r12d, r12d
+    jz .sodf_done
+
+    ; Read buffer state
+    mov r14d, dword [rel shell_output_count]   ; total lines
+    mov r15d, dword [rel shell_output_scroll]  ; scroll offset
+
+    ; Get fill color from win_ptr for text background
+    mov rbx, [rbp + 48]             ; win_ptr
+    mov esi, dword [rbx + 44]       ; WIN_FILL_COLOR = offset 44
+
+    ; Render each visible row
+    xor edi, edi                     ; row = 0
+
+.sodf_row:
+    cmp edi, r12d
+    jge .sodf_done
+
+    ; line_num = count - visible_lines + row - scroll
+    mov eax, r14d
+    sub eax, r12d
+    add eax, edi
+    sub eax, r15d
+
+    ; Bounds check
+    test eax, eax
+    js .sodf_next_row
+    cmp eax, r14d
+    jge .sodf_next_row
+
+    ; buf_idx = (head - count + line_num) mod 32
+    mov ecx, dword [rel shell_output_head]
+    sub ecx, r14d
+    add ecx, eax
+    ; Handle negative modulo — add MAX then mask (32 is power of 2)
+    add ecx, SHELL_OUTPUT_MAX_LINES
+    and ecx, (SHELL_OUTPUT_MAX_LINES - 1)
+
+    ; String pointer = &shell_output_buf[buf_idx * LINE_LEN]
+    imul ecx, SHELL_OUTPUT_LINE_LEN
+    lea r8, [rel shell_output_buf]
+    add r8, rcx                      ; r8 = line string
+
+    ; Check if line is empty
+    cmp byte [r8], 0
+    je .sodf_next_row
+
+    ; fb_draw_string(cx, cy + row*16, str, fg, bg)
+    mov ecx, dword [rsp+40]          ; cx
+    mov edx, dword [rsp+44]          ; cy
+    mov eax, edi
+    shl eax, 4                       ; row * 16
+    add edx, eax                     ; cy + row*16
+    ; r8 already set to string
+    mov r9d, 0x00C0C0C0              ; fg = light gray
+    mov dword [rsp+32], esi          ; bg = fill_color
+    call fb_draw_string
+
+.sodf_next_row:
+    inc edi
+    jmp .sodf_row
+
+.sodf_done:
+    add rsp, 56
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
 
 ; ============================================================
 ; wm_draw_region_adapter — Content draw function for region windows
