@@ -1,6 +1,6 @@
 # HERB OS — Human Testing Guide
 
-**Updated Session 84 — Testing every interaction path**
+**Updated Session 92 — Testing every interaction path**
 
 ## Setup
 
@@ -77,6 +77,11 @@
 | `read <name>` | Read file from disk |
 | `files` | List saved files |
 | `ping` | Send ICMP echo to gateway (10.0.2.2) — requires NIC (`make run-net`) |
+| `udp` | Send UDP packet — requires NIC (`make run-net`) |
+| `dns <domain>` | DNS lookup — requires NIC (`make run-net`) |
+| `connect` | TCP connect to port 80 — requires NIC (`make run-net`) |
+| `http` | HTTP GET request — requires NIC (`make run-net`) |
+| `tile` | Toggle tiling layout (4+3 window grid) |
 
 ---
 
@@ -265,24 +270,63 @@ The `[server]->[client]` and `[client]->[server]` should alternate.
 
 ---
 
-### Test 10: Mouse Click Selection
+### Test 10: Mouse Click Focus (Session 91)
 
-**Action:** Click on a process box or a tension in the sidebar panel.
+**Action:** Click on different windows (process panels, editor, tensions panel).
 
 **Expected visual:**
-- Clicking a process box should select it (visual highlight)
-- Clicking a tension in the sidebar should select that tension
+- Clicked window gets a bright blue focus ring
+- Previously focused window loses the ring
+- Clicked window comes to front (z-order changes)
+
+**Expected serial output:** Focus changes driven by HERB tensions, no specific serial line.
+
+**Pass if:** Focus ring moves to clicked window, window comes to front.
+
+---
+
+### Test 10b: Disable Focus Tension
+
+**Action:**
+1. Click the tensions panel to select `wm.focus_on_click`
+2. Press `D` to disable it
+3. Click on a different window
+
+**Expected visual:**
+- After disabling: clicking windows does NOT change focus
+- Focus ring stays on the previously focused window
+- Re-enabling the tension restores click-to-focus behavior
+
+**Pass if:** Disabling `wm.focus_on_click` freezes focus — clicks have no effect on window focus.
+
+---
+
+### Test 10c: Tiling Layout (Session 92)
+
+**Action:**
+1. Press `/` to enter shell mode
+2. Type `tile` and press Enter
+3. Observe the window layout
+4. Type `/tile` again to disable
+
+**Expected visual (tile ON):**
+- All 7 windows snap to a 4+3 grid filling the screen
+- Top row: 4 windows, each 200px wide, covering full width
+- Bottom row: 3 windows, each ~266px wide
+- All windows 262px tall
+- No overlapping — clean grid layout
+
+**Expected visual (tile OFF):**
+- Windows stay where they are (positions persist)
+- Dragging/resizing works again
 
 **Expected serial output:**
 ```
-[CLICK] selected NAME at X,Y ops=Z
-```
-or
-```
-[CLICK] miss
+[WM] tiling ENABLED
+[WM] tiling DISABLED
 ```
 
-**Pass if:** Click registers in serial output, visual feedback on click target.
+**Pass if:** Windows snap to grid on enable, stay in place on disable, dragging works after disable.
 
 ---
 
