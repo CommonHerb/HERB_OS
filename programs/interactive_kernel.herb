@@ -754,15 +754,15 @@ flow wm.tile_horizontal
   seed x 0
   seed y 76
   seed idx 0
-  seed w 200
+  seed w 320
   each src -> dst
     set dst.x x
     set dst.y y
     set dst.width w
-    set dst.height 262
+    set dst.height 362
     step x if idx == 3 then 0 else x + w
-    step y if idx == 3 then 338 else y
-    step w if idx == 3 then 266 else w
+    step y if idx == 3 then 438 else y
+    step w if idx == 3 then 426 else w
     step idx idx + 1
 
 entity server proc.Process in proc.READY
@@ -804,94 +804,94 @@ entity region_cpu0 display.Surface in display.VISIBLE
   prop region_id 0
   prop x 8
   prop y 76
-  prop width 262
-  prop height 190
+  prop width 400
+  prop height 300
   prop border_color 52326
   prop fill_color 1060896
 entity region_ready display.Surface in display.VISIBLE
   prop kind 0
   prop region_id 1
-  prop x 278
+  prop x 416
   prop y 76
-  prop width 262
-  prop height 190
+  prop width 400
+  prop height 300
   prop border_color 13412864
   prop fill_color 2629648
 entity region_blocked display.Surface in display.VISIBLE
   prop kind 0
   prop region_id 2
   prop x 8
-  prop y 274
-  prop width 262
-  prop height 190
+  prop y 384
+  prop width 400
+  prop height 300
   prop border_color 13382451
   prop fill_color 2625552
 entity region_term display.Surface in display.VISIBLE
   prop kind 0
   prop region_id 3
-  prop x 278
-  prop y 274
-  prop width 262
-  prop height 190
+  prop x 416
+  prop y 384
+  prop width 400
+  prop height 300
   prop border_color 5592405
   prop fill_color 1579032
 entity region_panel display.Surface in display.VISIBLE
   prop kind 4
   prop region_id 4
-  prop x 548
-  prop y 98
-  prop width 244
-  prop height 350
+  prop x 824
+  prop y 76
+  prop width 448
+  prop height 608
 entity win_cpu0 wm.Window in wm.VISIBLE
   prop x 8
   prop y 76
-  prop width 262
-  prop height 190
+  prop width 400
+  prop height 300
   prop z_order 0
   prop role 0
   prop focused 0
 entity win_ready wm.Window in wm.VISIBLE
-  prop x 278
+  prop x 416
   prop y 76
-  prop width 262
-  prop height 190
+  prop width 400
+  prop height 300
   prop z_order 1
   prop role 1
   prop focused 0
 entity win_blocked wm.Window in wm.VISIBLE
   prop x 8
-  prop y 274
-  prop width 262
-  prop height 190
+  prop y 384
+  prop width 400
+  prop height 300
   prop z_order 2
   prop role 2
   prop focused 0
 entity win_term wm.Window in wm.VISIBLE
-  prop x 278
-  prop y 274
-  prop width 262
-  prop height 190
+  prop x 416
+  prop y 384
+  prop width 400
+  prop height 300
   prop z_order 3
   prop role 3
   prop focused 0
 entity win_tensions wm.Window in wm.VISIBLE
-  prop x 548
-  prop y 98
-  prop width 244
-  prop height 350
+  prop x 824
+  prop y 76
+  prop width 448
+  prop height 608
   prop z_order 4
   prop role 4
   prop focused 0
 entity win_editor wm.Window in wm.VISIBLE
-  prop x 400
+  prop x 200
   prop y 76
-  prop width 400
-  prop height 500
+  prop width 760
+  prop height 650
   prop z_order 5
   prop role 5
   prop focused 0
 entity win_game wm.Window in wm.VISIBLE
-  prop x 10
+  prop x 8
   prop y 76
   prop width 500
   prop height 520

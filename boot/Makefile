@@ -177,7 +177,7 @@ help:
 	@echo "No Python compilation step in the build chain."
 	@echo ""
 	@echo "Display:"
-	@echo "  GRAPHICS=1 (default)   BGA framebuffer 800x600x32"
+	@echo "  GRAPHICS=1 (default)   BGA framebuffer 1280x800x32"
 	@echo "  GRAPHICS=0             VGA text mode 80x25"
 	@echo ""
 	@echo "Tests always run in text mode (serial-based validation)."

@@ -1387,13 +1387,13 @@ str_gfx_surf_fmt:   db "%s::SURFACE", 0
 ; GRAPHICS LAYOUT EQU CONSTANTS — Phase D Step 6
 ; ============================================================
 
+; FB dimensions (outside GRAPHICS_MODE — shared code needs these)
+FB_WIDTH        equ 1280
+FB_HEIGHT       equ 800
+
 %ifdef GRAPHICS_MODE
 
-; FB dimensions
-FB_WIDTH        equ 800
-FB_HEIGHT       equ 600
-
-; Layout bands
+; Layout bands (header compact, extra space to main area)
 GFX_BANNER_Y   equ 0
 GFX_BANNER_H   equ 30
 GFX_STATS_Y    equ 30
@@ -1401,12 +1401,12 @@ GFX_STATS_H    equ 20
 GFX_LEGEND_Y   equ 50
 GFX_LEGEND_H   equ 20
 GFX_MAIN_Y     equ 76
-GFX_MAIN_H     equ 404
-GFX_LOG_Y       equ 486
+GFX_MAIN_H     equ 604
+GFX_LOG_Y       equ 686
 GFX_LOG_H       equ 20
-GFX_SUMMARY_Y   equ 510
+GFX_SUMMARY_Y   equ 710
 GFX_SUMMARY_H   equ 20
-GFX_RESLEG_Y    equ 534
+GFX_RESLEG_Y    equ 734
 GFX_RESLEG_H    equ 20
 
 ; Game world
@@ -1419,25 +1419,25 @@ GAME_INFO_X     equ 432
 GAME_INFO_W     equ 356
 
 ; Tension panel
-GFX_TENS_X      equ 548
+GFX_TENS_X      equ 824
 GFX_TENS_Y      equ 76
-GFX_TENS_W      equ 244
-GFX_TENS_H      equ 388
+GFX_TENS_W      equ 448
+GFX_TENS_H      equ 608
 GFX_TENS_ROW_H  equ 16
 
-; Container regions: (800-24)/2=388, (404-24)/2=190
+; Container regions: (1280-24)/2=628, (604-24)/2=290
 GFX_PAD         equ 8
-GFX_CONT_W     equ 388
-GFX_CONT_H     equ 190
+GFX_CONT_W     equ 400
+GFX_CONT_H     equ 300
 
 GFX_CPU0_X      equ GFX_PAD           ; 8
 GFX_CPU0_Y      equ GFX_MAIN_Y        ; 76
-GFX_READY_X     equ (GFX_PAD*2 + GFX_CONT_W)  ; 16+388=404
+GFX_READY_X     equ (GFX_PAD*2 + GFX_CONT_W)  ; 416
 GFX_READY_Y     equ GFX_MAIN_Y        ; 76
 GFX_BLOCK_X     equ GFX_PAD           ; 8
-GFX_BLOCK_Y     equ (GFX_MAIN_Y + GFX_CONT_H + GFX_PAD) ; 76+190+8=274
-GFX_TERM_X      equ (GFX_PAD*2 + GFX_CONT_W)  ; 404
-GFX_TERM_Y      equ (GFX_MAIN_Y + GFX_CONT_H + GFX_PAD) ; 274
+GFX_BLOCK_Y     equ (GFX_MAIN_Y + GFX_CONT_H + GFX_PAD) ; 384
+GFX_TERM_X      equ (GFX_PAD*2 + GFX_CONT_W)  ; 416
+GFX_TERM_Y      equ (GFX_MAIN_Y + GFX_CONT_H + GFX_PAD) ; 384
 
 ; Process rect sizing
 GFX_PROC_W     equ 120
@@ -2861,11 +2861,11 @@ kernel_main:
     mov dword [rax + 72], ecx       ; restore_w
     mov ecx, dword [rax + 20]       ; WIN_H
     mov dword [rax + 76], ecx       ; restore_h
-    ; Set to fill main area (0, 76, 800, 410)
+    ; Set to fill main area (0, GFX_MAIN_Y, FB_WIDTH, GFX_MAIN_H)
     mov dword [rax + 8], 0          ; x
-    mov dword [rax + 12], 76        ; y (GFX_MAIN_Y)
-    mov dword [rax + 16], 800       ; w (FB_WIDTH)
-    mov dword [rax + 20], 410       ; h (GFX_MAIN_H + some extra)
+    mov dword [rax + 12], GFX_MAIN_Y ; y
+    mov dword [rax + 16], FB_WIDTH  ; w
+    mov dword [rax + 20], GFX_MAIN_H ; h
     or dword [rax + 4], (1 << 2)    ; set WF_MAXIMIZED
     jmp .wm_click_done
 
@@ -9010,9 +9010,9 @@ mouse_handle_packet:
     mov dword [rel mouse_x], 0
     jmp .mhp_clamp_y
 .mhp_mx_pos:
-    cmp eax, 800
+    cmp eax, FB_WIDTH
     jl .mhp_clamp_y
-    mov dword [rel mouse_x], 799
+    mov dword [rel mouse_x], FB_WIDTH - 1
 
 .mhp_clamp_y:
     mov eax, [rel mouse_y]
@@ -9021,9 +9021,9 @@ mouse_handle_packet:
     mov dword [rel mouse_y], 0
     jmp .mhp_click
 .mhp_my_pos:
-    cmp eax, 600
+    cmp eax, FB_HEIGHT
     jl .mhp_click
-    mov dword [rel mouse_y], 599
+    mov dword [rel mouse_y], FB_HEIGHT - 1
 
 .mhp_click:
     ; Detect left button click (transition from not-pressed to pressed)
@@ -13832,10 +13832,10 @@ wm_init_default_windows:
 %else
     ; Non-KERNEL_MODE: create windows from hardcoded positions
     ; CPU0 window
-    mov ecx, 8                          ; GFX_CPU0_X
-    mov edx, 76                         ; GFX_CPU0_Y
-    mov r8d, 388                        ; GFX_CONT_W
-    mov r9d, 190                        ; GFX_CONT_H
+    mov ecx, GFX_CPU0_X
+    mov edx, GFX_CPU0_Y
+    mov r8d, GFX_CONT_W
+    mov r9d, GFX_CONT_H
     mov dword [rsp + 32], 0            ; WCT_REGION
     mov dword [rsp + 40], 0            ; region_id = 0
     lea rdi, [rel str_gfx_leg_cpu0]
@@ -13858,10 +13858,10 @@ wm_init_default_windows:
 
 .wmiw_nk_ready:
     ; READY window
-    mov ecx, 404                        ; GFX_READY_X
-    mov edx, 76                         ; GFX_READY_Y
-    mov r8d, 388
-    mov r9d, 190
+    mov ecx, GFX_READY_X
+    mov edx, GFX_READY_Y
+    mov r8d, GFX_CONT_W
+    mov r9d, GFX_CONT_H
     mov dword [rsp + 32], 0
     mov dword [rsp + 40], 1            ; region_id = 1
     lea rdi, [rel str_gfx_leg_ready]
@@ -13883,10 +13883,10 @@ wm_init_default_windows:
 
 .wmiw_nk_blocked:
     ; BLOCKED window
-    mov ecx, 8
-    mov edx, 274                        ; GFX_BLOCK_Y
-    mov r8d, 388
-    mov r9d, 190
+    mov ecx, GFX_BLOCK_X
+    mov edx, GFX_BLOCK_Y
+    mov r8d, GFX_CONT_W
+    mov r9d, GFX_CONT_H
     mov dword [rsp + 32], 0
     mov dword [rsp + 40], 2
     lea rdi, [rel str_gfx_leg_blocked]
@@ -13908,10 +13908,10 @@ wm_init_default_windows:
 
 .wmiw_nk_term:
     ; TERMINATED window
-    mov ecx, 404
-    mov edx, 274
-    mov r8d, 388
-    mov r9d, 190
+    mov ecx, GFX_TERM_X
+    mov edx, GFX_TERM_Y
+    mov r8d, GFX_CONT_W
+    mov r9d, GFX_CONT_H
     mov dword [rsp + 32], 0
     mov dword [rsp + 40], 3
     lea rdi, [rel str_gfx_leg_term]
@@ -15183,7 +15183,7 @@ gfx_draw_stats_only:
     ; fb_fill_rect(0, GFX_STATS_Y, FB_WIDTH, GFX_STATS_H, COL_STATS_BG)
     xor ecx, ecx               ; x=0
     mov edx, GFX_STATS_Y       ; y=30
-    mov r8d, FB_WIDTH           ; w=800
+    mov r8d, FB_WIDTH           ; w
     mov r9d, GFX_STATS_H       ; h=20
     mov dword [rsp + 32], COL_STATS_BG
     call fb_fill_rect
