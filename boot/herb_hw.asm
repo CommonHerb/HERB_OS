@@ -1216,8 +1216,10 @@ fb_flip:
 ; widget drawing (containers, processes, resources), mouse cursor.
 ; ============================================================
 
-FONT_WIDTH   equ 8
-FONT_HEIGHT  equ 16
+FONT_WIDTH   equ 12
+FONT_HEIGHT  equ 24
+FONT_BPR     equ 2                          ; bytes per row
+FONT_BPG     equ (FONT_HEIGHT * FONT_BPR)  ; 48 bytes per glyph
 CURSOR_W     equ 10
 CURSOR_H     equ 14
 
@@ -1234,7 +1236,7 @@ COL_CURSOR_BG equ 0x00000000
 
 ; void fb_draw_char(int x, int y, char ch, uint32_t fg, uint32_t bg)
 ; MS x64: ECX=x, EDX=y, R8D=ch, R9D=fg, [rbp+48]=bg
-; Draw 8x16 character from bitmap font. bg=0 means transparent.
+; Draw 12x24 character from bitmap font. bg=0 means transparent.
 fb_draw_char:
     push rbp
     mov rbp, rsp
@@ -1277,9 +1279,9 @@ fb_draw_char:
     jge .fdc_done
 .fdc_clip_ok:
 
-    ; Glyph pointer: font_8x16 + ch * 16
-    shl edi, 4                  ; ch * 16
-    lea r14, [rel font_8x16]
+    ; Glyph pointer: font_12x24 + ch * 48
+    imul edi, edi, FONT_BPG     ; ch * 48
+    lea r14, [rel font_12x24]
     add r14, rdi                ; r14 = glyph base
 
     ; Outer loop: row = 0..15
@@ -1298,7 +1300,7 @@ fb_draw_char:
     cmp eax, ecx
     jge .fdc_done               ; all remaining rows are outside
 .fdc_row_ok:
-    movzx edi, byte [r14 + r15] ; bits = glyph[row]
+    movzx edi, word [r14 + r15*2] ; bits = glyph[row] (16-bit word)
     ; Inner loop: col = 0..7
     mov dword [rsp + 32], 0     ; col = 0
 .fdc_col:
@@ -1319,8 +1321,8 @@ fb_draw_char:
     jge .fdc_skip
     mov ecx, [rsp + 32]        ; restore col
 .fdc_col_ok:
-    ; Test bit: bits & (0x80 >> col)
-    mov eax, 0x80
+    ; Test bit: bits & (0x8000 >> col)
+    mov eax, 0x8000
     mov cl, [rsp + 32]         ; col into CL for shift
     shr eax, cl                 ; mask = 0x80 >> col
     test edi, eax               ; bits & mask
@@ -2101,4 +2103,4 @@ hw_str_F: db "F", 0
 hw_str_p_eq: db "p=", 0
 hw_str_ts_eq: db "ts=", 0
 
-%include "font_data.inc"
+%include "font_12x24.inc"

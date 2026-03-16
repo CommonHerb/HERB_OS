@@ -1401,19 +1401,19 @@ FB_HEIGHT       equ 800
 
 ; Layout bands (header compact, extra space to main area)
 GFX_BANNER_Y   equ 0
-GFX_BANNER_H   equ 30
-GFX_STATS_Y    equ 30
-GFX_STATS_H    equ 20
-GFX_LEGEND_Y   equ 50
-GFX_LEGEND_H   equ 20
+GFX_BANNER_H   equ 28
+GFX_STATS_Y    equ 28
+GFX_STATS_H    equ 24
+GFX_LEGEND_Y   equ 52
+GFX_LEGEND_H   equ 24
 GFX_MAIN_Y     equ 76
 GFX_MAIN_H     equ 604
 GFX_LOG_Y       equ 686
-GFX_LOG_H       equ 20
+GFX_LOG_H       equ 24
 GFX_SUMMARY_Y   equ 710
-GFX_SUMMARY_H   equ 20
+GFX_SUMMARY_H   equ 24
 GFX_RESLEG_Y    equ 734
-GFX_RESLEG_H    equ 20
+GFX_RESLEG_H    equ 24
 
 ; Game world
 GAME_TILE_SIZE  equ 50
@@ -1429,7 +1429,7 @@ GFX_TENS_X      equ 824
 GFX_TENS_Y      equ 76
 GFX_TENS_W      equ 448
 GFX_TENS_H      equ 608
-GFX_TENS_ROW_H  equ 16
+GFX_TENS_ROW_H  equ 24
 
 ; Container regions: (1280-24)/2=628, (604-24)/2=290
 GFX_PAD         equ 8
@@ -2932,17 +2932,17 @@ kernel_main:
 %ifdef KERNEL_MODE
     ; Tension panel client click: compute row from mouse_y
     ; The tension panel draws at its window position
-    ; row = (mouse_y - (win_y + WM_TITLEBAR_H)) / 16
+    ; row = (mouse_y - (win_y + WM_TITLEBAR_H)) / GFX_TENS_ROW_H
     mov ecx, r14d
     call wm_window_ptr
     test rax, rax
     jz .wm_click_done
     mov ecx, dword [rax + 12]       ; WIN_Y
-    add ecx, 22                     ; + WM_TITLEBAR_H
+    add ecx, 28                     ; + WM_TITLEBAR_H (now 28)
     mov eax, dword [rel mouse_y]
     sub eax, ecx
     cdq
-    mov ecx, 16
+    mov ecx, 24                     ; GFX_TENS_ROW_H
     idiv ecx
 
     test eax, eax
@@ -10899,20 +10899,20 @@ gfx_draw_tension_panel:
     mov dword [rsp + 32], COL_TENS_BG
     call fb_draw_string
 
-    ; Separator line at cy+16
+    ; Separator line at cy+24
     mov ecx, [rel g_tp_cx]
     mov edx, [rel g_tp_cy]
-    add edx, 16
+    add edx, 24
     mov r8d, [rel g_tp_cw]
     mov r9d, COL_TENS_BORDER
     call fb_hline
 
-    ; Row iteration: rows start at cy+20
+    ; Row iteration: rows start at cy+28
     mov r12d, [rel g_tp_cy]
-    add r12d, 20                    ; row_y = cy + 20
-    ; max_rows = (ch - 36) / ROW_H  (36 = 20 top + 16 legend)
+    add r12d, 28                    ; row_y = cy + 28
+    ; max_rows = (ch - 52) / ROW_H  (52 = 28 top + 24 legend)
     mov eax, [rel g_tp_ch]
-    sub eax, 36
+    sub eax, 52
     jle .gtp_row_done               ; no room for rows
     xor edx, edx
     mov ecx, GFX_TENS_ROW_H
@@ -11123,16 +11123,16 @@ gfx_draw_tension_panel:
     jmp .gtp_row_loop
 
 .gtp_row_done:
-    ; Legend at bottom: cy + ch - 16
+    ; Legend at bottom: cy + ch - 24
     mov eax, [rel g_tp_cy]
     add eax, [rel g_tp_ch]
-    sub eax, 16
+    sub eax, 24
     mov dword [rsp + 40], eax       ; leg_y
-    ; fb_fill_rect(cx, leg_y, cw, 14, COL_TENS_BG)
+    ; fb_fill_rect(cx, leg_y, cw, 22, COL_TENS_BG)
     mov ecx, [rel g_tp_cx]
     mov edx, eax
     mov r8d, [rel g_tp_cw]
-    mov r9d, 14
+    mov r9d, 22
     mov dword [rsp + 32], COL_TENS_BG
     call fb_fill_rect
 
@@ -12360,8 +12360,8 @@ game_draw_fn:
 %define FED_NV     84    ; char count in buffer
 %define FED_CURX   88    ; current column (0-based)
 %define FED_CURL   92    ; current line (0-based)
-%define FED_CPL    96    ; chars per line (cw / 8)
-%define FED_VLINES 100   ; visible lines ((ch - 42) / 16)
+%define FED_CPL    96    ; chars per line (cw / 12)
+%define FED_VLINES 100   ; visible lines ((ch - 54) / 24)
 
 flow_editor_draw_fn:
     push rbp
@@ -12380,23 +12380,31 @@ flow_editor_draw_fn:
     mov dword [rsp + FED_CW], r8d
     mov dword [rsp + FED_CH], r9d
 
-    ; Compute chars_per_line = cw / 8
+    ; Compute chars_per_line = cw / 12
     mov eax, r8d
-    shr eax, 3
+    xor edx, edx
+    mov ecx, 12
+    div ecx
     mov dword [rsp + FED_CPL], eax
 
-    ; Compute visible_lines = (ch - 42) / 16  (22px info bar + 20px status bar)
+    ; Compute visible_lines = (ch - 54) / 24  (28px info bar + 26px status bar)
     mov eax, r9d
-    sub eax, 42
-    shr eax, 4
+    sub eax, 54
+    xor edx, edx
+    mov ecx, 24
+    div ecx
     test eax, eax
     jg .fed_vis_ok
     mov eax, 1                          ; minimum 1 visible line
 .fed_vis_ok:
     mov dword [rsp + FED_VLINES], eax
 
-    ; 1. Set clip rect to client area
-    call wm_set_clip                    ; ecx/edx/r8d/r9d already set
+    ; 1. Set clip rect to client area (reload after div clobbered ecx/edx)
+    mov ecx, [rsp + FED_CX]
+    mov edx, [rsp + FED_CY]
+    mov r8d, [rsp + FED_CW]
+    mov r9d, [rsp + FED_CH]
+    call wm_set_clip
 
     ; 2. Fill background
     mov ecx, [rsp + FED_CX]
@@ -12410,7 +12418,7 @@ flow_editor_draw_fn:
     mov ecx, [rsp + FED_CX]
     mov edx, [rsp + FED_CY]
     mov r8d, [rsp + FED_CW]
-    mov r9d, 20
+    mov r9d, 26
     mov dword [rsp + 32], 0x00252540   ; status bar bg
     call fb_fill_rect
 
@@ -12538,14 +12546,14 @@ flow_editor_draw_fn:
     jge .fed_char_advance               ; below visible area
 
     ; Draw character at (cur_x, screen_line)
-    ; pixel_x = cx + cur_x * 8
+    ; pixel_x = cx + cur_x * 12
     mov eax, [rsp + FED_CURX]
-    shl eax, 3
+    imul eax, eax, 12
     add eax, [rsp + FED_CX]
-    ; pixel_y = cy + 22 + screen_line * 16
-    shl ecx, 4
+    ; pixel_y = cy + 28 + screen_line * 24
+    imul ecx, ecx, 24
     add ecx, [rsp + FED_CY]
-    add ecx, 22
+    add ecx, 28
 
     ; fb_draw_char(pixel_x, pixel_y, ascii, fg, bg)
     mov edx, ecx                        ; y
@@ -12607,19 +12615,19 @@ flow_editor_draw_fn:
     cmp eax, [rsp + FED_VLINES]
     jge .fed_cursor_done
     ; eax = cursor screen_line
-    ; pixel_x = cx + cursor_col * 8
+    ; pixel_x = cx + cursor_col * 12
     mov ecx, r12d
-    shl ecx, 3
+    imul ecx, ecx, 12
     add ecx, [rsp + FED_CX]
-    ; pixel_y = cy + 22 + screen_line * 16
-    shl eax, 4
+    ; pixel_y = cy + 28 + screen_line * 24
+    imul eax, eax, 24
     add eax, [rsp + FED_CY]
-    add eax, 22
-    ; fb_fill_rect(pixel_x, pixel_y, 2, 16, white)
+    add eax, 28
+    ; fb_fill_rect(pixel_x, pixel_y, 2, 24, white)
     mov edx, eax                        ; y
     ; ecx already = pixel_x
     mov r8d, 2                          ; 2px wide vertical bar cursor
-    mov r9d, 16
+    mov r9d, 24
     mov dword [rsp + 32], 0x00FFFFFF   ; white
     call fb_fill_rect
 
@@ -12629,19 +12637,19 @@ flow_editor_draw_fn:
     mov ecx, [rsp + FED_CX]
     mov eax, [rsp + FED_CY]
     add eax, [rsp + FED_CH]
-    sub eax, 20
-    mov edx, eax                       ; bar_y = cy + ch - 20
+    sub eax, 26
+    mov edx, eax                       ; bar_y = cy + ch - 26
     mov r8d, [rsp + FED_CW]
-    mov r9d, 20
+    mov r9d, 26
     mov dword [rsp + 32], 0x00161622
     call fb_fill_rect
 
     ; Status text
     mov ecx, [rsp + FED_CX]
-    add ecx, 8
+    add ecx, 12
     mov edx, [rsp + FED_CY]
     add edx, [rsp + FED_CH]
-    sub edx, 17
+    sub edx, 23
     lea r8, [rel str_gfx_ed_status]
     mov r9d, 0x00808090
     mov dword [rsp + 32], 0x00161622
@@ -12649,10 +12657,10 @@ flow_editor_draw_fn:
     mov ebx, eax                        ; ebx = end x
 
     ; "Ln:" + line number in status bar
-    lea ecx, [ebx + 16]
+    lea ecx, [ebx + 20]
     mov edx, [rsp + FED_CY]
     add edx, [rsp + FED_CH]
-    sub edx, 17
+    sub edx, 23
     lea r8, [rel str_gfx_ed_line]
     mov r9d, 0x00808090
     mov dword [rsp + 32], 0x00161622
@@ -12661,7 +12669,7 @@ flow_editor_draw_fn:
     mov ecx, eax                        ; x after "Ln:"
     mov edx, [rsp + FED_CY]
     add edx, [rsp + FED_CH]
-    sub edx, 17
+    sub edx, 23
     mov r8d, [rsp + FED_CURL]
     inc r8d                             ; 1-based line number
     mov r9d, COL_TEXT_VAL
@@ -13448,9 +13456,11 @@ shell_output_draw_fn:
     mov dword [rsp+48], r8d          ; cw
     mov dword [rsp+52], r9d          ; ch
 
-    ; Calculate visible lines = ch / 16
+    ; Calculate visible lines = ch / 24
     mov eax, r9d
-    shr eax, 4
+    xor edx, edx
+    mov ecx, 24
+    div ecx
     mov r12d, eax                    ; r12 = visible_lines
     test r12d, r12d
     jz .sodf_done
@@ -13499,11 +13509,11 @@ shell_output_draw_fn:
     cmp byte [r8], 0
     je .sodf_next_row
 
-    ; fb_draw_string(cx, cy + row*16, str, fg, bg)
+    ; fb_draw_string(cx, cy + row*24, str, fg, bg)
     mov ecx, dword [rsp+40]          ; cx
     mov edx, dword [rsp+44]          ; cy
     mov eax, edi
-    shl eax, 4                       ; row * 16
+    imul eax, eax, 24               ; row * 24
     add edx, eax                     ; cy + row*16
     ; r8 already set to string
     mov r9d, 0x00C0C0C0              ; fg = light gray
@@ -14014,7 +14024,7 @@ gfx_draw_full:
 
     ; fb_draw_string(12, 8, OS_TITLE, COL_TEXT_HI, COL_BANNER_BG)
     mov ecx, 12
-    mov edx, GFX_BANNER_Y + 8
+    mov edx, GFX_BANNER_Y + 2
 %ifdef KERNEL_MODE
     lea r8, [rel str_os_title_km]
 %else
@@ -14026,7 +14036,7 @@ gfx_draw_full:
 
     ; fb_draw_string(600, 8, OS_SUBTITLE, COL_TEXT_DIM, COL_BANNER_BG)
     mov ecx, FB_WIDTH - 200
-    mov edx, GFX_BANNER_Y + 8
+    mov edx, GFX_BANNER_Y + 2
 %ifdef KERNEL_MODE
     lea r8, [rel str_os_subtitle_km]
 %else
@@ -14048,7 +14058,7 @@ gfx_draw_full:
 
     ; "Tick:"
     mov ecx, ebx
-    mov edx, GFX_STATS_Y + 3
+    mov edx, GFX_STATS_Y + 0
     lea r8, [rel str_gfx_tick]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_STATS_BG
@@ -14061,7 +14071,7 @@ gfx_draw_full:
     mov esi, 100
     idiv esi
     mov ecx, ebx
-    mov edx, GFX_STATS_Y + 3
+    mov edx, GFX_STATS_Y + 0
     mov r8d, eax
     mov r9d, COL_TEXT_VAL
     mov dword [rsp + 32], COL_STATS_BG
@@ -14070,7 +14080,7 @@ gfx_draw_full:
 
     ; "Ops:"
     lea ecx, [ebx + 12]
-    mov edx, GFX_STATS_Y + 3
+    mov edx, GFX_STATS_Y + 0
     lea r8, [rel str_gfx_ops]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_STATS_BG
@@ -14079,7 +14089,7 @@ gfx_draw_full:
 
     ; total_ops
     mov ecx, ebx
-    mov edx, GFX_STATS_Y + 3
+    mov edx, GFX_STATS_Y + 0
     mov r8d, dword [rel total_ops]
     mov r9d, COL_TEXT_VAL
     mov dword [rsp + 32], COL_STATS_BG
@@ -14088,7 +14098,7 @@ gfx_draw_full:
 
     ; "Arena:"
     lea ecx, [ebx + 12]
-    mov edx, GFX_STATS_Y + 3
+    mov edx, GFX_STATS_Y + 0
     lea r8, [rel str_gfx_arena]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_STATS_BG
@@ -14099,7 +14109,7 @@ gfx_draw_full:
     call herb_arena_usage
     shr eax, 10                 ; / 1024
     mov ecx, ebx
-    mov edx, GFX_STATS_Y + 3
+    mov edx, GFX_STATS_Y + 0
     mov r8d, eax
     mov r9d, COL_TEXT_VAL
     mov dword [rsp + 32], COL_STATS_BG
@@ -14108,7 +14118,7 @@ gfx_draw_full:
 
     ; "KB"
     mov ecx, ebx
-    mov edx, GFX_STATS_Y + 3
+    mov edx, GFX_STATS_Y + 0
     lea r8, [rel str_gfx_kb]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_STATS_BG
@@ -14130,7 +14140,7 @@ gfx_draw_full:
 
     ; "Procs:"
     lea ecx, [ebx + 12]
-    mov edx, GFX_STATS_Y + 3
+    mov edx, GFX_STATS_Y + 0
     lea r8, [rel str_gfx_procs]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_STATS_BG
@@ -14143,7 +14153,7 @@ gfx_draw_full:
     cmovs esi, edi
 
     mov ecx, ebx
-    mov edx, GFX_STATS_Y + 3
+    mov edx, GFX_STATS_Y + 0
     mov r8d, esi
     mov r9d, COL_TEXT_VAL
     mov dword [rsp + 32], COL_STATS_BG
@@ -14165,7 +14175,7 @@ gfx_draw_full:
     xor esi, esi
 .gdf_draw_policy:
     lea ecx, [ebx + 12]
-    mov edx, GFX_STATS_Y + 3
+    mov edx, GFX_STATS_Y + 0
     lea r8, [rel str_gfx_sched]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_STATS_BG
@@ -14182,7 +14192,7 @@ gfx_draw_full:
     mov r9d, 0x00FF9900
 .gdf_draw_pol_str:
     mov ecx, ebx
-    mov edx, GFX_STATS_Y + 3
+    mov edx, GFX_STATS_Y + 0
     mov dword [rsp + 32], COL_STATS_BG
     call fb_draw_string
     mov ebx, eax
@@ -14194,7 +14204,7 @@ gfx_draw_full:
     je .gdf_no_lastkey
 
     lea ecx, [ebx + 12]
-    mov edx, GFX_STATS_Y + 3
+    mov edx, GFX_STATS_Y + 0
     lea r8, [rel str_gfx_key_open]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_STATS_BG
@@ -14202,7 +14212,7 @@ gfx_draw_full:
     mov ebx, eax
 
     mov ecx, ebx
-    mov edx, GFX_STATS_Y + 3
+    mov edx, GFX_STATS_Y + 0
     mov r8, rdi                 ; last_key_name
     mov r9d, COL_TEXT_KEY
     mov dword [rsp + 32], COL_STATS_BG
@@ -14210,7 +14220,7 @@ gfx_draw_full:
     mov ebx, eax
 
     mov ecx, ebx
-    mov edx, GFX_STATS_Y + 3
+    mov edx, GFX_STATS_Y + 0
     lea r8, [rel str_gfx_key_close]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_STATS_BG
@@ -14234,7 +14244,7 @@ gfx_draw_full:
     mov ebx, 12
     ; "Arrows"
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     lea r8, [rel str_gfx_arrows]
     mov r9d, COL_TEXT_KEY
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14243,7 +14253,7 @@ gfx_draw_full:
 
     ; "=Move "
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     lea r8, [rel str_gfx_eq_move]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14252,7 +14262,7 @@ gfx_draw_full:
 
     ; "Space"
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     lea r8, [rel str_gfx_space_key]
     mov r9d, COL_TEXT_KEY
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14261,7 +14271,7 @@ gfx_draw_full:
 
     ; "=Gather "
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     lea r8, [rel str_gfx_eq_gather]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14270,7 +14280,7 @@ gfx_draw_full:
 
     ; "G"
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     lea r8, [rel str_gfx_g_key]
     mov r9d, COL_TEXT_KEY
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14279,7 +14289,7 @@ gfx_draw_full:
 
     ; "=OS view"
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     lea r8, [rel str_gfx_eq_osview]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14308,14 +14318,14 @@ gfx_draw_full:
     je .gdf_game_no_log
 
     mov ecx, 12
-    mov edx, GFX_LOG_Y + 3
+    mov edx, GFX_LOG_Y + 0
     lea r8, [rel str_gfx_gt]
     mov r9d, COL_RUNNING
     mov dword [rsp + 32], COL_LEGEND_BG
     call fb_draw_string
 
     mov ecx, 28
-    mov edx, GFX_LOG_Y + 3
+    mov edx, GFX_LOG_Y + 0
     mov r8, rdi
     mov r9d, COL_TEXT
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14342,7 +14352,7 @@ gfx_draw_full:
     mov ebx, 12
     ; "COMMON HERB"
     mov ecx, ebx
-    mov edx, GFX_SUMMARY_Y + 3
+    mov edx, GFX_SUMMARY_Y + 0
     lea r8, [rel str_gfx_common_herb]
     mov r9d, COL_GAME_TITLE
     mov dword [rsp + 32], COL_STATS_BG
@@ -14351,7 +14361,7 @@ gfx_draw_full:
 
     ; "Wood:"
     lea ecx, [ebx + 16]
-    mov edx, GFX_SUMMARY_Y + 3
+    mov edx, GFX_SUMMARY_Y + 0
     lea r8, [rel str_gfx_wood_lbl2]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_STATS_BG
@@ -14360,7 +14370,7 @@ gfx_draw_full:
 
     ; wood value
     mov ecx, ebx
-    mov edx, GFX_SUMMARY_Y + 3
+    mov edx, GFX_SUMMARY_Y + 0
     mov r8d, r12d
     mov r9d, COL_TREE
     mov dword [rsp + 32], COL_STATS_BG
@@ -14369,7 +14379,7 @@ gfx_draw_full:
 
     ; "Trees:"
     lea ecx, [ebx + 16]
-    mov edx, GFX_SUMMARY_Y + 3
+    mov edx, GFX_SUMMARY_Y + 0
     lea r8, [rel str_gfx_trees_lbl2]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_STATS_BG
@@ -14383,7 +14393,7 @@ gfx_draw_full:
     test eax, eax
     cmovs eax, ecx
     mov ecx, ebx
-    mov edx, GFX_SUMMARY_Y + 3
+    mov edx, GFX_SUMMARY_Y + 0
     mov r8d, eax
     mov r9d, COL_TEXT_VAL
     mov dword [rsp + 32], COL_STATS_BG
@@ -14537,7 +14547,7 @@ gfx_draw_full:
 
     ; fb_draw_string(x, ..., key, COL_TEXT_KEY, COL_LEGEND_BG)
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     mov r8, rax                 ; key string
     mov r9d, COL_TEXT_KEY
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14553,7 +14563,7 @@ gfx_draw_full:
 
     ; fb_draw_string(x, ..., label, COL_TEXT_DIM, COL_LEGEND_BG)
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     mov r8, rax
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14562,7 +14572,7 @@ gfx_draw_full:
 
     ; fb_draw_string(x, ..., " ", COL_TEXT_DIM, COL_LEGEND_BG)
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     lea r8, [rel str_space]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14576,7 +14586,7 @@ gfx_draw_full:
 %else
     ; Non-KERNEL_MODE: hardcoded legend
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     lea r8, [rel str_leg_N]
     mov r9d, COL_TEXT_KEY
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14584,7 +14594,7 @@ gfx_draw_full:
     mov ebx, eax
 
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     lea r8, [rel str_leg_ew]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14592,7 +14602,7 @@ gfx_draw_full:
     mov ebx, eax
 
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     lea r8, [rel str_leg_K]
     mov r9d, COL_TEXT_KEY
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14600,7 +14610,7 @@ gfx_draw_full:
     mov ebx, eax
 
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     lea r8, [rel str_leg_ill]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14608,7 +14618,7 @@ gfx_draw_full:
     mov ebx, eax
 
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     lea r8, [rel str_leg_B]
     mov r9d, COL_TEXT_KEY
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14616,7 +14626,7 @@ gfx_draw_full:
     mov ebx, eax
 
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     lea r8, [rel str_leg_lk]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14624,7 +14634,7 @@ gfx_draw_full:
     mov ebx, eax
 
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     lea r8, [rel str_leg_U]
     mov r9d, COL_TEXT_KEY
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14632,7 +14642,7 @@ gfx_draw_full:
     mov ebx, eax
 
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     lea r8, [rel str_leg_nblk]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14640,7 +14650,7 @@ gfx_draw_full:
     mov ebx, eax
 
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     lea r8, [rel str_leg_T]
     mov r9d, COL_TEXT_KEY
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14648,7 +14658,7 @@ gfx_draw_full:
     mov ebx, eax
 
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     lea r8, [rel str_leg_mr]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14656,7 +14666,7 @@ gfx_draw_full:
     mov ebx, eax
 
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     lea r8, [rel str_leg_Plus]
     mov r9d, COL_TEXT_KEY
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14664,7 +14674,7 @@ gfx_draw_full:
     mov ebx, eax
 
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     lea r8, [rel str_leg_Boost]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14672,7 +14682,7 @@ gfx_draw_full:
     mov ebx, eax
 
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     lea r8, [rel str_leg_Space]
     mov r9d, COL_TEXT_KEY
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14680,7 +14690,7 @@ gfx_draw_full:
     mov ebx, eax
 
     mov ecx, ebx
-    mov edx, GFX_LEGEND_Y + 3
+    mov edx, GFX_LEGEND_Y + 0
     lea r8, [rel str_leg_Step]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14715,14 +14725,14 @@ gfx_draw_full:
     je .gdf_no_log
 
     mov ecx, 12
-    mov edx, GFX_LOG_Y + 3
+    mov edx, GFX_LOG_Y + 0
     lea r8, [rel str_gfx_gt]
     mov r9d, COL_RUNNING
     mov dword [rsp + 32], COL_LEGEND_BG
     call fb_draw_string
 
     mov ecx, 28
-    mov edx, GFX_LOG_Y + 3
+    mov edx, GFX_LOG_Y + 0
     mov r8, rdi
     mov r9d, COL_TEXT
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14771,7 +14781,7 @@ gfx_draw_full:
 
     ; "READY="
     mov ecx, ebx
-    mov edx, GFX_SUMMARY_Y + 3
+    mov edx, GFX_SUMMARY_Y + 0
     lea r8, [rel str_gfx_ready_eq]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_STATS_BG
@@ -14783,7 +14793,7 @@ gfx_draw_full:
     mov dword [rsp + GDF_NV], edi    ; save term_n
 
     mov ecx, ebx
-    mov edx, GFX_SUMMARY_Y + 3
+    mov edx, GFX_SUMMARY_Y + 0
     mov r8d, r12d
     mov r9d, COL_READY_COL
     mov dword [rsp + 32], COL_STATS_BG
@@ -14792,7 +14802,7 @@ gfx_draw_full:
 
     ; "CPU0="
     lea ecx, [ebx + 8]
-    mov edx, GFX_SUMMARY_Y + 3
+    mov edx, GFX_SUMMARY_Y + 0
     lea r8, [rel str_gfx_cpu0_eq]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_STATS_BG
@@ -14800,7 +14810,7 @@ gfx_draw_full:
     mov ebx, eax
 
     mov ecx, ebx
-    mov edx, GFX_SUMMARY_Y + 3
+    mov edx, GFX_SUMMARY_Y + 0
     mov r8d, r13d
     mov r9d, COL_RUNNING
     mov dword [rsp + 32], COL_STATS_BG
@@ -14809,7 +14819,7 @@ gfx_draw_full:
 
     ; "BLOCKED="
     lea ecx, [ebx + 8]
-    mov edx, GFX_SUMMARY_Y + 3
+    mov edx, GFX_SUMMARY_Y + 0
     lea r8, [rel str_gfx_blocked_eq]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_STATS_BG
@@ -14817,7 +14827,7 @@ gfx_draw_full:
     mov ebx, eax
 
     mov ecx, ebx
-    mov edx, GFX_SUMMARY_Y + 3
+    mov edx, GFX_SUMMARY_Y + 0
     mov r8d, dword [rsp + GDF_VI]   ; blk_n
     mov r9d, COL_BLOCKED_COL
     mov dword [rsp + 32], COL_STATS_BG
@@ -14826,7 +14836,7 @@ gfx_draw_full:
 
     ; "TERM="
     lea ecx, [ebx + 8]
-    mov edx, GFX_SUMMARY_Y + 3
+    mov edx, GFX_SUMMARY_Y + 0
     lea r8, [rel str_gfx_term_eq]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_STATS_BG
@@ -14834,7 +14844,7 @@ gfx_draw_full:
     mov ebx, eax
 
     mov ecx, ebx
-    mov edx, GFX_SUMMARY_Y + 3
+    mov edx, GFX_SUMMARY_Y + 0
     mov r8d, dword [rsp + GDF_NV]   ; term_n
     mov r9d, COL_TERM_COL
     mov dword [rsp + 32], COL_STATS_BG
@@ -14871,7 +14881,7 @@ gfx_draw_full:
 
     ; fb_draw_string(12, bar_y, "BUF", ...)
     mov ecx, 12
-    mov edx, GFX_RESLEG_Y + 3
+    mov edx, GFX_RESLEG_Y + 0
     lea r8, [rel str_gfx_buf_lbl]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14881,7 +14891,7 @@ gfx_draw_full:
 
     ; fb_draw_rect(bar_x, bar_y, 120, 12, COL_TEXT_DIM)
     mov ecx, ebx
-    mov edx, GFX_RESLEG_Y + 3
+    mov edx, GFX_RESLEG_Y + 0
     mov r8d, 120
     mov r9d, 12
     mov dword [rsp + 32], COL_TEXT_DIM
@@ -14955,7 +14965,7 @@ gfx_draw_full:
 
     lea r8, [rsp + GDF_BBUF]
     mov ecx, ebx
-    mov edx, GFX_RESLEG_Y + 3
+    mov edx, GFX_RESLEG_Y + 0
     mov r9d, COL_TEXT_VAL
     mov dword [rsp + 32], COL_LEGEND_BG
     call fb_draw_string
@@ -14964,7 +14974,7 @@ gfx_draw_full:
     mov ebx, 226                ; bar_x + 60 = 166 + 60
     ; ">"
     mov ecx, ebx
-    mov edx, GFX_RESLEG_Y + 3
+    mov edx, GFX_RESLEG_Y + 0
     lea r8, [rel str_gfx_gt_prod]
     mov r9d, 0x00FF9900
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14972,7 +14982,7 @@ gfx_draw_full:
 
     ; "producer  "
     lea ecx, [ebx + 12]
-    mov edx, GFX_RESLEG_Y + 3
+    mov edx, GFX_RESLEG_Y + 0
     lea r8, [rel str_gfx_producer]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14980,7 +14990,7 @@ gfx_draw_full:
 
     ; "<"
     lea ecx, [ebx + 12 + 80]    ; +92
-    mov edx, GFX_RESLEG_Y + 3
+    mov edx, GFX_RESLEG_Y + 0
     lea r8, [rel str_gfx_lt_cons]
     mov r9d, 0x0066CCFF
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -14988,7 +14998,7 @@ gfx_draw_full:
 
     ; "consumer"
     lea ecx, [ebx + 12 + 80 + 12]  ; +104
-    mov edx, GFX_RESLEG_Y + 3
+    mov edx, GFX_RESLEG_Y + 0
     lea r8, [rel str_gfx_consumer]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -15015,7 +15025,7 @@ gfx_draw_full:
     call fb_fill_rect
 
     lea ecx, [ebx + 10]
-    mov edx, GFX_RESLEG_Y + 3
+    mov edx, GFX_RESLEG_Y + 0
     lea r8, [rel str_gfx_mem_free_lbl]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -15031,7 +15041,7 @@ gfx_draw_full:
     call fb_fill_rect
 
     lea ecx, [ebx + 10]
-    mov edx, GFX_RESLEG_Y + 3
+    mov edx, GFX_RESLEG_Y + 0
     lea r8, [rel str_gfx_mem_used_lbl]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -15047,7 +15057,7 @@ gfx_draw_full:
     call fb_fill_rect
 
     lea ecx, [ebx + 10]
-    mov edx, GFX_RESLEG_Y + 3
+    mov edx, GFX_RESLEG_Y + 0
     lea r8, [rel str_gfx_fd_free_lbl]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -15063,7 +15073,7 @@ gfx_draw_full:
     call fb_fill_rect
 
     lea ecx, [ebx + 10]
-    mov edx, GFX_RESLEG_Y + 3
+    mov edx, GFX_RESLEG_Y + 0
     lea r8, [rel str_gfx_fd_open_lbl]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_LEGEND_BG
@@ -15089,11 +15099,11 @@ gfx_draw_full:
     ; cmd_y = GFX_RESLEG_Y + GFX_RESLEG_H + 4 = 558
     %define CMD_Y (GFX_RESLEG_Y + GFX_RESLEG_H + 4)
 
-    ; fb_fill_rect(0, cmd_y, FB_WIDTH, 22, 0x00161622)
+    ; fb_fill_rect(0, cmd_y, FB_WIDTH, 28, 0x00161622)
     xor ecx, ecx
     mov edx, CMD_Y
     mov r8d, FB_WIDTH
-    mov r9d, 22
+    mov r9d, 28
     mov dword [rsp + 32], 0x00161622
     call fb_fill_rect
 
@@ -15108,7 +15118,7 @@ gfx_draw_full:
 
     ; Draw ":"
     mov ecx, 8
-    mov edx, CMD_Y + 3
+    mov edx, CMD_Y + 2
     lea r8, [rel str_gfx_colon]
     mov r9d, 0x0066FF66
     mov dword [rsp + 32], 0x00161622
@@ -15119,22 +15129,22 @@ gfx_draw_full:
     jle .gdf_cmd_cursor
 
     mov ecx, 20
-    mov edx, CMD_Y + 3
+    mov edx, CMD_Y + 2
     lea r8, [rsp + GDF_CMDBUF]
     mov r9d, COL_TEXT_HI
     mov dword [rsp + 32], 0x00161622
     call fb_draw_string
 
 .gdf_cmd_cursor:
-    ; cursor_px = 20 + clen * 8
+    ; cursor_px = 20 + clen * 12
     mov eax, r12d
-    shl eax, 3
+    imul eax, eax, 12
     add eax, 20
 
-    ; fb_fill_rect(cursor_px, cmd_y+14, 8, 2, 0x0066FF66)
+    ; fb_fill_rect(cursor_px, cmd_y+22, 12, 2, 0x0066FF66)
     mov ecx, eax
-    mov edx, CMD_Y + 14
-    mov r8d, 8
+    mov edx, CMD_Y + 22
+    mov r8d, 12
     mov r9d, 2
     mov dword [rsp + 32], 0x0066FF66
     call fb_fill_rect
@@ -15143,14 +15153,14 @@ gfx_draw_full:
 .gdf_cmd_hint:
     ; Command mode: show hint
     mov ecx, 8
-    mov edx, CMD_Y + 3
+    mov edx, CMD_Y + 2
     lea r8, [rel str_gfx_slash_cmd]
     mov r9d, 0x00666688
     mov dword [rsp + 32], 0x00161622
     call fb_draw_string
 
     mov ecx, 20
-    mov edx, CMD_Y + 3
+    mov edx, CMD_Y + 2
     lea r8, [rel str_gfx_type_cmd]
     mov r9d, 0x00444466
     mov dword [rsp + 32], 0x00161622
@@ -15204,7 +15214,7 @@ gfx_draw_stats_only:
 
     ; x = fb_draw_string(x, GFX_STATS_Y+3, "Tick:", COL_TEXT_DIM, COL_STATS_BG)
     mov ecx, ebx
-    mov edx, GFX_STATS_Y + 3
+    mov edx, GFX_STATS_Y + 0
     lea r8, [rel str_gfx_tick]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_STATS_BG
@@ -15217,7 +15227,7 @@ gfx_draw_stats_only:
     mov esi, 100
     idiv esi                    ; eax = timer_count / 100
     mov ecx, ebx
-    mov edx, GFX_STATS_Y + 3
+    mov edx, GFX_STATS_Y + 0
     mov r8d, eax
     mov r9d, COL_TEXT_VAL
     mov dword [rsp + 32], COL_STATS_BG
@@ -15226,7 +15236,7 @@ gfx_draw_stats_only:
 
     ; x = fb_draw_string(x+12, ..., "Ops:", ...)
     lea ecx, [ebx + 12]
-    mov edx, GFX_STATS_Y + 3
+    mov edx, GFX_STATS_Y + 0
     lea r8, [rel str_gfx_ops]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_STATS_BG
@@ -15235,7 +15245,7 @@ gfx_draw_stats_only:
 
     ; x = fb_draw_int(x, ..., total_ops, ...)
     mov ecx, ebx
-    mov edx, GFX_STATS_Y + 3
+    mov edx, GFX_STATS_Y + 0
     mov r8d, dword [rel total_ops]
     mov r9d, COL_TEXT_VAL
     mov dword [rsp + 32], COL_STATS_BG
@@ -15257,7 +15267,7 @@ gfx_draw_stats_only:
 
     ; x = fb_draw_string(x+12, ..., "Procs:", ...)
     lea ecx, [ebx + 12]
-    mov edx, GFX_STATS_Y + 3
+    mov edx, GFX_STATS_Y + 0
     lea r8, [rel str_gfx_procs]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_STATS_BG
@@ -15273,7 +15283,7 @@ gfx_draw_stats_only:
 
     ; x = fb_draw_int(x, ..., n_proc, ...)
     mov ecx, ebx
-    mov edx, GFX_STATS_Y + 3
+    mov edx, GFX_STATS_Y + 0
     mov r8d, esi
     mov r9d, COL_TEXT_VAL
     mov dword [rsp + 32], COL_STATS_BG
@@ -15299,7 +15309,7 @@ gfx_draw_stats_only:
 .gdso_draw_policy:
     ; x = fb_draw_string(x+12, ..., "Sched:", ...)
     lea ecx, [ebx + 12]
-    mov edx, GFX_STATS_Y + 3
+    mov edx, GFX_STATS_Y + 0
     lea r8, [rel str_gfx_sched]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_STATS_BG
@@ -15317,7 +15327,7 @@ gfx_draw_stats_only:
     mov r9d, 0x00FF9900
 .gdso_draw_sched:
     mov ecx, ebx
-    mov edx, GFX_STATS_Y + 3
+    mov edx, GFX_STATS_Y + 0
     mov dword [rsp + 32], COL_STATS_BG
     call fb_draw_string
 %endif

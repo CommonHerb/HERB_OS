@@ -89,7 +89,7 @@ WCT_STATS           equ 2
 WCT_CUSTOM          equ 3
 
 ; Visual constants
-WM_TITLEBAR_H       equ 22      ; title bar height in pixels
+WM_TITLEBAR_H       equ 28      ; title bar height in pixels
 WM_BORDER           equ 2       ; border thickness in pixels
 WM_BTN_SIZE         equ 18      ; close/maximize button size
 WM_RESIZE_HANDLE    equ 12      ; resize handle size
@@ -511,7 +511,7 @@ wm_draw_window_frame:
     test rax, rax
     jz .wf_no_title
     lea ecx, [r12d + 6]                 ; x + 6
-    lea edx, [r13d + 3]                 ; y + 3
+    lea edx, [r13d + 2]                 ; y + 2 (centers 24px text in 28px bar)
     mov r8, rax                         ; title string
     mov r9d, COL_WM_TITLE_TEXT
     mov eax, dword [rbx + WIN_TITLE_BG]
