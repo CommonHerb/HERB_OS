@@ -1626,6 +1626,9 @@ entity tcmd_http input.TextCmd in input.TEXTCMD
 entity tcmd_tile input.TextCmd in input.TEXTCMD
   prop text_key 29801
   prop cmd_id 22
+entity tcmd_tokenize input.TextCmd in input.TEXTCMD
+  prop text_key 29807
+  prop cmd_id 23
 entity help_edit display.HelpCmd in display.HELP_TEXT
   prop order 11
   prop cmd_text "edit"
@@ -1653,6 +1656,9 @@ entity help_http display.HelpCmd in display.HELP_TEXT
 entity help_tile display.HelpCmd in display.HELP_TEXT
   prop order 19
   prop cmd_text "tile"
+entity help_tokenize display.HelpCmd in display.HELP_TEXT
+  prop order 20
+  prop cmd_text "tokenize"
 entity editor_ctl editor.EditorCtl in editor.CTL
   prop mode 0
   prop cursor_pos 0

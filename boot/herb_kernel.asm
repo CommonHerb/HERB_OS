@@ -115,6 +115,9 @@ extern http_get
 extern http_poll_state
 extern http_state
 
+; Browser (from herb_browser.asm)
+extern browser_tokenize_cmd
+
 ; Disk + filesystem (from herb_disk.asm)
 extern disk_identify
 extern fs_init
@@ -5881,6 +5884,8 @@ post_dispatch:
     je .pd_http
     cmp r12d, 22
     je .pd_tile
+    cmp r12d, 23
+    je .pd_tokenize
     jmp .pd_report
 
 .pd_kill:
@@ -6746,6 +6751,10 @@ post_dispatch:
     lea rcx, [rel last_action]
     call shell_output_print
     call draw_full
+    jmp .pd_report
+
+.pd_tokenize:
+    call browser_tokenize_cmd
     jmp .pd_report
 
 .pd_report:
