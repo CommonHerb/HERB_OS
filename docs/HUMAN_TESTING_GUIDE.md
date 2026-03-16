@@ -1,6 +1,6 @@
 # HERB OS — Human Testing Guide
 
-**Updated Session 93 — Testing every interaction path**
+**Updated Session 95 — Testing every interaction path**
 
 ## Setup
 
@@ -70,7 +70,8 @@
 | `swap` | Swap scheduling policy (same as S) |
 | `list` | List all processes |
 | `help` | Show help text |
-| `edit` | Enter the flow editor (type characters, ESC to exit) |
+| `edit` | Enter the flow editor empty (type characters, ESC to exit) |
+| `edit <name>` | Load file from disk into the flow editor |
 | `esave <name>` | Save editor buffer to disk |
 | `eload <name>` | Load file from disk into editor |
 | `save <name>` | Save text to disk |
@@ -398,10 +399,10 @@ The `[server]->[client]` and `[client]->[server]` should alternate.
 
 **Expected serial output:**
 ```
-[EDIT] entering editor mode
-[EDKEY] ascii=104 buf=1 pool=127
-[EDIT] GLYPHS=1 g[0] ascii=104 x=0 y=0
+Editor (ESC=exit, type to edit)
+[EDIT] GLYPHS=0
 ```
+(No `[EDKEY]` per-keystroke spam — removed in Session 95.)
 
 **Pass if:** Characters render inside the window, wrap correctly, no bleed-through.
 
@@ -435,7 +436,45 @@ If something fails, note the exact serial output from the QEMU terminal window �
 
 ---
 
-### Test 14: NIC Boot (Session 82)
+### Test 14: `/edit <name>` — Load File Into Editor (Session 95)
+
+**Action:**
+1. First save a file: press `/`, type `save myfile hello from herb`, press Enter
+2. Press `/`, type `edit myfile`, press Enter
+
+**Expected visual:**
+- Editor window gets focus
+- The text "hello from herb" appears inside the editor
+- Cursor is at end of text
+
+**Expected serial output:**
+```
+[FS] read "myfile" (15 bytes)
+Editor loaded myfile (15 bytes)
+```
+
+**Pass if:** File content visible in editor after `/edit myfile`.
+
+---
+
+### Test 15: Tab Focus Cycling (Session 95)
+
+**Action:**
+1. Make sure you're in command mode (press ESC if unsure)
+2. Press Tab repeatedly (7 times to cycle through all windows)
+
+**Expected visual:**
+- Each Tab press moves the focus highlight (bright blue ring) to the next window
+- Cycle order: CPU0 → READY → BLOCKED → OUTPUT → TENSIONS → EDITOR → GAME → CPU0...
+- The focused window comes to front
+
+**Pass if:** Focus ring cycles through all 7 windows, wraps around after GAME.
+
+**Note:** Tab does NOT fire when the editor is active (mode != 0). Press ESC first to return to command mode.
+
+---
+
+### Test 16: NIC Boot (Session 82)
 
 **Setup:** Run `mingw32-make run-net` (graphics mode with E1000 NIC).
 
@@ -449,7 +488,7 @@ If something fails, note the exact serial output from the QEMU terminal window �
 
 ---
 
-### Test 15: ARP Request (Session 82)
+### Test 17: ARP Request (Session 82)
 
 **Action:** Press `R` key (or whatever hotkey is mapped to ARP).
 
@@ -463,7 +502,7 @@ If something fails, note the exact serial output from the QEMU terminal window �
 
 ---
 
-### Test 16: Ping (Session 84)
+### Test 18: Ping (Session 84)
 
 **Setup:** Run `mingw32-make run-net` (graphics mode with E1000 NIC).
 
