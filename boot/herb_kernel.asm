@@ -421,6 +421,12 @@ shell_output_scroll: resd 1          ; scroll offset (0 = bottom/newest)
 shell_output_scratch: resb 80        ; temp formatting buffer
 shell_output_win_id: resd 1          ; win_id of the output window
 
+; Tension panel client rect (set by wm_draw_tension_adapter before each draw)
+g_tp_cx: resd 1
+g_tp_cy: resd 1
+g_tp_cw: resd 1
+g_tp_ch: resd 1
+
 ; ============================================================
 ; DATA — Initialized globals (Phase D Step 7d)
 ; ============================================================
@@ -10821,7 +10827,8 @@ gfx_draw_procs_in_region:
 ; ============================================================
 ; gfx_draw_tension_panel(void) — KERNEL_MODE only
 ;
-; Renders the tension sidebar panel with per-row display.
+; Renders tension list in the WM client area.
+; Reads client rect from g_tp_cx/cy/cw/ch (set by adapter).
 ;
 ; Callee-saved: rbx=enabled_count, rsi=nt, rdi=i, r12=row_y, r13=max_rows
 ;
@@ -10830,9 +10837,11 @@ gfx_draw_procs_in_region:
 ;
 ; Locals:
 ;   [rsp+32..39] shadow/arg5 for callees
-;   [rsp+40..47] arg6 for callees
-;   [rsp+48..55] buf[8] (small formatted strings)
+;   [rsp+40..43] row y (temp)
+;   [rsp+44..47] en (enabled flag)
+;   [rsp+48..55] buf[8] / pri
 ;   [rsp+56..72] nbuf[17] (truncated tension name)
+;   [rsp+64..71] name ptr (overlaps nbuf, used before nbuf)
 ; ============================================================
 
 %ifdef KERNEL_MODE
@@ -10864,32 +10873,15 @@ gfx_draw_tension_panel:
     jmp .gtp_count_loop
 .gtp_count_done:
 
-    ; Panel background
-    mov ecx, GFX_TENS_X
-    mov edx, GFX_TENS_Y
-    mov r8d, GFX_TENS_W
-    mov r9d, GFX_TENS_H
+    ; Fill client area background
+    mov ecx, [rel g_tp_cx]
+    mov edx, [rel g_tp_cy]
+    mov r8d, [rel g_tp_cw]
+    mov r9d, [rel g_tp_ch]
     mov dword [rsp + 32], COL_TENS_BG
     call fb_fill_rect
 
-    ; Panel border
-    mov ecx, GFX_TENS_X
-    mov edx, GFX_TENS_Y
-    mov r8d, GFX_TENS_W
-    mov r9d, GFX_TENS_H
-    mov dword [rsp + 32], COL_TENS_BORDER
-    call fb_draw_rect
-
-    ; Title: "TENSIONS"
-    mov ecx, GFX_TENS_X + 6
-    mov edx, GFX_TENS_Y + 3
-    lea r8, [rel str_gfx_tensions]
-    mov r9d, COL_TENS_TITLE
-    mov dword [rsp + 32], COL_TENS_BG
-    call fb_draw_string
-    ; eax = returned x after title
-
-    ; Enabled count: " N/M"
+    ; Enabled count: " N/M" at top of client area
     lea rcx, [rsp + 48]
     mov edx, 8
     lea r8, [rel str_gfx_tens_cnt]
@@ -10897,25 +10889,35 @@ gfx_draw_tension_panel:
     mov dword [rsp + 32], esi       ; nt (5th arg)
     call herb_snprintf
 
-    ; Draw count string (reuse returned x — but we lost it. Use fixed position)
-    ; Title "TENSIONS" = 8 chars * 8px = 64px. Start at GFX_TENS_X+6+64=GFX_TENS_X+70
-    mov ecx, GFX_TENS_X + 70
-    mov edx, GFX_TENS_Y + 3
+    ; Draw count string at (cx+4, cy+1)
+    mov ecx, [rel g_tp_cx]
+    add ecx, 4
+    mov edx, [rel g_tp_cy]
+    add edx, 1
     lea r8, [rsp + 48]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_TENS_BG
     call fb_draw_string
 
-    ; Separator line
-    mov ecx, GFX_TENS_X + 2
-    mov edx, GFX_TENS_Y + 18
-    mov r8d, GFX_TENS_W - 4
+    ; Separator line at cy+16
+    mov ecx, [rel g_tp_cx]
+    mov edx, [rel g_tp_cy]
+    add edx, 16
+    mov r8d, [rel g_tp_cw]
     mov r9d, COL_TENS_BORDER
     call fb_hline
 
-    ; Row iteration
-    mov r12d, GFX_TENS_Y + 22       ; row_y
-    mov r13d, (GFX_TENS_H - 26) / GFX_TENS_ROW_H  ; max_rows = 362/16 = 22
+    ; Row iteration: rows start at cy+20
+    mov r12d, [rel g_tp_cy]
+    add r12d, 20                    ; row_y = cy + 20
+    ; max_rows = (ch - 36) / ROW_H  (36 = 20 top + 16 legend)
+    mov eax, [rel g_tp_ch]
+    sub eax, 36
+    jle .gtp_row_done               ; no room for rows
+    xor edx, edx
+    mov ecx, GFX_TENS_ROW_H
+    div ecx                         ; eax = max_rows
+    mov r13d, eax
     xor edi, edi                    ; i = 0
 
 .gtp_row_loop:
@@ -10928,30 +10930,22 @@ gfx_draw_tension_panel:
     mov eax, edi
     imul eax, GFX_TENS_ROW_H
     add eax, r12d
-    mov dword [rsp + 40], eax       ; save y in arg6 slot (temp)
+    mov dword [rsp + 40], eax       ; save y
 
     ; en = herb_tension_enabled(i)
     mov ecx, edi
     call herb_tension_enabled
     mov dword [rsp + 44], eax       ; save en
 
-    ; sel = (i == selected_tension_idx)
-    cmp edi, [rel selected_tension_idx]
-    sete al
-    movzx eax, al
-    ; sel in eax (0 or 1), not needed to save — just check later
-
     ; pri = herb_tension_priority(i)
-    ; (sel not saved — re-check via selected_tension_idx later)
-
     mov ecx, edi
     call herb_tension_priority
-    mov dword [rsp + 48], eax       ; save pri in buf overlap (fine, reused)
+    mov dword [rsp + 48], eax       ; save pri
 
     ; name = herb_tension_name(i)
     mov ecx, edi
     call herb_tension_name
-    mov [rsp + 64], rax             ; save name ptr (use [rsp+64..71])
+    mov [rsp + 64], rax             ; save name ptr
 
     ; Row background
     mov eax, [rsp + 44]             ; en
@@ -10959,13 +10953,12 @@ gfx_draw_tension_panel:
     mov ecx, COL_TENS_OFF_BG
     mov eax, COL_TENS_ON_BG
     cmovz eax, ecx                  ; row_bg = en ? ON_BG : OFF_BG
-    mov dword [rsp + 32], eax       ; save row_bg for multiple uses
-    ; fb_fill_rect(GFX_TENS_X+2, y, GFX_TENS_W-4, GFX_TENS_ROW_H-1, row_bg)
-    mov ecx, GFX_TENS_X + 2
+    mov dword [rsp + 32], eax       ; save row_bg
+    ; fb_fill_rect(cx, y, cw, ROW_H-1, row_bg)
+    mov ecx, [rel g_tp_cx]
     mov edx, [rsp + 40]             ; y
-    mov r8d, GFX_TENS_W - 4
+    mov r8d, [rel g_tp_cw]
     mov r9d, GFX_TENS_ROW_H - 1
-    ; arg5 already at [rsp+32] = row_bg
     call fb_fill_rect
 
     ; Recompute row_bg for later fb_draw_string calls
@@ -10979,10 +10972,10 @@ gfx_draw_tension_panel:
     ; Selection highlight
     cmp edi, [rel selected_tension_idx]
     jne .gtp_no_sel
-    mov ecx, GFX_TENS_X + 1
+    mov ecx, [rel g_tp_cx]
     mov edx, [rsp + 40]
     sub edx, 1
-    mov r8d, GFX_TENS_W - 2
+    mov r8d, [rel g_tp_cw]
     mov r9d, GFX_TENS_ROW_H + 1
     mov dword [rsp + 32], COL_TENS_SEL
     call fb_draw_rect
@@ -11001,11 +10994,10 @@ gfx_draw_tension_panel:
     mov ecx, COL_TENS_OFF
     mov eax, COL_TENS_ON
     cmovz eax, ecx
-    mov dword [rsp + 32], eax       ; ind_col (5th arg for fb_fill_rect)
+    mov dword [rsp + 32], eax       ; ind_col
 
     ; Check owner for orange override
-    ; Save ind_col
-    mov dword [rsp + 36], eax       ; temp save ind_col (borrowing unused bytes)
+    mov dword [rsp + 36], eax       ; temp save ind_col
     mov ecx, edi
     call herb_tension_owner
     test eax, eax
@@ -11018,8 +11010,9 @@ gfx_draw_tension_panel:
     cmovz ecx, eax
     mov dword [rsp + 36], ecx       ; override ind_col
 .gtp_no_owner:
-    ; fb_fill_rect(GFX_TENS_X+6, y+4, 6, 6, ind_col)
-    mov ecx, GFX_TENS_X + 6
+    ; fb_fill_rect(cx+4, y+4, 6, 6, ind_col)
+    mov ecx, [rel g_tp_cx]
+    add ecx, 4
     mov edx, [rsp + 40]
     add edx, 4
     mov r8d, 6
@@ -11076,8 +11069,9 @@ gfx_draw_tension_panel:
 .gtp_name_dim:
     mov r9d, COL_TENS_DIM
 .gtp_name_draw:
-    ; fb_draw_string(GFX_TENS_X+16, y+1, nbuf, name_col, row_bg)
-    mov ecx, GFX_TENS_X + 16
+    ; fb_draw_string(cx+14, y+1, nbuf, name_col, row_bg)
+    mov ecx, [rel g_tp_cx]
+    add ecx, 14
     mov edx, [rsp + 40]
     add edx, 1
     lea r8, [rsp + 56]
@@ -11090,22 +11084,23 @@ gfx_draw_tension_panel:
     cmovnz eax, ecx
     mov dword [rsp + 32], eax
     ; Restore first two args (clobbered by cmov)
-    mov ecx, GFX_TENS_X + 16
+    mov ecx, [rel g_tp_cx]
+    add ecx, 14
     mov edx, [rsp + 40]
     add edx, 1
     call fb_draw_string
 
     ; Priority number
-    ; herb_snprintf(buf, 8, "%d", pri)
-    ; Use [rsp+56] for buf (reuse nbuf since we're done with it)
     lea rcx, [rsp + 56]
     mov edx, 8
     lea r8, [rel str_gfx_pri_fmt]
     mov r9d, [rsp + 48]             ; pri
     call herb_snprintf
 
-    ; fb_draw_string(GFX_TENS_X + GFX_TENS_W - 28, y+1, buf, COL_TENS_PRI, row_bg)
-    mov ecx, GFX_TENS_X + GFX_TENS_W - 28
+    ; fb_draw_string(cx+cw-26, y+1, buf, COL_TENS_PRI, row_bg)
+    mov ecx, [rel g_tp_cx]
+    add ecx, [rel g_tp_cw]
+    sub ecx, 26
     mov edx, [rsp + 40]
     add edx, 1
     lea r8, [rsp + 56]
@@ -11117,7 +11112,9 @@ gfx_draw_tension_panel:
     mov ecx, COL_TENS_ON_BG
     cmovnz eax, ecx
     mov dword [rsp + 32], eax
-    mov ecx, GFX_TENS_X + GFX_TENS_W - 28
+    mov ecx, [rel g_tp_cx]
+    add ecx, [rel g_tp_cw]
+    sub ecx, 26
     mov edx, [rsp + 40]
     add edx, 1
     call fb_draw_string
@@ -11126,20 +11123,24 @@ gfx_draw_tension_panel:
     jmp .gtp_row_loop
 
 .gtp_row_done:
-    ; Legend at bottom
-    mov eax, GFX_TENS_Y + GFX_TENS_H - 16
-    ; fb_fill_rect(GFX_TENS_X+2, leg_y, GFX_TENS_W-4, 14, COL_TENS_BG)
-    mov ecx, GFX_TENS_X + 2
+    ; Legend at bottom: cy + ch - 16
+    mov eax, [rel g_tp_cy]
+    add eax, [rel g_tp_ch]
+    sub eax, 16
+    mov dword [rsp + 40], eax       ; leg_y
+    ; fb_fill_rect(cx, leg_y, cw, 14, COL_TENS_BG)
+    mov ecx, [rel g_tp_cx]
     mov edx, eax
-    mov r8d, GFX_TENS_W - 4
+    mov r8d, [rel g_tp_cw]
     mov r9d, 14
     mov dword [rsp + 32], COL_TENS_BG
     call fb_fill_rect
 
     ; Legend text chain: "[" "]" "sel " "D" "=toggle"
-    mov eax, GFX_TENS_Y + GFX_TENS_H - 16
-    mov ecx, GFX_TENS_X + 6
-    lea edx, [eax + 1]
+    mov ecx, [rel g_tp_cx]
+    add ecx, 4
+    mov edx, [rsp + 40]
+    add edx, 1
     lea r8, [rel str_gfx_lbracket]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_TENS_BG
@@ -11147,28 +11148,32 @@ gfx_draw_tension_panel:
     ; eax = next x
 
     mov ecx, eax
-    mov edx, GFX_TENS_Y + GFX_TENS_H - 15
+    mov edx, [rsp + 40]
+    add edx, 1
     lea r8, [rel str_gfx_rbracket]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_TENS_BG
     call fb_draw_string
 
     mov ecx, eax
-    mov edx, GFX_TENS_Y + GFX_TENS_H - 15
+    mov edx, [rsp + 40]
+    add edx, 1
     lea r8, [rel str_gfx_sel_lbl]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_TENS_BG
     call fb_draw_string
 
     mov ecx, eax
-    mov edx, GFX_TENS_Y + GFX_TENS_H - 15
+    mov edx, [rsp + 40]
+    add edx, 1
     lea r8, [rel str_gfx_d_key]
     mov r9d, COL_TEXT_KEY
     mov dword [rsp + 32], COL_TENS_BG
     call fb_draw_string
 
     mov ecx, eax
-    mov edx, GFX_TENS_Y + GFX_TENS_H - 15
+    mov edx, [rsp + 40]
+    add edx, 1
     lea r8, [rel str_gfx_toggle_lbl]
     mov r9d, COL_TEXT_DIM
     mov dword [rsp + 32], COL_TENS_BG
@@ -13598,8 +13603,14 @@ wm_draw_tension_adapter:
     sub rsp, 48                         ; shadow space + align
     ; 1 push + sub 48 = 56. (8+56)%16 = 0. ✓
 
+    ; Save client rect for gfx_draw_tension_panel to use
+    mov [rel g_tp_cx], ecx
+    mov [rel g_tp_cy], edx
+    mov [rel g_tp_cw], r8d
+    mov [rel g_tp_ch], r9d
+
     ; Set clip rect to client area before drawing
-    ; ECX/EDX/R8D/R9D already = cx/cy/cw/ch from wm_draw_all
+    ; ECX/EDX/R8D/R9D still = cx/cy/cw/ch
     call wm_set_clip
     call gfx_draw_tension_panel
     call wm_clear_clip

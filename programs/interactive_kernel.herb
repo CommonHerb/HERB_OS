@@ -883,10 +883,10 @@ entity win_tensions wm.Window in wm.VISIBLE
   prop role 4
   prop focused 0
 entity win_editor wm.Window in wm.VISIBLE
-  prop x 200
+  prop x 624
   prop y 76
-  prop width 760
-  prop height 650
+  prop width 648
+  prop height 600
   prop z_order 5
   prop role 5
   prop focused 0
