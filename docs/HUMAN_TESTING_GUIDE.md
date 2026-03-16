@@ -1,6 +1,6 @@
 # HERB OS — Human Testing Guide
 
-**Updated Session 95 — Testing every interaction path**
+**Updated Session 96 — Testing every interaction path**
 
 ## Setup
 
@@ -104,7 +104,7 @@
 ```
 HERB OS v3 - Four-Module Kernel
   Framebuffer: detecting BGA...
-  Framebuffer: 800x600x32 initialized
+  Framebuffer: 1280x800x32 initialized
   Runtime initialized
   Program loaded
 ```
@@ -312,9 +312,9 @@ The `[server]->[client]` and `[client]->[server]` should alternate.
 
 **Expected visual (tile ON):**
 - All 7 windows snap to a 4+3 grid filling the screen
-- Top row: 4 windows, each 200px wide, covering full width
-- Bottom row: 3 windows, each ~266px wide
-- All windows 262px tall
+- Top row: 4 windows, each 320px wide, covering full 1280px width
+- Bottom row: 3 windows, each ~426px wide
+- All windows 362px tall
 - No overlapping — clean grid layout
 
 **Expected visual (tile OFF):**
@@ -373,7 +373,7 @@ The `[server]->[client]` and `[client]->[server]` should alternate.
 **Action:** Look at the boot screen.
 
 **Expected visual:**
-- An "EDITOR" window visible on the right side (position 400,76, size 400x500)
+- An "EDITOR" window visible (position 200,76, size 760x650)
 - Dark blue background inside the window
 - Title bar says "EDITOR"
 - Dashboard/region windows visible alongside it
@@ -392,7 +392,7 @@ The `[server]->[client]` and `[client]->[server]` should alternate.
 **Expected visual:**
 - Editor window gets focus (highlight on title bar)
 - Characters appear inside the editor window at the top
-- Characters wrap at 49 per line (stay within window bounds)
+- Characters wrap at ~94 per line (stay within window bounds)
 - White cursor block visible
 - Status bar at bottom shows "ESC=exit  /esave  /eload"
 - ESC returns to hotkey mode

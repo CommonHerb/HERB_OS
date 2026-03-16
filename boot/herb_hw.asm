@@ -647,11 +647,11 @@ vga_print_padded:
 ; pixel rendering. Back buffer in system RAM, fb_flip() copies to MMIO.
 ; ============================================================
 
-FB_WIDTH     equ 800
-FB_HEIGHT    equ 600
+FB_WIDTH     equ 1280
+FB_HEIGHT    equ 800
 FB_BPP       equ 32
-FB_PIXELS    equ FB_WIDTH * FB_HEIGHT     ; 480000
-BACKBUF_ADDR equ 0x500000
+FB_PIXELS    equ FB_WIDTH * FB_HEIGHT     ; 1024000
+BACKBUF_ADDR equ 0xC00000                 ; after 4MB arena (0x800000-0xBFFFFF)
 
 ; PCI config space
 PCI_CONFIG_ADDR equ 0x0CF8

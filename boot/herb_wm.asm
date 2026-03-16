@@ -40,6 +40,10 @@ extern wm_write_all_z_order_to_herb
 ; CONSTANTS
 ; ============================================================
 
+; Screen dimensions (must match herb_hw.asm FB_WIDTH/FB_HEIGHT)
+WM_SCREEN_W         equ 1280
+WM_SCREEN_H         equ 800
+
 ; Window array limits
 WM_MAX_WINDOWS      equ 16
 WM_WIN_SIZE         equ 128
@@ -1101,24 +1105,24 @@ wm_update_drag:
     jge .ud_x_min_ok
     mov ecx, edx
 .ud_x_min_ok:
-    ; x <= 800 - 50
-    cmp ecx, 750
+    ; x <= screen_w - 50
+    cmp ecx, WM_SCREEN_W - 50
     jle .ud_x_max_ok
-    mov ecx, 750
+    mov ecx, WM_SCREEN_W - 50
 .ud_x_max_ok:
     mov dword [rax + WIN_X], ecx
 
     ; new_y = my - offset_y
     mov ecx, ebx
     sub ecx, dword [rel wm_drag_offset_y]
-    ; Edge clamp Y: keep title bar accessible (y >= 0, y <= 600 - 22)
+    ; Edge clamp Y: keep title bar accessible (y >= 0, y <= screen_h - titlebar)
     test ecx, ecx
     jns .ud_y_min_ok
     xor ecx, ecx
 .ud_y_min_ok:
-    cmp ecx, 578                        ; 600 - 22
+    cmp ecx, WM_SCREEN_H - WM_TITLEBAR_H
     jle .ud_y_max_ok
-    mov ecx, 578
+    mov ecx, WM_SCREEN_H - WM_TITLEBAR_H
 .ud_y_max_ok:
     mov dword [rax + WIN_Y], ecx
 %ifdef GRAPHICS_MODE
