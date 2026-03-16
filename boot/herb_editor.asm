@@ -39,9 +39,9 @@ extern wm_destroy_window
 
 ED_BUF_SIZE         equ 65536       ; 64KB gap buffer
 ED_MAX_LINES        equ 4096        ; max lines we index
-ED_FONT_W           equ 8           ; char width in pixels
-ED_FONT_H           equ 16          ; char height in pixels
-ED_STATUS_H         equ 16          ; status line height
+ED_FONT_W           equ 12          ; char width in pixels
+ED_FONT_H           equ 24          ; char height in pixels
+ED_STATUS_H         equ 24          ; status line height
 
 ; Window struct field offsets (must match herb_wm.asm)
 WIN_ID              equ 0
@@ -1242,15 +1242,15 @@ editor_draw_content:
 
 .edc_draw_char:
     ; Compute pixel position
-    ; px = cx + col * 8
+    ; px = cx + col * ED_FONT_W
     mov eax, r14d
-    shl eax, 3                          ; * 8
+    imul eax, eax, ED_FONT_W           ; * 12
     add eax, dword [rsp+64]            ; + cx
     mov r15d, eax                       ; r15d = px
 
-    ; py = cy + row * 16
+    ; py = cy + row * ED_FONT_H
     mov eax, r12d
-    shl eax, 4                          ; * 16
+    imul eax, eax, ED_FONT_H           ; * 24
     add eax, dword [rsp+68]            ; + cy
 
     ; Check if this is the cursor position
@@ -1304,11 +1304,11 @@ editor_draw_content:
 
     ; Draw cursor at end of line
     mov ecx, eax
-    shl ecx, 3
-    add ecx, dword [rsp+64]             ; px = cx + cursor_col * 8
+    imul ecx, ecx, ED_FONT_W
+    add ecx, dword [rsp+64]             ; px = cx + cursor_col * ED_FONT_W
     mov edx, r12d
-    shl edx, 4
-    add edx, dword [rsp+68]             ; py = cy + row * 16
+    imul edx, edx, ED_FONT_H
+    add edx, dword [rsp+68]             ; py = cy + row * ED_FONT_H
     mov r8d, ' '                        ; space char
     mov r9d, COL_ED_CURSOR_FG
     mov dword [rsp+32], COL_ED_CURSOR_BG
@@ -1359,7 +1359,7 @@ editor_draw_content:
 
     ; Draw status text
     mov ecx, dword [rsp+64]             ; cx
-    add ecx, 8                          ; small left margin
+    add ecx, 12                         ; small left margin (ED_FONT_W)
     mov edx, dword [rsp+88]             ; status_y
     lea r8, [rel ed_status_buf]
     mov r9d, COL_ED_STATUS_FG
