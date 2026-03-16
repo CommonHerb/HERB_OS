@@ -1757,6 +1757,51 @@ def run_tests(image_path, net=False):
             print("\n(Kernel-specific tests skipped — flat scheduler mode)")
 
         # ============================================================
+        # HTML Tokenizer Tests (Session 99)
+        # ============================================================
+        if is_kernel:
+            print("\n" + "=" * 60)
+            print("HTML Tokenizer Tests (Session 99)")
+            print("=" * 60)
+
+            # ---- TEST: HTML Tokenizer ----
+            print("\n--- Test: HTML Tokenizer ---")
+            pos = t.serial_pos()
+            type_command("tokenize")
+
+            # Verify DOCTYPE token
+            m = t.wait_for(r"\[HTML_TOK\] DOCTYPE", after=pos, timeout=8)
+            t.check("Tokenize: DOCTYPE found", m is not None)
+
+            # Verify start tag
+            m = t.wait_for(r'\[HTML_TOK\] START_TAG "html"', after=pos)
+            t.check("Tokenize: html start tag", m is not None)
+
+            # Verify text content
+            m = t.wait_for(r"\[HTML_TOK\] TEXT", after=pos)
+            t.check("Tokenize: text token found", m is not None)
+
+            # Verify attribute
+            m = t.wait_for(r'\[HTML_TOK\] START_TAG "a"', after=pos)
+            t.check("Tokenize: anchor tag with attribute", m is not None)
+
+            # Verify self-closing tag
+            m = t.wait_for(r'\[HTML_TOK\] SELF_CLOSE "br"', after=pos)
+            t.check("Tokenize: self-close tag", m is not None)
+
+            # Verify end tags
+            m = t.wait_for(r'\[HTML_TOK\] END_TAG "html"', after=pos)
+            t.check("Tokenize: end tag", m is not None)
+
+            # Verify EOF
+            m = t.wait_for(r"\[HTML_TOK\] EOF", after=pos)
+            t.check("Tokenize: EOF token", m is not None)
+
+            # Verify summary
+            m = t.wait_for(r"\[HTML_TOK\] \d+ tokens, \d+ attrs", after=pos)
+            t.check("Tokenize: summary output", m is not None)
+
+        # ============================================================
         # NIC Tests (Session 82) — only with --net flag
         # ============================================================
         if net:

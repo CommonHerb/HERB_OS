@@ -42,6 +42,8 @@ global tcp_recv_done
 global http_get
 global http_poll_state
 global http_state
+global http_body_offset
+global http_body_len
 
 ; ============================================================
 ; EXTERNS
@@ -3215,6 +3217,8 @@ http_parse_response:
     mov eax, [rel tcp_recv_len]
     sub eax, esi                    ; body_len
     mov r12d, eax                   ; save body_len (repurpose r12d, status already stored)
+    mov [rel http_body_offset], esi ; save body start offset
+    mov [rel http_body_len], eax    ; save body length
 
     ; Serial: [HTTP] status=N body=N bytes
     lea rcx, [rel net_msg_buf]
@@ -3249,6 +3253,8 @@ http_parse_response:
 
 .hpr_no_status:
 .hpr_no_body:
+    mov dword [rel http_body_offset], 0
+    mov dword [rel http_body_len], 0
     ; Minimal log if parsing failed
     lea rcx, [rel net_msg_buf]
     mov edx, 128
@@ -3948,3 +3954,5 @@ http_path:          resb 128        ; path string copy
 http_req_buf:       resb 256        ; built HTTP request
 http_req_len:       resd 1          ; request length
 http_status:        resd 1          ; parsed HTTP status code
+http_body_offset:   resd 1          ; byte offset from tcp_recv_buf to body start
+http_body_len:      resd 1          ; body length in bytes

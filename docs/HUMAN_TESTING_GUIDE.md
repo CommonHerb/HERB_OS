@@ -1,6 +1,6 @@
 # HERB OS — Human Testing Guide
 
-**Updated Session 96 — Testing every interaction path**
+**Updated Session 99 — Testing every interaction path**
 
 ## Setup
 
@@ -83,6 +83,7 @@
 | `connect` | TCP connect to port 80 — requires NIC (`make run-net`) |
 | `http` | HTTP GET request — requires NIC (`make run-net`) |
 | `tile` | Toggle tiling layout (4+3 window grid) |
+| `tokenize` | Tokenize HTML (uses HTTP body if available, else test HTML) |
 
 ---
 
