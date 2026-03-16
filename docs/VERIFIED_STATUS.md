@@ -93,21 +93,27 @@ This branch intentionally archives dead lanes, so the historical `593` count sho
 
 ## What Is Verified To Work
 
-Based on the latest validated state (Session 93, 2026-03-13), HERB OS currently has:
+Based on the latest validated state (Session 95, 2026-03-16), HERB OS currently has:
 
 - boot path on bare metal / QEMU
 - scheduling (priority + round-robin, hot-swappable)
-- window manager (7 windows, drag/resize, focus via HERB tensions, tiling layout)
+- window manager (7 windows, drag/resize, focus via HERB tensions, tiling layout, Tab focus cycling)
 - shell output window (32-line circular buffer, PgUp/PgDn scroll)
-- text editor (gap-buffer + HERB-flow editor)
+- text editor (gap-buffer + HERB-flow editor, `/edit <name>` loads files directly)
 - filesystem (bitmap, 256 entries, 8MB disk)
 - NIC driver (E1000)
 - ARP, IPv4, ICMP, UDP, DNS, TCP, HTTP
 
-Current test counts (Session 93):
+Session 95 changes (Era II polish):
+- `/edit <name>` loads a file directly into the flow editor (reuses eload path)
+- Tab cycles focus through all 7 windows in command mode
+- Removed high-frequency serial debug output (`[CLICK]`, `[ELOAD]`, `[EDKEY]` traces)
+- No new HERB tensions, flows, or language features
+
+Current test counts (Session 95):
 - Python: `374` passing
 - Bare metal: `180/181` (1 pre-existing: HAM schedule_ready)
-- 13 assembly files, 43,283 lines total
+- 13 assembly files, 43,554 lines total
 
 This document does not upgrade any claim beyond that evidence.
 
@@ -116,6 +122,7 @@ This document does not upgrade any claim beyond that evidence.
 - `boot/herb_net.asm` had existing local modifications in the working tree before cleanup began on this branch.
 - `boot/herb_kernel.asm` embeds `programs/test_flow.herb`, but `boot/makefile` does not currently list that file under `HERB_SOURCES`. The boot path still resolves, but the dependency declaration is incomplete.
 - Historical status documents and archived artifacts should not be treated as current truth unless they are explicitly re-verified.
+- The game window (Session 81) is a prototype stress test for HERB tensions, not a shipping feature. Known issues (NPC movement, spacebar gather) are not prioritized — the prototype will be replaced by Common Herb in Era III.
 
 ## Repository Policy After Cleanup
 
