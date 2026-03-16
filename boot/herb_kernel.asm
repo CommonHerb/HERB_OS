@@ -485,6 +485,9 @@ g_editor_flow_idx:      dd -1   ; flow index of render_editor (-1 = unknown)
 g_editor_flow_disabled: dd 1    ; 1=disabled (direct rendering), 0=flow-based
 flow_editor_scroll_y:   dd 0    ; scroll offset in lines (0 = top)
 
+; Session 95: Tab focus cycling
+focus_cycle_idx:        dd 0    ; current window role for Tab cycling (0-6)
+
 ; Boot-time WM role -> live WM window ID map (-1 = not created)
 wm_role_to_win_id:
     times 16 dd -1
@@ -5016,12 +5019,7 @@ cmd_click:
     mov [rsp+48], ebx              ; ops (7th)
     call herb_snprintf
 
-    ; Serial: "[CLICK] selected " sel_name
-    lea rcx, [rel str_ser_click_sel]
-    call serial_print
-    mov rcx, r13
-    call serial_print
-    jmp .ccl_serial_tail
+    jmp .ccl_done
 
 .ccl_miss:
     ; herb_snprintf(last_action, 80, "Click (%d,%d) -> no process hit, %d ops", cx, cy, ops)
@@ -5034,26 +5032,6 @@ cmd_click:
     mov [rsp+40], ebx              ; ops (6th)
     call herb_snprintf
 
-    ; Serial: "[CLICK] miss"
-    lea rcx, [rel str_ser_click_miss]
-    call serial_print
-
-.ccl_serial_tail:
-    ; " at " cx "," cy " ops=" ops "\n"
-    lea rcx, [rel str_ser_click_at]
-    call serial_print
-    mov ecx, esi
-    call serial_print_int
-    lea rcx, [rel str_ser_comma]
-    call serial_print
-    mov ecx, edi
-    call serial_print_int
-    lea rcx, [rel str_ser_ops]
-    call serial_print
-    mov ecx, ebx
-    call serial_print_int
-    lea rcx, [rel str_newline]
-    call serial_print
     jmp .ccl_done
 
 .ccl_fail:
@@ -6182,6 +6160,19 @@ post_dispatch:
 %ifndef GRAPHICS_MODE
     jmp .pd_report                  ; editor not available in text mode
 %endif
+    ; Session 95: "/edit <name>" loads file if argument present
+    test r13, r13
+    jz .pd_edit_empty               ; NULL buf -> open empty
+    lea rax, [r13]
+    xor ecx, ecx
+.pd_edit_scan:
+    cmp byte [rax + rcx], 0
+    je .pd_edit_empty               ; no space = bare "/edit" -> open empty
+    cmp byte [rax + rcx], ' '
+    je .pd_eload                    ; space found = has filename, reuse eload path
+    inc ecx
+    jmp .pd_edit_scan
+.pd_edit_empty:
     ; Set input_ctl.mode = 2 (editor mode)
     mov ecx, [rel input_ctl_eid]
     test ecx, ecx
@@ -6360,9 +6351,6 @@ post_dispatch:
     cmp dword [rel fs_initialized], 0
     je .pd_eload_no_disk
 
-    lea rcx, [rel str_ser_eload_e1]
-    call serial_print
-
     ; Skip to first space
     lea rax, [r13]
     xor ecx, ecx
@@ -6414,13 +6402,6 @@ post_dispatch:
 
     ; eax = bytes read, save it
     mov [rsp+32], eax                   ; file_size
-
-    lea rcx, [rel str_ser_eload_e2]
-    call serial_print
-    mov ecx, [rsp+32]
-    call serial_print_int
-    lea rcx, [rel str_newline]
-    call serial_print
 
     ; Now clear editor.BUFFER: move all entities back to POOL
     ; We do this by iterating BUFFER and using container_remove/container_add
@@ -6485,9 +6466,6 @@ post_dispatch:
     jmp .pd_eload_clear
 
 .pd_eload_populate:
-    lea rcx, [rel str_ser_eload_e3]
-    call serial_print
-
     ; Now populate BUFFER from file data
     ; For each byte i in 0..file_size-1:
     ;   Get entity from POOL, set ascii=byte, pos=i, move to BUFFER
@@ -6549,9 +6527,6 @@ post_dispatch:
     jmp .pd_eload_pop_loop
 
 .pd_eload_done:
-    lea rcx, [rel str_ser_eload_e4]
-    call serial_print
-
     ; Set editor_ctl.cursor_pos = file_size
     lea rcx, [rel str_cn_ed_ctl]
     xor edx, edx
@@ -6579,67 +6554,11 @@ post_dispatch:
 %endif
 
 .pd_eload_action:
-    lea rcx, [rel str_ser_eload_e5]
-    call serial_print
-
-    ; === DEBUG: print pre-HAM counts ===
-    lea rcx, [rel str_ser_eload_pre]
-    call serial_print
-    lea rcx, [rel str_cn_ed_buffer]
-    call herb_container_count
-    mov ecx, eax
-    call serial_print_int
-    lea rcx, [rel str_ser_eload_gly]
-    call serial_print
-    lea rcx, [rel str_cn_ed_glyphs]
-    call herb_container_count
-    mov ecx, eax
-    call serial_print_int
-    lea rcx, [rel str_ser_eload_dirty]
-    call serial_print
-    lea rax, [rel g_ham_dirty]
-    mov ecx, [rax]
-    call serial_print_int
-    lea rcx, [rel str_ser_eload_flow]
-    call serial_print
-    mov ecx, [rel g_flow_count]
-    call serial_print_int
-    lea rcx, [rel str_newline]
-    call serial_print
-
     ; Trigger HAM to run flow pass (derive GLYPHS from BUFFER)
     call ham_mark_dirty
     mov ecx, 100
     call ham_run_ham
     mov [rsp+48], eax                      ; save ops count
-
-    ; === DEBUG: print post-HAM counts ===
-    lea rcx, [rel str_ser_eload_post]
-    call serial_print
-    lea rcx, [rel str_cn_ed_buffer]
-    call herb_container_count
-    mov ecx, eax
-    call serial_print_int
-    lea rcx, [rel str_ser_eload_gly]
-    call serial_print
-    lea rcx, [rel str_cn_ed_glyphs]
-    call herb_container_count
-    mov ecx, eax
-    call serial_print_int
-    lea rcx, [rel str_ser_eload_ops]
-    call serial_print
-    mov ecx, [rsp+48]
-    call serial_print_int
-    lea rcx, [rel str_newline]
-    call serial_print
-
-    ; Serial
-    lea rcx, [rel str_ser_eload]
-    call serial_print
-    lea rcx, [rsp+56]
-    call serial_print
-    lea rcx, [rel str_newline]
-    call serial_print
 
     ; last_action
     lea rcx, [rel last_action]
@@ -8368,6 +8287,35 @@ handle_key:
 
 .hk_name_done:
 
+    ; ---- Session 95: Tab focus cycling (command mode only) ----
+%ifdef GRAPHICS_MODE
+    cmp r12d, 0x0F                      ; Tab scancode
+    jne .hk_not_tab
+    cmp dword [rel ed_active], 1        ; skip if gap-buffer editor active
+    je .hk_not_tab
+    mov ecx, [rel input_ctl_eid]
+    test ecx, ecx
+    js .hk_tab_cycle                    ; no InputCtl -> treat as command mode
+    lea rdx, [rel str_mode]
+    xor r8d, r8d
+    call herb_entity_prop_int
+    test eax, eax
+    jnz .hk_not_tab                     ; mode != 0 -> skip
+.hk_tab_cycle:
+    mov eax, [rel focus_cycle_idx]
+    inc eax
+    cmp eax, 7
+    jl .hk_tab_nowrap
+    xor eax, eax
+.hk_tab_nowrap:
+    mov [rel focus_cycle_idx], eax
+    mov ecx, eax                        ; role
+    call wm_herb_set_focus_by_role
+    call draw_full
+    jmp .hk_done
+.hk_not_tab:
+%endif
+
     ; ---- Editor: intercept ALL keys when editor is active ----
 %ifdef GRAPHICS_MODE
     cmp dword [rel ed_active], 1
@@ -8817,65 +8765,6 @@ handle_key:
     mov ebx, eax
     add [rel total_ops], eax
 
-    ; Editor mode debug: print key + buffer/pool counts
-    cmp esi, 2                          ; prev_mode == 2?
-    jne .hk_edkey_debug_skip
-    push rbx
-    sub rsp, 32
-    lea rcx, [rel str_ser_edkey]
-    call serial_print
-    movsx ecx, r13b
-    call serial_print_int
-    lea rcx, [rel str_ser_edbuf]
-    call serial_print
-    lea rcx, [rel str_cn_ed_buffer]
-    call herb_container_count
-    mov ecx, eax
-    call serial_print_int
-    lea rcx, [rel str_ser_edpool]
-    call serial_print
-    lea rcx, [rel str_cn_ed_pool]
-    call herb_container_count
-    mov ecx, eax
-    call serial_print_int
-    ; mech_action (did mechbind_match fire?)
-    lea rcx, [rel str_ser_edmech]
-    call serial_print
-    mov ecx, [rel input_ctl_eid]
-    lea rdx, [rel str_mech_action]
-    xor r8d, r8d
-    call herb_entity_prop_int
-    mov ecx, eax
-    call serial_print_int
-    ; KEY_SIG count (was signal consumed?)
-    lea rcx, [rel str_ser_edsig]
-    call serial_print
-    lea rcx, [rel str_cn_key_sig]
-    call herb_container_count
-    mov ecx, eax
-    call serial_print_int
-    ; cursor_pos (did type_char advance cursor?)
-    lea rcx, [rel str_ser_edcur]
-    call serial_print
-    lea rcx, [rel str_cn_ed_ctl]
-    xor edx, edx
-    call herb_container_entity
-    test eax, eax
-    js .hk_edkey_no_ctl
-    mov ecx, eax
-    lea rdx, [rel str_prop_cursor_pos]
-    xor r8d, r8d
-    call herb_entity_prop_int
-    mov ecx, eax
-    jmp .hk_edkey_ctl_done
-.hk_edkey_no_ctl:
-    mov ecx, -1
-.hk_edkey_ctl_done:
-    call serial_print_int
-    lea rcx, [rel str_newline]
-    call serial_print
-    add rsp, 32
-    pop rbx
 .hk_edkey_debug_skip:
 
     ; Read routing decisions
