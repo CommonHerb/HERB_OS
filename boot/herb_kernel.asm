@@ -117,6 +117,11 @@ extern http_state
 
 ; Browser (from herb_browser.asm)
 extern browser_tokenize_cmd
+extern browser_dom_cmd
+extern browser_layout_cmd
+extern browser_paint_cmd
+extern browser_browse_cmd
+extern browser_draw_fn
 
 ; Disk + filesystem (from herb_disk.asm)
 extern disk_identify
@@ -513,6 +518,7 @@ wm_role_to_win_id:
 %define WM_ROLE_TENSIONS   4
 %define WM_ROLE_EDITOR     5
 %define WM_ROLE_GAME       6
+%define WM_ROLE_BROWSER    7
 %define WM_ROLE_LIMIT      16
 
 section .rdata
@@ -636,8 +642,8 @@ str_mouse_init:     db "  Mouse initialized (IRQ12)", 10, 0
 
 %ifdef GRAPHICS_MODE
 str_fb_detect:      db "  Framebuffer: detecting BGA...", 10, 0
-str_fb_ok:          db "  Framebuffer: 800x600x32 OK", 10, 0
-str_fb_serial_ok:   db "  Framebuffer: 800x600x32 initialized", 10, 0
+str_fb_ok:          db "  Framebuffer: 1280x800x32 OK", 10, 0
+str_fb_serial_ok:   db "  Framebuffer: 1280x800x32 initialized", 10, 0
 str_fb_fail_fmt:    db "  Framebuffer: init failed (rc=%d), using text mode", 10, 0
 %endif
 
@@ -1122,6 +1128,7 @@ str_prop_cursor_pos: db "cursor_pos", 0
 str_gfx_editor_title: db "EDITOR", 0
 str_editor_title: db "EDITOR", 0
 str_game_title:   db "COMMON HERB", 0
+str_browser_title: db "BROWSER", 0
 str_prop_wood:    db "wood", 0
 str_gfx_ed_chars:   db "Chars:", 0
 str_gfx_ed_status:  db "ESC=exit  arrows=move  PgUp/PgDn=scroll", 0
@@ -5851,7 +5858,12 @@ post_dispatch:
     call cleanup_terminated
 
 .pd_shell_action:
+    ; Skip shell action handler for kernel-only commands (cmd_id >= 11)
+    ; These don't need shell tensions — avoids spurious "unknown command"
+    cmp r12d, 11
+    jge .pd_skip_shell_action
     call handle_shell_action
+.pd_skip_shell_action:
 
     ; Switch on cmd_id: 1=kill, 6=block, 7=unblock, 11=save, 12=read, 13=files, 17=ping
     cmp r12d, 1
@@ -5886,6 +5898,14 @@ post_dispatch:
     je .pd_tile
     cmp r12d, 23
     je .pd_tokenize
+    cmp r12d, 24
+    je .pd_dom
+    cmp r12d, 25
+    je .pd_layout
+    cmp r12d, 26
+    je .pd_paint
+    cmp r12d, 27
+    je .pd_browse
     jmp .pd_report
 
 .pd_kill:
@@ -6755,6 +6775,43 @@ post_dispatch:
 
 .pd_tokenize:
     call browser_tokenize_cmd
+    jmp .pd_report
+
+.pd_dom:
+    call browser_dom_cmd
+    jmp .pd_report
+
+.pd_layout:
+    call browser_layout_cmd
+    jmp .pd_report
+
+.pd_paint:
+    call browser_paint_cmd
+    jmp .pd_report
+
+.pd_browse:
+    ; r13 = command buffer ("browse example.com" or just "browse")
+    ; Parse domain: find first space, use text after it
+    test r13, r13
+    jz .pd_browse_default
+    xor ecx, ecx
+.pd_browse_scan:
+    cmp byte [r13 + rcx], 0
+    je .pd_browse_default       ; no space found → default
+    cmp byte [r13 + rcx], ' '
+    je .pd_browse_found
+    inc ecx
+    jmp .pd_browse_scan
+.pd_browse_found:
+    inc ecx                     ; skip space
+    cmp byte [r13 + rcx], 0    ; nothing after space?
+    je .pd_browse_default
+    lea rcx, [r13 + rcx]       ; rcx = domain string after space
+    jmp .pd_browse_call
+.pd_browse_default:
+    lea rcx, [rel str_dns_domain]   ; "example.com"
+.pd_browse_call:
+    call browser_browse_cmd
     jmp .pd_report
 
 .pd_report:
@@ -8319,7 +8376,7 @@ handle_key:
 .hk_tab_cycle:
     mov eax, [rel focus_cycle_idx]
     inc eax
-    cmp eax, 7
+    cmp eax, 8
     jl .hk_tab_nowrap
     xor eax, eax
 .hk_tab_nowrap:
@@ -12892,6 +12949,8 @@ wm_apply_boot_window_style:
     je .wabws_editor
     cmp ebx, WM_ROLE_GAME
     je .wabws_game
+    cmp ebx, WM_ROLE_BROWSER
+    je .wabws_browser
     jmp .wabws_done
 
 .wabws_cpu0:
@@ -12956,6 +13015,14 @@ wm_apply_boot_window_style:
     lea rdx, [rel game_draw_fn]
     mov [rax + KWIN_DRAW_FN], rdx
     mov dword [rel game_win_id], edi
+    jmp .wabws_done
+
+.wabws_browser:
+    mov dword [rax + KWIN_BORDER_COLOR], 0x005577AA
+    mov dword [rax + KWIN_FILL_COLOR], 0x00F0F0F0
+    mov dword [rax + KWIN_TITLE_BG], 0x005577AA
+    lea rdx, [rel browser_draw_fn]
+    mov [rax + KWIN_DRAW_FN], rdx
 
 .wabws_done:
     add rsp, 48
@@ -13145,7 +13212,7 @@ wm_sync_from_herb:
     mov dword [rsp + WMSH_ROLE], eax
     cmp eax, 0
     jl .wsh_next
-    cmp eax, WM_ROLE_GAME
+    cmp eax, WM_ROLE_BROWSER
     jg .wsh_next
 
     mov ecx, dword [rsp + WMSH_EID]
@@ -13714,7 +13781,7 @@ wm_init_default_windows:
     mov dword [rsp + WMIW_ROLE], eax
     cmp eax, 0
     jl .wmiw_next
-    cmp eax, WM_ROLE_GAME
+    cmp eax, WM_ROLE_BROWSER
     jg .wmiw_next
 
     mov ecx, dword [rsp + WMIW_EID]
@@ -13783,6 +13850,8 @@ wm_init_default_windows:
     je .wmiw_editor
     cmp eax, WM_ROLE_GAME
     je .wmiw_game
+    cmp eax, WM_ROLE_BROWSER
+    je .wmiw_browser
     jmp .wmiw_next
 
 .wmiw_region:
@@ -13835,6 +13904,19 @@ wm_init_default_windows:
     mov dword [rsp + 32], 3
     mov dword [rsp + 40], 0
     lea rdi, [rel str_game_title]
+    mov [rsp + 48], rdi
+    mov dword [rsp + 56], (1 << 5) | (1 << 6)
+    call wm_create_window
+    jmp .wmiw_created
+
+.wmiw_browser:
+    mov ecx, dword [rsp + WMIW_RX]
+    mov edx, dword [rsp + WMIW_RY]
+    mov r8d, dword [rsp + WMIW_RW]
+    mov r9d, dword [rsp + WMIW_RH]
+    mov dword [rsp + 32], 3
+    mov dword [rsp + 40], 0
+    lea rdi, [rel str_browser_title]
     mov [rsp + 48], rdi
     mov dword [rsp + 56], (1 << 5) | (1 << 6)
     call wm_create_window
