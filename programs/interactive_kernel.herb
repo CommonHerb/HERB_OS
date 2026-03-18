@@ -65,6 +65,9 @@ type editor.Glyph
 
 type editor.EditorCtl
 
+type browser.Node
+container browser.NODES simple browser.Node
+
 container proc.READY simple proc.Process
 container proc.CPU0 slot proc.Process
 container proc.BLOCKED simple proc.Process
@@ -762,7 +765,6 @@ flow wm.tile_horizontal
     set dst.height 362
     step x if idx == 3 then 0 else x + w
     step y if idx == 3 then 438 else y
-    step w if idx == 3 then 426 else w
     step idx idx + 1
 
 entity server proc.Process in proc.READY
@@ -897,6 +899,14 @@ entity win_game wm.Window in wm.VISIBLE
   prop height 520
   prop z_order 6
   prop role 6
+  prop focused 0
+entity win_browser wm.Window in wm.VISIBLE
+  prop x 824
+  prop y 76
+  prop width 448
+  prop height 608
+  prop z_order 7
+  prop role 7
   prop focused 0
 entity display_ctl display.DisplayCtl in display.DISPLAY_STATE
   prop max_terminated 3
@@ -1629,6 +1639,9 @@ entity tcmd_tile input.TextCmd in input.TEXTCMD
 entity tcmd_tokenize input.TextCmd in input.TEXTCMD
   prop text_key 29807
   prop cmd_id 23
+entity tcmd_dom input.TextCmd in input.TEXTCMD
+  prop text_key 25711
+  prop cmd_id 24
 entity help_edit display.HelpCmd in display.HELP_TEXT
   prop order 11
   prop cmd_text "edit"
@@ -1659,6 +1672,27 @@ entity help_tile display.HelpCmd in display.HELP_TEXT
 entity help_tokenize display.HelpCmd in display.HELP_TEXT
   prop order 20
   prop cmd_text "tokenize"
+entity help_dom display.HelpCmd in display.HELP_TEXT
+  prop order 21
+  prop cmd_text "dom"
+entity tcmd_layout input.TextCmd in input.TEXTCMD
+  prop text_key 27745
+  prop cmd_id 25
+entity help_layout display.HelpCmd in display.HELP_TEXT
+  prop order 22
+  prop cmd_text "layout"
+entity tcmd_paint input.TextCmd in input.TEXTCMD
+  prop text_key 28769
+  prop cmd_id 26
+entity help_paint display.HelpCmd in display.HELP_TEXT
+  prop order 23
+  prop cmd_text "paint"
+entity tcmd_browse input.TextCmd in input.TEXTCMD
+  prop text_key 25202
+  prop cmd_id 27
+entity help_browse display.HelpCmd in display.HELP_TEXT
+  prop order 24
+  prop cmd_text "browse"
 entity editor_ctl editor.EditorCtl in editor.CTL
   prop mode 0
   prop cursor_pos 0

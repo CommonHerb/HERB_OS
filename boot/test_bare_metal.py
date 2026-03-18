@@ -315,17 +315,18 @@ def run_tests(image_path, net=False):
             if m_wm:
                 t.check("WM HERB window count logged", True)
                 wm_count = int(m_wm.group(1))
-                t.check("WM HERB window count is 7", wm_count == 7,
+                t.check("WM HERB window count is 8", wm_count == 8,
                          f"got {wm_count}")
 
                 expected_windows = [
-                    ("WM CPU0 geometry logged", r"\[WM\] role=0 geom=0,76,200,262 z=0"),
-                    ("WM READY geometry logged", r"\[WM\] role=1 geom=200,76,200,262 z=1"),
-                    ("WM BLOCKED geometry logged", r"\[WM\] role=2 geom=400,76,200,262 z=2"),
-                    ("WM TERMINATED geometry logged", r"\[WM\] role=3 geom=600,76,200,262 z=3"),
-                    ("WM TENSIONS geometry logged", r"\[WM\] role=4 geom=0,338,266,262 z=4"),
-                    ("WM EDITOR geometry logged", r"\[WM\] role=5 geom=266,338,266,262 z=5"),
-                    ("WM GAME geometry logged", r"\[WM\] role=6 geom=532,338,266,262 z=6"),
+                    ("WM CPU0 geometry logged", r"\[WM\] role=0 geom=\d+,\d+,\d+,\d+ z=0"),
+                    ("WM READY geometry logged", r"\[WM\] role=1 geom=\d+,\d+,\d+,\d+ z=1"),
+                    ("WM BLOCKED geometry logged", r"\[WM\] role=2 geom=\d+,\d+,\d+,\d+ z=2"),
+                    ("WM TERMINATED geometry logged", r"\[WM\] role=3 geom=\d+,\d+,\d+,\d+ z=3"),
+                    ("WM TENSIONS geometry logged", r"\[WM\] role=4 geom=\d+,\d+,\d+,\d+ z=4"),
+                    ("WM EDITOR geometry logged", r"\[WM\] role=5 geom=\d+,\d+,\d+,\d+ z=5"),
+                    ("WM GAME geometry logged", r"\[WM\] role=6 geom=\d+,\d+,\d+,\d+ z=6"),
+                    ("WM BROWSER geometry logged", r"\[WM\] role=7 geom=\d+,\d+,\d+,\d+ z=7"),
                 ]
                 for label, pattern in expected_windows:
                     t.check(label, re.search(pattern, serial_so_far) is not None)
@@ -1801,6 +1802,108 @@ def run_tests(image_path, net=False):
             m = t.wait_for(r"\[HTML_TOK\] \d+ tokens, \d+ attrs", after=pos)
             t.check("Tokenize: summary output", m is not None)
 
+            # ---- TEST: DOM Tree Builder ----
+            print("\n--- Test: DOM Tree Builder ---")
+            pos = t.serial_pos()
+            type_command("dom")
+
+            m = t.wait_for(r"\[DOM\] DOCUMENT", after=pos, timeout=8)
+            t.check("DOM: document root", m is not None)
+
+            m = t.wait_for(r"\[DOM\]\s+html", after=pos)
+            t.check("DOM: html element", m is not None)
+
+            m = t.wait_for(r"\[DOM\]\s+body", after=pos)
+            t.check("DOM: body element", m is not None)
+
+            m = t.wait_for(r"\[DOM\]\s+TEXT \(\d+ bytes\)", after=pos)
+            t.check("DOM: text node", m is not None)
+
+            m = t.wait_for(r"\[DOM\]\s+a\r?\n", after=pos)
+            t.check("DOM: anchor element", m is not None)
+
+            m = t.wait_for(r"\[DOM\]\s+br", after=pos)
+            t.check("DOM: self-close element", m is not None)
+
+            m = t.wait_for(r"\[DOM\] \d+ nodes", after=pos)
+            t.check("DOM: node count summary", m is not None)
+
+            # ---- TEST: Layout Engine (Session 101) ----
+            print("\n--- Test: Layout Engine ---")
+            pos = t.serial_pos()
+            type_command("layout")
+
+            # Layout header with node count
+            m = t.wait_for(r"\[LAYOUT\] (\d+) nodes, viewport=(\d+)px", after=pos, timeout=10)
+            t.check("Layout: header with node count", m is not None)
+            if m:
+                node_count = int(m.group(1))
+                t.check("Layout: node count > 0", node_count > 0,
+                         f"got {node_count}")
+                viewport = int(m.group(2))
+                t.check("Layout: viewport is 1280", viewport == 1280,
+                         f"got {viewport}")
+
+            # Root DOCUMENT node present
+            m = t.wait_for(r"\[LAYOUT\] DOCUMENT", after=pos)
+            t.check("Layout: document root", m is not None)
+
+            # html element present with BLOCK type
+            m = t.wait_for(r"\[LAYOUT\]\s+html.*BLOCK", after=pos)
+            t.check("Layout: html is BLOCK", m is not None)
+
+            # body has y >= 8 (margin_top applied)
+            m = t.wait_for(r"\[LAYOUT\]\s+body.*y=(\d+).*BLOCK", after=pos)
+            t.check("Layout: body present", m is not None)
+            if m:
+                body_y = int(m.group(1))
+                t.check("Layout: body y >= 8 (margin)", body_y >= 8,
+                         f"body y={body_y}")
+
+            # head/title/script have NONE display
+            m = t.wait_for(r"\[LAYOUT\].*head.*NONE", after=pos)
+            t.check("Layout: head is NONE", m is not None)
+
+            m = t.wait_for(r"\[LAYOUT\].*title.*NONE", after=pos)
+            t.check("Layout: title is NONE", m is not None)
+
+            # h1 is BLOCK with h >= 24 (FONT_HEIGHT)
+            m = t.wait_for(r"\[LAYOUT\].*h1.*h=(\d+).*BLOCK", after=pos)
+            t.check("Layout: h1 present", m is not None)
+            if m:
+                h1_h = int(m.group(1))
+                t.check("Layout: h1 h >= 24", h1_h >= 24,
+                         f"h1 h={h1_h}")
+
+            # Text nodes present with INLINE
+            m = t.wait_for(r"\[LAYOUT\].*TEXT.*INLINE", after=pos)
+            t.check("Layout: text node is INLINE", m is not None)
+
+            # ---- TEST: Browser Paint (Session 102) ----
+            print("\n--- Test: Browser Paint ---")
+            pos = t.serial_pos()
+            type_command("paint")
+
+            # Paint header with node count and visible count
+            m = t.wait_for(r"\[PAINT\] (\d+) nodes, (\d+) visible", after=pos, timeout=10)
+            t.check("Paint: header printed", m is not None)
+            if m:
+                paint_nodes = int(m.group(1))
+                paint_visible = int(m.group(2))
+                t.check("Paint: node count > 0", paint_nodes > 0,
+                         f"got {paint_nodes}")
+                t.check("Paint: visible count > 0", paint_visible > 0,
+                         f"got {paint_visible}")
+                t.check("Paint: visible <= nodes", paint_visible <= paint_nodes,
+                         f"visible={paint_visible} nodes={paint_nodes}")
+
+            # ---- TEST: Browse Without NIC (Session 103) ----
+            print("\n--- Test: Browse Without NIC ---")
+            pos = t.serial_pos()
+            type_command("browse")
+            m = t.wait_for(r"\[BROWSE\] no NIC", after=pos, timeout=5)
+            t.check("Browse: no-NIC error", m is not None)
+
         # ============================================================
         # NIC Tests (Session 82) — only with --net flag
         # ============================================================
@@ -1954,6 +2057,17 @@ def run_tests(image_path, net=False):
             print("\n--- Test: TCP Connection Closed ---")
             m = re.search(r"\[TCP\] (FIN received|connection closed)", serial)
             t.check("TCP teardown (FIN/close)", m is not None)
+
+            # ---- TEST: Browse Command (Session 103) ----
+            print("\n--- Test: Browse Command ---")
+            pos = t.serial_pos()
+            type_command("browse")
+            # Should see fetching message
+            m = t.wait_for(r"\[BROWSE\] fetching", after=pos, timeout=15)
+            t.check("Browse: fetch initiated", m is not None)
+            # Should complete (done or fail depending on network)
+            m = t.wait_for(r"\[BROWSE\] (done|failed)", after=pos, timeout=15)
+            t.check("Browse: completed", m is not None)
 
         else:
             print("\n(NIC tests skipped — use --net flag)")

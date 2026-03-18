@@ -1,6 +1,6 @@
 # HERB OS — Human Testing Guide
 
-**Updated Session 99 — Testing every interaction path**
+**Updated Session 104 — Testing every interaction path**
 
 ## Setup
 
@@ -84,6 +84,10 @@
 | `http` | HTTP GET request — requires NIC (`make run-net`) |
 | `tile` | Toggle tiling layout (4+3 window grid) |
 | `tokenize` | Tokenize HTML (uses HTTP body if available, else test HTML) |
+| `dom` | Build DOM tree from HTML and print hierarchy |
+| `layout` | Compute layout geometry for DOM nodes (margins, padding, text wrapping) |
+| `paint` | Full browser pipeline: tokenize → DOM → layout → paint to BROWSER window |
+| `browse [domain]` | Fetch page via HTTP and render (requires NIC, default: example.com) |
 
 ---
 
