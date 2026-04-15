@@ -30,7 +30,6 @@ boot/screenshot.png
 test_serial.log
 
 # Local IDE/editor config
-.claude/settings.local.json
 
 # OS junk
 .DS_Store
